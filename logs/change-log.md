@@ -14,6 +14,17 @@ Design decisions and notable changes. Newest first.
 
 ---
 
+## 2026-07-21 — Build started: Phase 0 scaffold + Phase 1 BIN codec landed
+- Implemented the `backend/` FastAPI scaffold and the full integer-native BIN codec
+  (`app/bin_codec/{layout,writer,reader,compress}.py`) exactly per
+  [[bin-structure-spec]]. No format/schema decisions changed — the spec was
+  implemented as-is (schema_version = 1).
+- Implementation choices (non-schema): little-endian NumPy dtypes so `tobytes()` is the
+  wire layout; raw `.bin` read via `mmap`, `.zst` via whole-stream decompress; reader
+  returns raw integers (paise→rupees kept as an explicit separate step so round-trips
+  stay bit-exact); verified raw removal after compression.
+- Marked Phase 0 (minus deferred frontend) and Phase 1 batches done in [[build-guide]].
+
 ## 2026-07-21 — Branch setup: main (baseline/default) + ai-dev/made (working)
 - Created `main` as the stable/default baseline and `ai-dev/made` as the active
   development branch. Phase work lands on `ai-dev/made` and PRs into `main`.

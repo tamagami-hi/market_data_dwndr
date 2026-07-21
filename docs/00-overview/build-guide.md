@@ -32,10 +32,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 **Depends on:** nothing.
 
 Batches:
-- [ ] Backend skeleton: `backend/pyproject.toml`, `app/main.py` (FastAPI + `/health`), `app/config.py` (pydantic-settings).
-- [ ] `.env.example` + `.gitignore` (`.env`, `MARKET_DATA/`, `.venv`, `node_modules/`, `__pycache__/`). See [[config-and-env]].
-- [ ] Frontend skeleton: Next.js app (trimmed from `algo_engine/frontend_stack`).
-- [ ] Vault present: `docs/` + `logs/` + `repo-map/` (this repo).
+- [x] Backend skeleton: `backend/pyproject.toml`, `app/main.py` (FastAPI + `/health`), `app/config.py` (pydantic-settings).
+- [x] `.env.example` + `.gitignore` (`.env`, `MARKET_DATA/`, `.venv`, `node_modules/`, `__pycache__/`). See [[config-and-env]].
+- [ ] Frontend skeleton: Next.js app (trimmed from `algo_engine/frontend_stack`). *(deferred to Phase 4 per handoff — "frontend can wait")*
+- [x] Vault present: `docs/` + `logs/` + `repo-map/` (this repo).
 
 **Deliverables:** `backend/`, `frontend/` skeletons, `.env.example`, `.gitignore`.
 **DoD:** `uvicorn app.main:app` serves `/health`; `next dev` builds; `.env` is gitignored.
@@ -47,10 +47,10 @@ Batches:
 **Depends on:** Phase 0.
 
 Batches:
-- [ ] `bin_codec/layout.py` — single source of truth for field order + dtypes (`i64` paise, `u64`, `u32`), enum tags, primitives.
-- [ ] `bin_codec/writer.py` — frame framing `[u32 LE len][payload]`, header-once, `IndexHeader`/`IndexFrame` and `StockHeader`/`StockFrame`; NumPy `tobytes` columns.
-- [ ] `bin_codec/reader.py` — scan → `timestamp → (offset,size)` index; nearest-ts binary search; random-access ranges; paise→rupees on read.
-- [ ] `bin_codec/compress.py` — whole-file zstd L17 → `.bin.zst`; transparent read of `.zst`.
+- [x] `bin_codec/layout.py` — single source of truth for field order + dtypes (`i64` paise, `u64`, `u32`), enum tags, primitives.
+- [x] `bin_codec/writer.py` — frame framing `[u32 LE len][payload]`, header-once, `IndexHeader`/`IndexFrame` and `StockHeader`/`StockFrame`; NumPy `tobytes` columns.
+- [x] `bin_codec/reader.py` — scan → `timestamp → (offset,size)` index; nearest-ts binary search; random-access ranges; paise→rupees on read.
+- [x] `bin_codec/compress.py` — whole-file zstd L17 → `.bin.zst`; transparent read of `.zst`.
 
 **Deliverables:** `backend/app/bin_codec/{layout,writer,reader,compress}.py` + tests.
 **DoD** (see [[testing-strategy]]):

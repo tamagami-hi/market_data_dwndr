@@ -14,6 +14,39 @@ Newest first. One entry per working session.
 
 ---
 
+## 2026-07-21 — Phase 0 scaffold + Phase 1 BIN codec
+
+**Done**
+- **Phase 0:** backend skeleton on `ai-dev/made` — `backend/pyproject.toml`,
+  `app/main.py` (FastAPI + `/health`), `app/config.py` (pydantic-settings with derived
+  `MARKET_DATA` paths), `.env.example`. `/health` verified via TestClient. Frontend
+  skeleton deferred to Phase 4 (per [[next-session-handoff]]).
+- **Phase 1 (BIN codec):** implemented exactly per [[bin-structure-spec]] with
+  `struct` + NumPy + `zstandard`:
+  - `bin_codec/layout.py` — primitives, enum tags, LE dtypes, fixed column order,
+    frame data models (single source of truth).
+  - `bin_codec/writer.py` — `[u32 len][payload]` framing, header-once, index + stock
+    encoders and append-only writers.
+  - `bin_codec/reader.py` — one-pass scan → `timestamp → (offset,size)` index,
+    nearest-ts binary search, random-access ranges, mmap raw / transparent `.zst`,
+    truncated-trailing-frame recovery.
+  - `bin_codec/compress.py` — whole-file zstd L17 → `.bin.zst`, verified raw removal,
+    EOD directory sweep.
+- **Tests (23, all green) + ruff clean.** Phase 1 DoD gates pass: round-trip
+  identical integer arrays (index + stock), byte-level header check, and
+  compress → re-index → identical. See [[testing-strategy]].
+- Pushed batch-by-batch to `ai-dev/made`.
+
+**Next**
+- Open a PR `ai-dev/made` → `main` for Phase 0 + Phase 1 review.
+- **Phase 2: Kite integration + discovery** ([[build-guide]]).
+
+**Blockers**
+- None. Phases 2+ need live Kite credentials for end-to-end verification; unit tests
+  will mock Kite.
+
+---
+
 ## 2026-07-21 — Docs finalized + phase build guide
 
 **Done**
