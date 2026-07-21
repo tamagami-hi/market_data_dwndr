@@ -14,6 +14,18 @@ Newest first. One entry per working session.
 
 ---
 
+## 2026-07-21 — Frontend port fully env-file-driven
+
+- Removed the last hardcoded port: the `dev`/`start` scripts now load `.env.local` via
+  `dotenv-cli` (`dotenv -e .env.local -- next …`) so the serving port comes from
+  **`PORT` in `.env.local`** (Next ignores `PORT` from env files on its own — verified).
+  No `${PORT:-3000}` literal remains.
+- Documented that `EADDRINUSE :::3000` is a port-already-in-use condition (free the port
+  or change `PORT` in `.env.local`). Updated `frontend/.env.local.example` + README.
+- `next build` + `eslint` clean; `npm audit` 0 vulnerabilities.
+
+---
+
 ## 2026-07-21 — Env-only ports + CORS + indices parse fix
 
 **Fixed**
