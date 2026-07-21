@@ -14,6 +14,30 @@ Design decisions and notable changes. Newest first.
 
 ---
 
+## 2026-07-21 — Phases 2–7 implemented (full backend build)
+- Built the entire capture pipeline on `ai-dev/made` per the locked specs, batch-by-batch
+  with tests + ruff after each: Kite auth/instruments/discovery, chain filter/assembler,
+  stock board, KiteTicker→asyncio bridge, L1/L5 tables + matrix, 1 Hz capture engine +
+  writer threads + reconnect/stall policy, WS tagged-envelope protocol/routes + Capture
+  Monitor, trading calendar/scheduler + EOD sweep + session resume, historical downloader
+  (intervals/windows/limiter/client/assembly/jobs), and reconstruction (BS Greeks/IV,
+  chain metrics, CalSpread spreads).
+- No schema/format decisions changed — specs implemented as-is. Non-schema choices:
+  price sentinels 0 for empty depth; VIX token fans out to all index tables; `/monitor`
+  shipped as a standalone dependency-free dashboard (algo_engine Next.js components are
+  not in this repo, so the reused option-chain/stocks pages are deferred).
+
+## 2026-07-21 — Build started: Phase 0 scaffold + Phase 1 BIN codec landed
+- Implemented the `backend/` FastAPI scaffold and the full integer-native BIN codec
+  (`app/bin_codec/{layout,writer,reader,compress}.py`) exactly per
+  [[bin-structure-spec]]. No format/schema decisions changed — the spec was
+  implemented as-is (schema_version = 1).
+- Implementation choices (non-schema): little-endian NumPy dtypes so `tobytes()` is the
+  wire layout; raw `.bin` read via `mmap`, `.zst` via whole-stream decompress; reader
+  returns raw integers (paise→rupees kept as an explicit separate step so round-trips
+  stay bit-exact); verified raw removal after compression.
+- Marked Phase 0 (minus deferred frontend) and Phase 1 batches done in [[build-guide]].
+
 ## 2026-07-21 — Branch setup: main (baseline/default) + ai-dev/made (working)
 - Created `main` as the stable/default baseline and `ai-dev/made` as the active
   development branch. Phase work lands on `ai-dev/made` and PRs into `main`.
@@ -51,3 +75,36 @@ Design decisions and notable changes. Newest first.
 - 1 Hz capture; indices NIFTY/BANKNIFTY/FINNIFTY/SENSEX (no MIDCPNIFTY/BANKEX); full
   F&O stock board; KiteTicker; `.env` api key+secret + daily login. See
   [[decisions-and-open-questions]].
+
+
+## 2026-07-21 — Cross-verified against algo_engine Rust source
+- Cloned `tamagami-hi/algo_engine` and diffed the Python ports against the Rust
+  reference (`oc_maker/table/{filter,assembler}.rs`, `bs_models.rs`, `utils.rs`,
+  `metrics/calculations.rs`, `historical/orchestrator/bin_export.rs`,
+  `stream/ingestion.rs`).
+- **Confirmed parity:** ATM window + nearest-strike-on-tie, per-1% Greek normalization
+  (vega/100, rho/100) + per-day theta (/365), max-pain/PCR aggregation, reconnect policy
+  (5s→300s, 20 attempts, exponential), and header-once + per-date sequence in bin export.
+- **Fixed 3 parity gaps** in `reconstruct/`: time-to-expiry now uses **365.25** days/yr
+  (was 365) with a `1e-5` maturity floor; the IV intrinsic-value guard now uses
+  algo_engine's combined tolerance `max(intrinsic·0.5%, ₹0.50)`; added a **VIX-derived
+  fallback IV** when the solve fails within tolerance.
+- **Intentional (kept) divergences:** `.bin` stores raw only — no IV/Greeks/change_in_oi
+  columns (algo_engine persists derived Greeks); custom struct packing instead of bincode;
+  per-index ATM step (50/100) instead of a hardcoded 50. All match the market_data_dwndr
+  locked specs.
+
+
+## 2026-07-21 — Automated Kite login (env-seeded creds + terminal TOTP)
+- Added a headless Kite login (`app/kite/login.py`, `md-login` entrypoint) that
+  automates algo_engine's OAuth flow: `/api/login` → `/api/twofa` (TOTP) →
+  `/connect/login` redirect → `request_token` → `/session/token` exchange, persisting
+  today's `access_token` + bond yield to session state.
+- Credentials are **seeded from the environment** (`KITE_USER_ID`, `KITE_PASSWORD`,
+  optional `KITE_TOTP_SECRET`, `RISK_FREE_RATE`) rather than a database (algo_engine
+  keeps them encrypted in Postgres). The **TOTP is taken from the terminal** when no
+  secret is configured; otherwise it is generated via `pyotp`.
+- Outbound Kite calls go through one client that can bind a **static source IP**
+  (`KITE_STATIC_IP`) or use a proxy (`KITE_HTTP_PROXY`) to meet Kite's static-IP
+  whitelist requirement (Apr 2026).
+- Only `backend/.env.example` is maintained in-repo (real `.env` provided at deploy).

@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+:root {
+  --background: #18181b;
+  --foreground: #f4f4f5;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+}
+
+html {
+  background:
+    radial-gradient(circle at top left, rgba(56, 189, 248, 0.08), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(34, 197, 94, 0.06), transparent 24%),
+    #09090b;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #27272a;
+}
+::-webkit-scrollbar-thumb {
+  background: #52525b;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #71717a;
+}
