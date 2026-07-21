@@ -21,6 +21,18 @@ cp .env.local.example .env.local   # set NEXT_PUBLIC_BACKEND_URL if backend isn'
 npm run dev                          # http://localhost:3000
 ```
 
+### Port
+
+The serving port is env-driven via `PORT` (default `3000`) — the `dev` and `start`
+scripts run `next … -p ${PORT:-3000}`. Set it in the process environment:
+
+```bash
+PORT=4000 npm run dev      # or: PORT=4000 npm run start
+```
+
+`PORT` is a *process* env var (shell / Docker / systemd), separate from
+`NEXT_PUBLIC_BACKEND_URL` in `.env.local`, which only selects the backend to talk to.
+
 ## Build / lint
 
 ```bash
