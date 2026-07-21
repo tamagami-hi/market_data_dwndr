@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Capture Monitor — market_data_dwndr</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #131a22; --panel2: #1a232e; --line: #223140;
+    --text: #e6edf3; --muted: #8aa0b3; --green: #2ecc71; --red: #e74c3c;
+    --amber: #f1c40f; --accent: #4aa3ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 20px;
+    background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .dot.off { background: var(--red); }
+  .spacer { flex: 1; }
+  input { background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 6px; padding: 6px 10px; }
+  button { background: var(--accent); border: 0; color: #04121f; font-weight: 600;
+    border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  main { padding: 20px; display: grid; gap: 20px; }
+  .globals { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 12px; }
+  .metric { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .metric .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .metric .value { font-size: 22px; font-weight: 700; margin-top: 6px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px,1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .card .top { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .card .name { font-weight: 700; font-size: 15px; }
+  .card .row { display: flex; justify-content: space-between; padding: 3px 0; color: var(--muted); }
+  .card .row b { color: var(--text); font-weight: 600; }
+  .beat { margin-left: auto; font-size: 11px; padding: 2px 8px; border-radius: 20px; }
+  .beat.ok { background: rgba(46,204,113,.15); color: var(--green); }
+  .beat.stale { background: rgba(231,76,60,.15); color: var(--red); }
+  h2 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 0 0 4px; }
+  #log { background: #05090d; border: 1px solid var(--line); border-radius: 10px; padding: 12px;
+    height: 180px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  #log div { color: var(--muted); }
+  #log div span { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <span id="conn" class="dot off"></span>
+  <h1>Capture Monitor</h1>
+  <span class="spacer"></span>
+  <input id="token" placeholder="access token" size="24" />
+  <button id="connect">Connect</button>
+</header>
+<main>
+  <section>
+    <h2>Global</h2>
+    <div class="globals" id="globals">
+      <div class="metric"><div class="label">Tokens</div><div class="value" id="g-tokens">–</div></div>
+      <div class="metric"><div class="label">Frames / sec</div><div class="value" id="g-fps">–</div></div>
+      <div class="metric"><div class="label">Captures</div><div class="value" id="g-captures">–</div></div>
+      <div class="metric"><div class="label">Disk (MARKET_DATA)</div><div class="value" id="g-disk">–</div></div>
+    </div>
+  </section>
+  <section>
+    <h2>Per underlying</h2>
+    <div class="cards" id="cards"></div>
+  </section>
+  <section>
+    <h2>Session / log</h2>
+    <div id="log"></div>
+  </section>
+</main>
+<script>
+  // Self-contained Capture Monitor. Consumes /ws/capture-status and /ws/session.
+  const qs = new URLSearchParams(location.search);
+  const tokenInput = document.getElementById("token");
+  tokenInput.value = qs.get("token") || "";
+
+  function fmtBytes(n) {
+    if (!n) return "0 B";
+    const u = ["B", "KB", "MB", "GB", "TB"];
+    const i = Math.floor(Math.log(n) / Math.log(1024));
+    return (n / Math.pow(1024, i)).toFixed(i ? 1 : 0) + " " + u[i];
+  }
+  function fmtTime(ms) { return ms ? new Date(ms).toLocaleTimeString() : "–"; }
+
+  function renderGlobal(g) {
+    document.getElementById("g-tokens").textContent = g.tokens ?? "–";
+    document.getElementById("g-fps").textContent = (g.fps ?? 0).toFixed(2);
+    document.getElementById("g-captures").textContent = g.captures ?? "–";
+    document.getElementById("g-disk").textContent = fmtBytes(g.disk_bytes || 0);
+  }
+  function renderCards(list) {
+    const root = document.getElementById("cards");
+    root.innerHTML = "";
+    for (const u of list) {
+      const el = document.createElement("div");
+      el.className = "card";
+      el.innerHTML = `
+        <div class="top">
+          <span class="dot ${u.connected ? "on" : "off"}"></span>
+          <span class="name">${u.underlying}</span>
+          <span class="beat ${u.heartbeat_ok ? "ok" : "stale"}">${u.heartbeat_ok ? "1 Hz" : "stale"}</span>
+        </div>
+        <div class="row"><span>Frames today</span><b>${(u.frames_written ?? 0).toLocaleString()}</b></div>
+        <div class="row"><span>File size</span><b>${fmtBytes(u.file_bytes || 0)}</b></div>
+        <div class="row"><span>Last tick</span><b>${fmtTime(u.last_tick_ms)}</b></div>
+        <div class="row"><span>Unmatched</span><b>${u.unmatched ?? 0}</b></div>`;
+      root.appendChild(el);
+    }
+  }
+  function log(msg) {
+    const box = document.getElementById("log");
+    const line = document.createElement("div");
+    line.innerHTML = `<span>${new Date().toLocaleTimeString()}</span> ${msg}`;
+    box.prepend(line);
+    while (box.children.length > 200) box.removeChild(box.lastChild);
+  }
+
+  let sockets = [];
+  function closeAll() { sockets.forEach((s) => { try { s.close(); } catch (e) {} }); sockets = []; }
+
+  function connectTopic(topic, onMessage) {
+    const token = encodeURIComponent(tokenInput.value);
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const url = `${proto}://${location.host}/ws/${topic}?token=${token}`;
+    const ws = new WebSocket(url);
+    ws.onopen = () => { document.getElementById("conn").className = "dot on"; log(`connected /ws/${topic}`); };
+    ws.onclose = () => { document.getElementById("conn").className = "dot off"; log(`closed /ws/${topic}, retrying…`);
+      setTimeout(() => { if (sockets.includes(ws)) { sockets = sockets.filter(s=>s!==ws); connectTopic(topic, onMessage); } }, 3000); };
+    ws.onmessage = (ev) => { try { onMessage(JSON.parse(ev.data)); } catch (e) {} };
+    sockets.push(ws);
+  }
+
+  function handleCaptureStatus(env) {
+    if (env.type !== "CaptureStatus") return;
+    renderGlobal(env.payload.global || {});
+    renderCards(env.payload.per_underlying || []);
+  }
+  function handleSession(env) {
+    if (env.type === "Log") log(env.payload.message);
+    else if (env.type === "SessionStatus") log(`session: ${env.payload.phase}`);
+  }
+
+  document.getElementById("connect").onclick = () => {
+    closeAll();
+    connectTopic("capture-status", handleCaptureStatus);
+    connectTopic("session", handleSession);
+  };
+  if (tokenInput.value) document.getElementById("connect").click();
+</script>
+</body>
+</html>

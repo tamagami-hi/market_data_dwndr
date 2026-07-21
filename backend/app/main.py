@@ -9,11 +9,15 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 
 from app import __version__
 from app.ws.routes import ConnectionManager, create_ws_router
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 @asynccontextmanager
@@ -42,3 +46,9 @@ app.include_router(create_ws_router(ws_hub))
 async def health() -> dict[str, str]:
     """Liveness probe."""
     return {"status": "ok", "version": __version__}
+
+
+@app.get("/monitor", response_class=HTMLResponse, tags=["ui"])
+async def monitor_page() -> str:
+    """Serve the self-contained Capture Monitor dashboard (live WS telemetry)."""
+    return (STATIC_DIR / "monitor.html").read_text(encoding="utf-8")
