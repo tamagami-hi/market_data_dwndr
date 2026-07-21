@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import queue
 import threading
+from pathlib import Path
 from typing import Any
+
+from app.session import now_ms
 
 # Sentinel enqueued to request a graceful stop.
 _STOP = object()
@@ -29,6 +32,7 @@ class FileWriterThread(threading.Thread):
         self._header = header
         self._queue: queue.Queue = queue.Queue()
         self.frames_written = 0
+        self.last_write_ms: int | None = None
         self._started_ok = threading.Event()
         self._error: BaseException | None = None
 
@@ -48,6 +52,7 @@ class FileWriterThread(threading.Thread):
                     break
                 self._writer.append_frame(item)
                 self.frames_written += 1
+                self.last_write_ms = now_ms()
         finally:
             self._writer.close()
 
@@ -69,3 +74,7 @@ class FileWriterThread(threading.Thread):
     @property
     def pending(self) -> int:
         return self._queue.qsize()
+
+    @property
+    def path(self) -> Path:
+        return Path(self._writer.path)
