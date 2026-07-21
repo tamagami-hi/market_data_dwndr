@@ -34,6 +34,24 @@ uvicorn app.main:app --reload --port 8000
 # GET http://localhost:8000/health -> {"status": "ok", ...}
 ```
 
+## Capture
+
+Two ways to run the 1 Hz capture (both: login → fetch instruments → seed ATM via LTP →
+discover F&O board + index chains → subscribe → snapshot to `.bin`):
+
+```bash
+# headless (writes .bin files; auto-stops + compresses at market close):
+md-capture                    # or: python -m app.capture.run
+md-capture --ignore-market-hours   # run off-hours (no auto-stop), Ctrl-C to end
+
+# in-process (so the frontend gets live WS broadcasts): from the running API,
+curl -X POST localhost:8000/api/capture/start
+curl       localhost:8000/api/capture/status
+curl -X POST localhost:8000/api/capture/stop
+```
+
+Both require a logged-in session (`md-login`) for the day.
+
 ## Test
 
 ```bash

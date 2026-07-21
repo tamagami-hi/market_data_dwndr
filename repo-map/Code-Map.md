@@ -14,9 +14,9 @@ Maps each specification note to the module(s) that implement it and the tests th
 cover it. Paths are relative to the repo root. See [[Build-Status]] for phase status.
 
 > [!info] Shape
-> `backend/` — Python 3.11 / FastAPI service (44 modules).
-> `frontend/` — Next.js 16 + React 19 + Tailwind v4 (18 TS/TSX files).
-> `backend/tests/` — 28 pytest modules, **159 tests**.
+> `backend/` — Python 3.11 / FastAPI service (48 modules).
+> `frontend/` — Next.js 16 + React 19 + Tailwind v4.
+> `backend/tests/` — 32 pytest modules, **178 tests**.
 
 ## Backend — package map
 
@@ -37,7 +37,8 @@ backend/app/
 │   ├── login.py            automated login (login→twofa TOTP→request_token→exchange), md-login
 │   ├── instruments.py      instrument dump fetch/parse + daily archive
 │   ├── ticks.py            full-tick field extraction (paise, OHLC, depth)
-│   └── ticker.py           KiteTicker → asyncio.Queue bridge
+│   ├── ticker.py           KiteTicker → asyncio.Queue bridge
+│   └── quotes.py           one-shot LTP quote (seeds ATM at bootstrap)
 ├── chain/                  ← [[option-chain-selection]]
 │   ├── config.py           per-index config (step, tokens), VIX token
 │   ├── filter.py           get_spot_atm, ATM ± 50 window, nearest-strike
@@ -51,12 +52,15 @@ backend/app/
 │   ├── writer_thread.py    thread-per-file writer (+ heartbeat)
 │   ├── reconnect.py        ReconnectPolicy + StallDetector
 │   ├── monitor.py          CaptureMonitor telemetry (per-underlying + global)
-│   └── broadcaster.py      reconstructs Greeks → pushes MarketHeader/OptionGrid/StockBoard
+│   ├── broadcaster.py      reconstructs Greeks → pushes MarketHeader/OptionGrid/StockBoard
+│   ├── bootstrap.py        wire instruments→chains+board→engine/monitor/broadcaster→ticker
+│   └── run.py              md-capture CLI (resume→bootstrap→run→EOD)
 ├── ws/                     ← [[websocket-protocol]]
 │   ├── protocol.py         tagged-envelope builders
 │   └── routes.py           ConnectionManager + /ws/{topic}
 ├── api/
-│   └── auth.py             /api/auth/status · /login · /login-url
+│   ├── auth.py             /api/auth/status · /login · /login-url
+│   └── capture.py          CaptureController + /api/capture/{status,start,stop}
 ├── ops/                    ← [[operations-runbook]]
 │   ├── calendar.py         IST trading date + session phase
 │   ├── scheduler.py        phase machine → start/stop/EOD events
@@ -96,6 +100,6 @@ frontend/
 | [[live-data-pipeline]] | `kite/{ticks,ticker}`, `capture/*`, `chain/table` | `test_ticks`, `test_ticker`, `test_capture`, `test_monitor` |
 | [[websocket-protocol]] | `ws/*`, `capture/broadcaster`, `frontend/lib/ws*` | `test_ws_protocol`, `test_ws_routes`, `test_broadcaster` |
 | [[historical-data]] | `historical/*` | `test_historical_core`, `test_historical_assembly`, `test_historical_jobs` |
-| [[operations-runbook]] | `ops/*`, `main.py` | `test_calendar_scheduler`, `test_eod`, `test_session_manager` |
-| [[config-and-env]] / [[session-state]] | `config.py`, `kite/login`, `session*`, `api/auth` | `test_login`, `test_auth_api` |
+| [[operations-runbook]] | `ops/*`, `main.py`, `capture/{bootstrap,run}`, `api/capture` | `test_calendar_scheduler`, `test_eod`, `test_session_manager`, `test_bootstrap`, `test_capture_run`, `test_capture_api` |
+| [[config-and-env]] / [[session-state]] | `config.py`, `kite/{login,quotes}`, `session*`, `api/auth` | `test_login`, `test_auth_api`, `test_quotes` |
 | [[data-retention]] / [[failure-modes]] | `ops/retention`, `bin_codec/{reader,compress}` | `test_retention`, `test_roundtrip` |

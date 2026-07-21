@@ -59,3 +59,31 @@ export async function getLoginUrl(): Promise<string> {
   const body = await jsonOrThrow<{ login_url: string }>(res);
   return body.login_url;
 }
+
+// --- capture control ---------------------------------------------------------
+
+export interface CaptureStatus {
+  available: boolean;
+  running: boolean;
+  trading_date?: string | null;
+  indices?: string[];
+  stocks?: number;
+  tokens?: number;
+  skipped_indices?: string[];
+  error?: string | null;
+}
+
+export async function getCaptureStatus(): Promise<CaptureStatus> {
+  const res = await fetch(`${getBackendUrl()}/api/capture/status`, { cache: "no-store" });
+  return jsonOrThrow<CaptureStatus>(res);
+}
+
+export async function startCapture(): Promise<CaptureStatus> {
+  const res = await fetch(`${getBackendUrl()}/api/capture/start`, { method: "POST" });
+  return jsonOrThrow<CaptureStatus>(res);
+}
+
+export async function stopCapture(): Promise<CaptureStatus> {
+  const res = await fetch(`${getBackendUrl()}/api/capture/stop`, { method: "POST" });
+  return jsonOrThrow<CaptureStatus>(res);
+}

@@ -14,6 +14,26 @@ Newest first. One entry per working session.
 
 ---
 
+## 2026-07-21 — Live capture bootstrap (end-to-end runnable)
+
+**Done** (on `ai-dev/made`, pushed batch-by-batch)
+- `kite/quotes.py` — one-shot LTP quote (static-IP client) to seed the ATM at bootstrap.
+- `capture/bootstrap.py` — `bootstrap_capture()` wires instruments → index chains
+  (ATM ± 50, spot-seeded) + F&O board → `IndexTable`/`StockMatrix` → writer threads →
+  `CaptureEngine` + `CaptureMonitor` + optional `Broadcaster` → `TickerBridge` (all
+  tokens); `run_capture()` drives the live loop. Bad indices are skipped, not fatal.
+- `capture/run.py` — **`md-capture`** CLI: resume session → bootstrap → run until
+  Ctrl-C (keeps raw for resume) or market close (then EOD-compresses).
+- `api/capture.py` — `CaptureController` + `/api/capture/{status,start,stop}`; runs
+  capture in-process so the frontend receives live broadcasts. Wired into `main.py`.
+- Frontend — capture Start/Stop control on `/monitor` (`CaptureControl` + api client).
+- 178 pytest tests green, ruff clean; `next build` + `eslint` clean.
+
+**Follow-ups**
+- Live end-to-end against real Kite credentials + whitelisted static IP.
+
+---
+
 ## 2026-07-21 — Auth wiring + professionalized vault
 
 **Done** (on `ai-dev/made`, pushed)
