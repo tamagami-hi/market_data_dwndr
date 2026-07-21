@@ -11,6 +11,7 @@ up: "[[Home]]"
 
 - [[progress-log]] — session-by-session progress
 - [[change-log]] — decisions & notable changes
+- [[next-session-handoff]] — copy-paste prompt to resume in a fresh session
 - [[README]] (logs) — logging convention
 
-Related: [[Decisions-MOC]]
+Related: [[Decisions-MOC]], [[build-guide]]
