@@ -14,6 +14,27 @@ Newest first. One entry per working session.
 
 ---
 
+## 2026-07-21 — Phase 5: EOD compression + rollover + session-state
+
+**Done** (all on `ai-dev/made`, pushed batch-by-batch)
+- `ops/calendar.py` — `TradingCalendar`: IST trading date (epoch ms → IST), weekend +
+  configurable holiday handling, session phase (PRE_OPEN/OPEN/CLOSED/HOLIDAY) with
+  09:15–15:30 inclusive boundaries; fixed +05:30 fallback if no tzdata.
+- `ops/scheduler.py` — `PhaseMachine` (idempotent transition events) + `CaptureScheduler`
+  driving start-capture / stop-capture / run-EOD callbacks.
+- `ops/eod.py` — `run_eod` (stop writers → verify-and-compress sweep, raw removed only
+  after `.zst` verifies), `prune_stale_raw` startup cleanup, `EODResult` with ratio.
+  Only `*.bin` touched; `_instruments/`, `_state/` left alone.
+- `ops/session_manager.py` — `SessionManager`: login once then resume today's session
+  on restart (no re-prompt); mid-day restart appends to today's files with no duplicate
+  header (verified end-to-end).
+- 97 pytest tests (green) + ruff clean.
+
+**Next**
+- **Phase 6: Historical downloader** ([[build-guide]]).
+
+---
+
 ## 2026-07-21 — Phase 4: Capture Monitor (WS protocol + monitor + dashboard)
 
 **Done** (all on `ai-dev/made`, pushed batch-by-batch)

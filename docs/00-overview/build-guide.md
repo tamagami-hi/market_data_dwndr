@@ -126,9 +126,9 @@ Batches:
 **Depends on:** Phases 1, 3.
 
 Batches:
-- [ ] Market-hours scheduler + trading-calendar handling ([[operations-runbook]]).
-- [ ] EOD: flush, close files, zstd L17 sweep, rotate to next day.
-- [ ] Session-state persistence + mid-day restart/resume ([[session-state]], [[failure-modes]]).
+- [x] Market-hours scheduler + trading-calendar handling ([[operations-runbook]]).
+- [x] EOD: flush, close files, zstd L17 sweep, rotate to next day.
+- [x] Session-state persistence + mid-day restart/resume ([[session-state]], [[failure-modes]]).
 
 **Deliverables:** scheduler, EOD sweep, session-state module.
 **DoD:** at close, raw `.bin` → `.bin.zst` (raw removed); a mid-day restart resumes with the same access_token + bond yield and appends to today's files.
