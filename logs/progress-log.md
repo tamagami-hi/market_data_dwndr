@@ -14,6 +14,32 @@ Newest first. One entry per working session.
 
 ---
 
+## 2026-07-21 — Frontend built + algo_engine cross-verification
+
+**Done** (all on `ai-dev/made`, pushed batch-by-batch)
+- **Cross-verified** the Python ports against the `algo_engine` Rust source; confirmed
+  parity for the ATM filter, Greek normalization, max-pain/PCR, reconnect policy, and
+  bin export; fixed 3 gaps in `reconstruct/` (365.25-day year, intrinsic-value
+  tolerance, VIX fallback IV). See [[change-log]].
+- **Backend Broadcaster** (`app/capture/broadcaster.py`) — reconstructs IV/Greeks and
+  pushes `MarketHeader`/`OptionGrid` (market-data), `StockBoard` (stocks),
+  `CaptureStatus` (capture-status), `Heartbeat` (session); wired into the engine loop.
+- **Next.js 16 frontend** under `frontend/` (React 19, Tailwind v4), ported from
+  `algo_engine/frontend_stack` and trimmed to capture-only:
+  - `lib/` — per-topic WebSocket connection (reconnect/backoff), envelope types, hooks,
+    en-IN number formatting.
+  - `/monitor` — per-underlying health, frames, file size, 1 Hz heartbeat, globals, log.
+  - `/option-chain` — `OptionChainTable` with reconstructed IV/Greeks, spot/ATM/max-pain
+    markers, index selector, keyframe + delta patching.
+  - `/stocks` — F&O board matrix (spot + 3 futures) with live/daily calendar spreads.
+  - `next build` (Turbopack) + `eslint` (flat config) both clean.
+- Backend: 139 pytest tests green; ruff clean.
+
+**Follow-ups**
+- Live end-to-end validation against real Kite credentials.
+
+---
+
 ## 2026-07-21 — Phase 7: Reconstruction + hardening (project build complete)
 
 **Done** (all on `ai-dev/made`, pushed batch-by-batch)

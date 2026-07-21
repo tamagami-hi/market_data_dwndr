@@ -34,7 +34,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 Batches:
 - [x] Backend skeleton: `backend/pyproject.toml`, `app/main.py` (FastAPI + `/health`), `app/config.py` (pydantic-settings).
 - [x] `.env.example` + `.gitignore` (`.env`, `MARKET_DATA/`, `.venv`, `node_modules/`, `__pycache__/`). See [[config-and-env]].
-- [ ] Frontend skeleton: Next.js app (trimmed from `algo_engine/frontend_stack`). *(deferred to Phase 4 per handoff — "frontend can wait")*
+- [x] Frontend skeleton: Next.js app (trimmed from `algo_engine/frontend_stack`). *(built in Phase 4 follow-up — see `frontend/`)*
 - [x] Vault present: `docs/` + `logs/` + `repo-map/` (this repo).
 
 **Deliverables:** `backend/`, `frontend/` skeletons, `.env.example`, `.gitignore`.
@@ -109,12 +109,15 @@ Batches:
 Batches:
 - [x] `ws/protocol.py` + `ws/routes.py` — tagged envelope; topics `market-data`, `stocks`, `capture-status`, `session`, `historical-jobs` ([[websocket-protocol]]).
 - [x] `capture/monitor.py` — per-underlying + global `CaptureStatus` metrics.
-- [x] Frontend `/monitor` dashboard (self-contained, served at `/monitor`); reused `/option-chain`, `/stocks` deferred ([[frontend]]).
+- [x] Frontend `/monitor` dashboard + reused `/option-chain`, `/stocks` ([[frontend]]).
 
-> The `/monitor` dashboard is a dependency-free HTML/JS page served by FastAPI that
-> consumes `/ws/capture-status` + `/ws/session` live (per-underlying cards + global
-> panel + log). The full Next.js port of the reused algo_engine `/option-chain` and
-> `/stocks` pages is deferred — those components live in `algo_engine`, not this repo.
+> Two frontends exist: (1) a dependency-free `/monitor` HTML page served by FastAPI
+> (zero build), and (2) a full **Next.js 16 + React 19 + Tailwind v4** app under
+> `frontend/` with `/monitor`, `/option-chain` (reconstructed IV/Greeks, ATM/max-pain
+> markers, keyframe+delta), and `/stocks` (board + calendar spreads). The Next.js app
+> was ported from `algo_engine/frontend_stack` and wired to the backend Broadcaster
+> (`app/capture/broadcaster.py`) which reconstructs Greeks on the fly. `next build` and
+> `eslint` are clean.
 
 **Deliverables:** WS protocol/routes, monitor metrics, Capture Monitor page.
 **DoD:** dashboard shows per-underlying WS health, frames-written, file size, 1 Hz heartbeat, disk usage — updating live.
