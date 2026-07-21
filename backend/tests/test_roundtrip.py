@@ -34,7 +34,7 @@ def _assert_instr_identical(got, expected):
         assert a.dtype == b.dtype, col.name
         np.testing.assert_array_equal(a, b, err_msg=col.name)
     assert len(got.depth) == len(expected.depth)
-    for lvl, (g, e) in enumerate(zip(got.depth, expected.depth)):
+    for lvl, (g, e) in enumerate(zip(got.depth, expected.depth, strict=True)):
         for col in DEPTH_LEVEL_COLUMNS:
             assert g[col.name].dtype == e[col.name].dtype, (lvl, col.name)
             np.testing.assert_array_equal(g[col.name], e[col.name], err_msg=f"{lvl}:{col.name}")
@@ -97,7 +97,7 @@ def test_stock_round_trip_identical(tmp_path):
             got = r.frame(i)
             assert got.timestamp_unix_ms == expected.timestamp_unix_ms
             assert got.sequence == expected.sequence
-            for leg_got, leg_exp in zip(got.legs(), expected.legs()):
+            for leg_got, leg_exp in zip(got.legs(), expected.legs(), strict=True):
                 _assert_instr_identical(leg_got, leg_exp)
 
 
