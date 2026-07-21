@@ -38,6 +38,30 @@ class Settings(BaseSettings):
     kite_api_secret: str = Field(..., description="Kite Connect app secret")
     market_data_path: Path = Field(..., description="Output root for captured data")
 
+    # --- automated-login credentials (seeded from env; needed only to log in) ---
+    # algo_engine stores these encrypted in Postgres; here they come from the env so a
+    # single `md-login` run can complete the flow without a browser.
+    kite_user_id: str | None = Field(default=None, description="Zerodha user id, e.g. AB1234")
+    kite_password: str | None = Field(default=None, description="Zerodha login password")
+    kite_totp_secret: str | None = Field(
+        default=None,
+        description="Base32 TOTP secret. If unset, the TOTP is prompted from the terminal.",
+    )
+    risk_free_rate: float | None = Field(
+        default=None,
+        description="10-yr bond yield (decimal) stamped into headers; prompted if unset.",
+    )
+
+    # --- egress control (Kite requires a whitelisted static IP from Apr 2026) ---
+    # Bind outbound Kite calls to this source address (the host's static IP), and/or
+    # route them through a proxy that egresses from the static IP.
+    kite_static_ip: str | None = Field(
+        default=None, description="Local source IP to bind outbound Kite requests to"
+    )
+    kite_http_proxy: str | None = Field(
+        default=None, description="Optional proxy URL for Kite egress (e.g. http://host:port)"
+    )
+
     # --- optional, with locked defaults ---
     indices: list[str] = Field(default_factory=lambda: list(DEFAULT_INDICES))
     stock_universe: str = Field(default="all", description="'all' or a comma allow-list")

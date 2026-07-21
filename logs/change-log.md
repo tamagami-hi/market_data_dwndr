@@ -93,3 +93,18 @@ Design decisions and notable changes. Newest first.
   columns (algo_engine persists derived Greeks); custom struct packing instead of bincode;
   per-index ATM step (50/100) instead of a hardcoded 50. All match the market_data_dwndr
   locked specs.
+
+
+## 2026-07-21 — Automated Kite login (env-seeded creds + terminal TOTP)
+- Added a headless Kite login (`app/kite/login.py`, `md-login` entrypoint) that
+  automates algo_engine's OAuth flow: `/api/login` → `/api/twofa` (TOTP) →
+  `/connect/login` redirect → `request_token` → `/session/token` exchange, persisting
+  today's `access_token` + bond yield to session state.
+- Credentials are **seeded from the environment** (`KITE_USER_ID`, `KITE_PASSWORD`,
+  optional `KITE_TOTP_SECRET`, `RISK_FREE_RATE`) rather than a database (algo_engine
+  keeps them encrypted in Postgres). The **TOTP is taken from the terminal** when no
+  secret is configured; otherwise it is generated via `pyotp`.
+- Outbound Kite calls go through one client that can bind a **static source IP**
+  (`KITE_STATIC_IP`) or use a proxy (`KITE_HTTP_PROXY`) to meet Kite's static-IP
+  whitelist requirement (Apr 2026).
+- Only `backend/.env.example` is maintained in-repo (real `.env` provided at deploy).

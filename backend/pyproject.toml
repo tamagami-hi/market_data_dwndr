@@ -18,7 +18,11 @@ dependencies = [
     "httpx>=0.27",
     "kiteconnect>=5.0",
     "aiolimiter>=1.1",
+    "pyotp>=2.9",
 ]
+
+[project.scripts]
+md-login = "app.kite.login:main"
 
 [project.optional-dependencies]
 dev = [

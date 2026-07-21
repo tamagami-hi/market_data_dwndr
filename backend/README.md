@@ -13,6 +13,20 @@ uv pip install -e ".[dev]"   # runtime + dev deps
 cp .env.example .env         # then fill in KITE_API_KEY / SECRET / MARKET_DATA_PATH
 ```
 
+## Login (automated, TOTP from terminal)
+
+Kite creds are seeded from `.env` (`KITE_USER_ID`, `KITE_PASSWORD`, optional
+`KITE_TOTP_SECRET`). Run the headless login once per day to obtain and persist the
+`access_token`:
+
+```bash
+md-login                    # prompts for TOTP (and bond yield if RISK_FREE_RATE unset)
+md-login --rate 0.0691      # or: python -m app.kite.login
+```
+
+Outbound Kite calls bind `KITE_STATIC_IP` / use `KITE_HTTP_PROXY` when set, to satisfy
+Kite's static-IP whitelist (Apr 2026). See `docs/60-operations/config-and-env.md`.
+
 ## Run
 
 ```bash

@@ -10,9 +10,11 @@ related: ["[[operations-runbook]]", "[[config-and-env]]", "[[failure-modes]]", "
 
 # Session State & Resume
 
-The two daily values that are **not** in `.env` — the Kite `access_token` and the
-**10-yr bond yield** — are entered at login and must survive a mid-day restart. They
-are held in a small persisted **session-state** file.
+The daily `access_token` (and the **10-yr bond yield** stamped into headers) must
+survive a mid-day restart, so they are held in a small persisted **session-state**
+file. The automated login (`md-login`, see [[config-and-env]]) writes this file: the
+token comes from the login exchange, and the bond yield from `RISK_FREE_RATE` (or a
+terminal prompt).
 
 ## Location & shape
 
@@ -29,7 +31,7 @@ are held in a small persisted **session-state** file.
 
 ## Rules
 
-- Written once at morning login; read on every (re)start.
+- Written once by `md-login` at the start of the day; read on every (re)start.
 - The **bond yield** from here is stamped into every file header for the day
   ([[bin-structure-spec]]) so each `.bin` is self-contained.
 - On restart, if a session file exists for today with a valid token, **reuse it** — do
