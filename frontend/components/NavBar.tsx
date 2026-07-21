@@ -3,10 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import SessionBadge from "@/components/SessionBadge";
+
 const LINKS = [
   { href: "/monitor", label: "Capture Monitor" },
   { href: "/option-chain", label: "Option Chain" },
   { href: "/stocks", label: "Stocks" },
+  { href: "/login", label: "Login" },
 ];
 
 export default function NavBar() {
@@ -32,6 +35,9 @@ export default function NavBar() {
           </Link>
         );
       })}
+      <span className="ml-auto">
+        <SessionBadge />
+      </span>
     </nav>
   );
 }

@@ -1,12 +1,14 @@
 """FastAPI application entrypoint.
 
-Phase 0 scaffold: exposes ``/health`` so the service is runnable
-(``uvicorn app.main:app``). Later phases wire in Kite auth, capture, WebSocket
-routes, and the historical downloader.
+Serves ``/health``, the self-contained ``/monitor`` dashboard, the ``/api/auth`` routes
+(session status + automated login), and the ``/ws/{topic}`` WebSocket topics. At startup
+it builds the session service and reports whether today's Kite session already exists
+(resume) so a mid-day restart doesn't force a re-login.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,17 +17,50 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
 from app import __version__
+from app.api.auth import create_auth_router
+from app.logging_config import configure_logging
 from app.ws.routes import ConnectionManager, create_ws_router
 
+logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _init_session_service(app: FastAPI) -> None:
+    """Build the session service from env; report resume state. Never raises."""
+    try:
+        from app.config import get_settings
+        from app.session_service import SessionService
+
+        settings = get_settings()
+        configure_logging(settings.log_level)
+        service = SessionService(settings)
+        app.state.settings = settings
+        app.state.session_service = service
+
+        status = service.status()
+        if status["authenticated"]:
+            logger.info(
+                "resumed Kite session for %s (market phase: %s)",
+                status["trading_date"],
+                status["market_phase"],
+            )
+        else:
+            logger.info(
+                "no Kite session for %s yet — run `md-login` or POST /api/auth/login",
+                status["trading_date"],
+            )
+    except Exception as exc:  # noqa: BLE001 - unconfigured env shouldn't crash the app
+        app.state.settings = None
+        app.state.session_service = None
+        logger.warning("session service not initialised (backend unconfigured): %s", exc)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Application lifespan. Capture/scheduler wiring lands in later phases."""
-    # Startup hooks (session-state load, scheduler) will go here (Phase 3/5).
+    """Application lifespan: resume today's session; wire capture in later."""
+    _init_session_service(app)
     yield
-    # Shutdown hooks (flush writers, EOD sweep) will go here (Phase 5).
+    # Shutdown hooks (flush writers, EOD sweep) are driven by the scheduler (Phase 5).
 
 
 app = FastAPI(
@@ -36,10 +71,12 @@ app = FastAPI(
 )
 
 # WebSocket broadcast hub (topics: market-data, stocks, capture-status, session,
-# historical-jobs). The capture engine / monitor push frames here in later phases.
+# historical-jobs). The capture engine / monitor / broadcaster push frames here.
 ws_hub = ConnectionManager()
 app.state.ws_hub = ws_hub
+app.state.session_service = None
 app.include_router(create_ws_router(ws_hub))
+app.include_router(create_auth_router())
 
 
 @app.get("/health", tags=["ops"])
