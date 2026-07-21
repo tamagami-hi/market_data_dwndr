@@ -14,6 +14,32 @@ Newest first. One entry per working session.
 
 ---
 
+## 2026-07-21 — Env-only ports + CORS + indices parse fix
+
+**Fixed**
+- **`INDICES` parse failure** — pydantic-settings JSON-decoded the `list[str]` field
+  before the split validator ran, so `INDICES=NIFTY,…` raised and `get_settings()`
+  failed (session service never initialised → `/api/auth/login-url` 503). Annotated the
+  field with `NoDecode` so the comma value reaches the validator.
+- **Frontend "cannot connect"** — added `CORSMiddleware` driven by `FRONTEND_URL`
+  ([[config-and-env]]); the frontend now reads the backend origin only from
+  `NEXT_PUBLIC_BACKEND_URL` (no hardcoded `:8000` fallback) and derives both HTTP + WS
+  URLs from it, so WS topics connect to the right port.
+
+**Env-only ports (no hardcoded/default ports anywhere)**
+- `HTTP_PORT` is now **required** (removed the `8000` default); added `HTTP_HOST` and
+  `FRONTEND_URL`. New `md-serve` launcher (`app/server.py`) runs uvicorn on the env port.
+- Frontend port stays env-driven via `PORT` (npm scripts); backend URL via
+  `NEXT_PUBLIC_BACKEND_URL`.
+- Updated `backend/.env.example` + `frontend/.env.local.example` + docs.
+
+**Verified** end-to-end (subprocess smoke): indices parse, `login-url` 200, CORS
+`Access-Control-Allow-Origin` for the frontend origin, and `/ws/{session,capture-status,
+market-data}` connect + receive the welcome. 185 backend tests green, ruff clean;
+`next build` + `eslint` clean.
+
+---
+
 ## 2026-07-21 — Live capture bootstrap (end-to-end runnable)
 
 **Done** (on `ai-dev/made`, pushed batch-by-batch)

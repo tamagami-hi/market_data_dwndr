@@ -32,7 +32,15 @@ Configuration is via **pydantic-settings** reading a `.env` file (typed, validat
 | `MARKET_OPEN` / `MARKET_CLOSE` | – | `09:15` / `15:30` | Session window (IST) |
 | `TIMEZONE` | – | `Asia/Kolkata` | Exchange timezone |
 | `LOG_LEVEL` | – | `INFO` | Logging verbosity |
-| `HTTP_PORT` | – | `8000` | FastAPI port |
+| `HTTP_HOST` | – | `0.0.0.0` | Backend bind host |
+| `HTTP_PORT` | ✅ | `9000` | Backend HTTP/WS port — **no default**, env-only |
+| `FRONTEND_URL` | ✅ | `http://localhost:3000` | Frontend origin(s) for CORS (comma-separate for many) |
+
+> **Ports are env-only.** `HTTP_PORT` has no code default; start the backend with
+> `md-serve` (reads `HTTP_PORT`/`HTTP_HOST`). `FRONTEND_URL` sets the CORS allow-list and
+> carries the frontend port, so no port is hardcoded anywhere. On the frontend side,
+> `NEXT_PUBLIC_BACKEND_URL` is the single source for both HTTP and WebSocket URLs and must
+> point at `http(s)://<host>:<HTTP_PORT>`.
 
 > The `access_token` is **not** in `.env` — it is obtained by `md-login` and kept in
 > session state ([[session-state]]), because it changes daily. The login *credentials*

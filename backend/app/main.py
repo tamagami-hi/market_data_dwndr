@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 from app import __version__
@@ -24,6 +25,16 @@ from app.ws.routes import ConnectionManager, create_ws_router
 
 logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def cors_origins() -> list[str]:
+    """Allowed browser origins from env (``FRONTEND_URL``); empty if unconfigured."""
+    try:
+        from app.config import get_settings
+
+        return get_settings().cors_origins
+    except Exception:  # noqa: BLE001 - env-less (e.g. tests) -> no cross-origin allowed
+        return []
 
 
 def _init_session_service(app: FastAPI) -> None:
@@ -82,6 +93,18 @@ ws_hub = ConnectionManager()
 app.state.ws_hub = ws_hub
 app.state.session_service = None
 app.state.capture_controller = None
+
+# CORS: the frontend runs on a different origin/port, so the browser needs the backend
+# to allow its origin. Origins come from FRONTEND_URL in the environment (no hardcoded
+# ports). WebSocket connections are not subject to CORS.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(create_ws_router(ws_hub))
 app.include_router(create_auth_router())
 app.include_router(create_capture_router())

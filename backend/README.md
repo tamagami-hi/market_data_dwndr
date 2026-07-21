@@ -29,10 +29,16 @@ Kite's static-IP whitelist (Apr 2026). See `docs/60-operations/config-and-env.md
 
 ## Run
 
+The bind host + port come **only** from `.env` (`HTTP_HOST`, `HTTP_PORT`) — there is no
+hardcoded/fallback port. Start with `md-serve` so the env port is used:
+
 ```bash
-uvicorn app.main:app --reload --port 8000
-# GET http://localhost:8000/health -> {"status": "ok", ...}
+md-serve                     # or: python -m app.server  (reads HTTP_PORT from .env)
+# GET http://<host>:<HTTP_PORT>/health -> {"status": "ok", ...}
 ```
+
+`FRONTEND_URL` in `.env` configures CORS (the browser origin[s] allowed to call the API);
+it must match the frontend's `NEXT_PUBLIC_BACKEND_URL` target.
 
 ## Capture
 
@@ -78,6 +84,6 @@ app/
   static/          self-contained Capture Monitor dashboard (/monitor)
 ```
 
-131 unit/integration tests (`pytest`), all green; `ruff` clean. Live Kite WS/REST paths
+185 unit/integration tests (`pytest`), all green; `ruff` clean. Live Kite WS/REST paths
 are covered with mocks/fixtures + a synthetic tick stream (no credentials needed to run
 the suite).
