@@ -107,9 +107,14 @@ Batches:
 **Depends on:** Phase 3.
 
 Batches:
-- [ ] `ws/protocol.py` + `ws/routes.py` — tagged envelope; topics `market-data`, `stocks`, `capture-status`, `session`, `historical-jobs` ([[websocket-protocol]]).
-- [ ] `capture/monitor.py` — per-underlying + global `CaptureStatus` metrics.
-- [ ] Frontend `/monitor` dashboard + reused `/option-chain`, `/stocks` ([[frontend]]).
+- [x] `ws/protocol.py` + `ws/routes.py` — tagged envelope; topics `market-data`, `stocks`, `capture-status`, `session`, `historical-jobs` ([[websocket-protocol]]).
+- [x] `capture/monitor.py` — per-underlying + global `CaptureStatus` metrics.
+- [x] Frontend `/monitor` dashboard (self-contained, served at `/monitor`); reused `/option-chain`, `/stocks` deferred ([[frontend]]).
+
+> The `/monitor` dashboard is a dependency-free HTML/JS page served by FastAPI that
+> consumes `/ws/capture-status` + `/ws/session` live (per-underlying cards + global
+> panel + log). The full Next.js port of the reused algo_engine `/option-chain` and
+> `/stocks` pages is deferred — those components live in `algo_engine`, not this repo.
 
 **Deliverables:** WS protocol/routes, monitor metrics, Capture Monitor page.
 **DoD:** dashboard shows per-underlying WS health, frames-written, file size, 1 Hz heartbeat, disk usage — updating live.

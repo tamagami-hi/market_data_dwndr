@@ -14,6 +14,32 @@ Newest first. One entry per working session.
 
 ---
 
+## 2026-07-21 — Phase 4: Capture Monitor (WS protocol + monitor + dashboard)
+
+**Done** (all on `ai-dev/made`, pushed batch-by-batch)
+- `ws/protocol.py` — tagged-envelope `{type,payload}` builders: `MarketHeader`,
+  `OptionGrid` (keyframe), `OptionGridDelta` (sparse changed-strike patch),
+  `CaptureStatus`, `Heartbeat`, `SessionStatus`, `Log`, `HistoricalJobUpdate`;
+  paise→rupees for display; `GridBlock` from `RawBlock`.
+- `ws/routes.py` — `ConnectionManager` broadcast hub + `/ws/{topic}` endpoints with
+  `?token=` auth (topics: market-data, stocks, capture-status, session,
+  historical-jobs); wired into `app.main` (`app.state.ws_hub`).
+- `capture/monitor.py` — `CaptureMonitor`: per-underlying (connected, last tick,
+  frames, file bytes, 1 Hz heartbeat, unmatched) + global (unique tokens, fps, disk
+  usage); writer thread now records `last_write_ms`.
+- `app/static/monitor.html` + `/monitor` route — self-contained live dashboard
+  (no build step) consuming `/ws/capture-status` and `/ws/session`.
+- 87 pytest tests (green) + ruff clean.
+
+**Deferred**
+- Full Next.js port of reused algo_engine `/option-chain` and `/stocks` pages (those
+  components are not in this repo).
+
+**Next**
+- **Phase 5: EOD compression + rollover + session-state** ([[build-guide]]).
+
+---
+
 ## 2026-07-21 — Phase 3: Live capture
 
 **Done** (all on `ai-dev/made`, pushed batch-by-batch)
