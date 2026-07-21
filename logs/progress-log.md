@@ -14,6 +14,27 @@ Newest first. One entry per working session.
 
 ---
 
+## 2026-07-21 — Auth wiring + professionalized vault
+
+**Done** (on `ai-dev/made`, pushed)
+- **`/api/auth`** routes (`app/api/auth.py`) + **`SessionService`** (`app/session_service.py`):
+  `GET /api/auth/status`, `POST /api/auth/login` (TOTP or browser `request_token`),
+  `GET /api/auth/login-url`; degrade gracefully when the backend is unconfigured.
+- **Startup resume** — `main.py` lifespan builds the session service and logs whether
+  today's Kite session already exists (no forced re-login on mid-day restart).
+- **Frontend login UX** — `lib/api.ts`, `SessionBadge` in the nav, and an `/login` page
+  (TOTP + bond-yield form with a browser-OAuth fallback).
+- **Vault** — rewrote `repo-map/` to professional standard: dashboard [[Home]], new
+  [[Code-Map]] (docs ↔ source) and [[Build-Status]] dashboard, enriched every area MOC
+  with status + "implemented in" code pointers, refreshed [[vault-guide]] and [[Tags]].
+- Backend **159 tests green, ruff clean**; frontend `next build` + `eslint` clean.
+
+**Follow-ups**
+- Live end-to-end against real Kite credentials + whitelisted static IP.
+- Optional: docker-compose for backend + frontend.
+
+---
+
 ## 2026-07-21 — Frontend built + algo_engine cross-verification
 
 **Done** (all on `ai-dev/made`, pushed batch-by-batch)

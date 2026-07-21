@@ -19,11 +19,12 @@ color nodes by area/type/status.
 
 ## `type/*` — kind of note
 `type/overview` · `type/plan` · `type/spec` · `type/decision` · `type/research` ·
-`type/reference` · `type/moc` · `type/log`
+`type/reference` · `type/moc` · `type/log` · `type/code-map` (docs↔source) ·
+`type/dashboard` (status)
 
 ## `status/*` — maturity
 `status/locked` (agreed, build against it) · `status/living` (updated over time) ·
-`status/draft`
+`status/done` (spec implemented — see [[Code-Map]]) · `status/draft`
 
 ## `log/*` — log stream
 `log/progress` · `log/change`

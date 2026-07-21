@@ -5,13 +5,19 @@ type: moc
 status: living
 tags: [area/map, type/moc, area/logs]
 up: "[[Home]]"
+related: ["[[Decisions-MOC]]", "[[Build-Status]]", "[[build-guide]]"]
 ---
 
 # 🗺️ Logs — MOC
 
-- [[progress-log]] — session-by-session progress
-- [[change-log]] — decisions & notable changes
-- [[next-session-handoff]] — copy-paste prompt to resume in a fresh session
-- [[README]] (logs) — logging convention
+> [!note] The running record: what happened, what changed, and how to resume.
 
-Related: [[Decisions-MOC]], [[build-guide]]
+## Notes
+| Note | Purpose | Status |
+|------|---------|:------:|
+| [[progress-log]] | session-by-session progress (newest first) | living |
+| [[change-log]] | decisions & notable changes | living |
+| [[next-session-handoff]] | copy-paste prompt to resume in a fresh session | living |
+| [[logs/README\|README (logs)]] | logging convention for this folder | living |
+
+Related: [[Decisions-MOC]] · [[Build-Status]] · [[build-guide]]
