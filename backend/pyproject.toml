@@ -23,6 +23,7 @@ dependencies = [
 
 [project.scripts]
 md-login = "app.kite.login:main"
+md-capture = "app.capture.run:main"
 
 [project.optional-dependencies]
 dev = [
