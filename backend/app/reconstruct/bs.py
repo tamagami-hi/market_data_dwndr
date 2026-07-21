@@ -13,6 +13,12 @@ from dataclasses import dataclass
 CALL = "CE"
 PUT = "PE"
 
+# Intrinsic-value guard tolerance (algo_engine bs_models.rs parity): a price is only
+# rejected as below-intrinsic when it undershoots by more than max(0.5% , Rs 0.50).
+# This keeps noisy-but-usable ticks near the no-arbitrage boundary.
+INTRINSIC_ABS_EPSILON = 0.50
+INTRINSIC_REL_EPSILON = 0.005
+
 _SQRT_2PI = math.sqrt(2.0 * math.pi)
 
 
@@ -22,6 +28,29 @@ def _norm_pdf(x: float) -> float:
 
 def _norm_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _below_intrinsic(price: float, intrinsic: float) -> bool:
+    """True if ``price`` violates the intrinsic floor beyond tolerance (arbitrage)."""
+    if intrinsic <= 0.0:
+        return False
+    tolerance = max(intrinsic * INTRINSIC_REL_EPSILON, INTRINSIC_ABS_EPSILON)
+    return price < intrinsic - tolerance
+
+
+def is_below_intrinsic(
+    price: float, spot: float, strike: float, t: float, r: float, option: str
+) -> bool:
+    """Public guard: is ``price`` below intrinsic value beyond tolerance?
+
+    Used to decide whether to zero-out a strike (arbitrage / bad tick) vs. attempt an
+    IV solve and, on failure, fall back to a VIX-derived IV (algo_engine parity).
+    """
+    if price <= 0 or spot <= 0 or strike <= 0 or t <= 0:
+        return False
+    disc = math.exp(-r * t)
+    intrinsic = max(spot - strike * disc, 0.0) if option == CALL else max(strike * disc - spot, 0.0)
+    return _below_intrinsic(price, intrinsic)
 
 
 def d1_d2(spot: float, strike: float, t: float, r: float, sigma: float) -> tuple[float, float]:
@@ -89,7 +118,7 @@ def implied_vol(
         return None
     disc = math.exp(-r * t)
     intrinsic = max(spot - strike * disc, 0.0) if option == CALL else max(strike * disc - spot, 0.0)
-    if price < intrinsic - tol:
+    if _below_intrinsic(price, intrinsic):
         return None
 
     sigma = 0.2  # seed

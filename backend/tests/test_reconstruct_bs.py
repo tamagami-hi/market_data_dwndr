@@ -48,10 +48,55 @@ def test_implied_vol_below_intrinsic_returns_none():
 
 def test_year_fraction_and_expiry_ts():
     exp = expiry_timestamp_ms("2026-07-24")
-    # ~3 days before expiry
+    # ~3 days before expiry; algo_engine uses a 365.25-day year
     now = exp - 3 * 24 * 3600 * 1000
     t = year_fraction(now, exp)
-    assert abs(t - 3 / 365) < 1e-6
+    assert abs(t - 3 / 365.25) < 1e-6
+
+
+def test_year_fraction_floors_after_expiry():
+    from app.reconstruct.greeks import MIN_MATURITY_YEARS
+
+    exp = expiry_timestamp_ms("2026-07-24")
+    assert year_fraction(exp + 10_000, exp) == MIN_MATURITY_YEARS  # past expiry -> floor
+
+
+def test_is_below_intrinsic_tolerance():
+    # Deep ITM call: intrinsic ~ spot - K e^{-rT}.
+    spot, strike, t, r = 25000.0, 24000.0, 0.05, 0.0691
+    disc = math.exp(-r * t)
+    intrinsic = spot - strike * disc
+    # 25 paise under intrinsic -> within Rs 0.50 tolerance -> NOT flagged.
+    assert bs.is_below_intrinsic(intrinsic - 0.25, spot, strike, t, r, bs.CALL) is False
+    # A gross undershoot IS flagged (arbitrage / bad tick).
+    assert bs.is_below_intrinsic(intrinsic - 50.0, spot, strike, t, r, bs.CALL) is True
+
+
+def test_reconstruct_uses_vix_fallback_iv_when_solve_fails():
+    # A call priced above spot is unsolvable (but not below intrinsic), so the
+    # VIX-derived fallback IV should be applied instead of leaving NaN.
+    strikes = np.array([2_000_000], dtype="<i8")  # strike 20000
+    header = IndexHeader("2026-07-21", "NIFTY", "2026-08-28", 0.0691, strikes)
+    calls = RawBlock.zeros(1)
+    puts = RawBlock.zeros(1)
+    calls.columns["ltp"][0] = 31000 * 100  # 31000 > spot 30000 -> IV solve fails
+    # spot 30000, vix 15.00
+    frame = IndexFrame(1_753_070_400_000, 0, 30000 * 100, 1500, calls, puts)
+    out = reconstruct_greeks(frame, header)
+    assert out["fallback_iv"] is not None
+    assert abs(out["fallback_iv"] - 0.15) < 1e-9  # vix 15.00 / 100
+    assert abs(out["calls"]["iv"][0] - out["fallback_iv"]) < 1e-9  # fallback applied
+
+
+def test_reconstruct_skips_grossly_subintrinsic_no_fallback():
+    # A call far below intrinsic is zeroed (NaN), not given the VIX fallback.
+    strikes = np.array([2_000_000], dtype="<i8")  # strike 20000
+    header = IndexHeader("2026-07-21", "NIFTY", "2026-08-28", 0.0691, strikes)
+    calls = RawBlock.zeros(1)
+    calls.columns["ltp"][0] = 100  # 1.00 rupee for a ~10000-point ITM call
+    frame = IndexFrame(1_753_070_400_000, 0, 30000 * 100, 1500, calls, RawBlock.zeros(1))
+    out = reconstruct_greeks(frame, header)
+    assert math.isnan(out["calls"]["iv"][0])  # below intrinsic -> no IV, no fallback
 
 
 def test_reconstruct_greeks_from_frame_roundtrips_iv():
