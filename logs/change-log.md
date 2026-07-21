@@ -75,3 +75,21 @@ Design decisions and notable changes. Newest first.
 - 1 Hz capture; indices NIFTY/BANKNIFTY/FINNIFTY/SENSEX (no MIDCPNIFTY/BANKEX); full
   F&O stock board; KiteTicker; `.env` api key+secret + daily login. See
   [[decisions-and-open-questions]].
+
+
+## 2026-07-21 — Cross-verified against algo_engine Rust source
+- Cloned `tamagami-hi/algo_engine` and diffed the Python ports against the Rust
+  reference (`oc_maker/table/{filter,assembler}.rs`, `bs_models.rs`, `utils.rs`,
+  `metrics/calculations.rs`, `historical/orchestrator/bin_export.rs`,
+  `stream/ingestion.rs`).
+- **Confirmed parity:** ATM window + nearest-strike-on-tie, per-1% Greek normalization
+  (vega/100, rho/100) + per-day theta (/365), max-pain/PCR aggregation, reconnect policy
+  (5s→300s, 20 attempts, exponential), and header-once + per-date sequence in bin export.
+- **Fixed 3 parity gaps** in `reconstruct/`: time-to-expiry now uses **365.25** days/yr
+  (was 365) with a `1e-5` maturity floor; the IV intrinsic-value guard now uses
+  algo_engine's combined tolerance `max(intrinsic·0.5%, ₹0.50)`; added a **VIX-derived
+  fallback IV** when the solve fails within tolerance.
+- **Intentional (kept) divergences:** `.bin` stores raw only — no IV/Greeks/change_in_oi
+  columns (algo_engine persists derived Greeks); custom struct packing instead of bincode;
+  per-index ATM step (50/100) instead of a hardcoded 50. All match the market_data_dwndr
+  locked specs.
