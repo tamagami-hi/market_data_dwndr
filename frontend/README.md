@@ -23,15 +23,19 @@ npm run dev                          # http://localhost:3000
 
 ### Port
 
-The serving port is env-driven via `PORT` (default `3000`) — the `dev` and `start`
-scripts run `next … -p ${PORT:-3000}`. Set it in the process environment:
+The serving port comes from **`PORT` in `.env.local`** — no port is hardcoded in the
+scripts. `npm run dev` / `npm run start` load `.env.local` via `dotenv-cli`
+(`dotenv -e .env.local -- next …`) so `PORT` takes effect:
 
-```bash
-PORT=4000 npm run dev      # or: PORT=4000 npm run start
+```
+# frontend/.env.local
+NEXT_PUBLIC_BACKEND_URL=http://localhost:9000
+PORT=3000
 ```
 
-`PORT` is a *process* env var (shell / Docker / systemd), separate from
-`NEXT_PUBLIC_BACKEND_URL` in `.env.local`, which only selects the backend to talk to.
+To change the port (e.g. if you hit `EADDRINUSE: address already in use :::3000`,
+which means something is already listening on that port), just edit `PORT` and re-run —
+no code change. You can still override for one run with a shell var: `PORT=3001 npm run dev`.
 
 ## Build / lint
 
