@@ -30,13 +30,22 @@ pytest
 
 ```
 app/
-  main.py        FastAPI app + /health (Phase 0)
-  config.py      pydantic-settings (.env)
-  bin_codec/     BIN read/write/compress (Phase 1)   <- foundation
-  kite/          auth, instruments, ticker, historical (Phase 2/3/6)
-  chain/         option-chain filter/assembler/table (Phase 2/3)
-  stocks/        F&O board discovery + matrix (Phase 2/3)
-  capture/       1 Hz snapshot engine + monitor (Phase 3/4)
-  historical/    backfill jobs (Phase 6)
-  ws/            tagged-envelope WebSocket protocol (Phase 4)
+  main.py          FastAPI app + /health + /monitor + WS hub
+  config.py        pydantic-settings (.env)
+  session.py       daily session-state (access_token + bond yield)
+  logging_config.py
+  bin_codec/       BIN layout/writer/reader/compress (Phase 1)  <- foundation
+  kite/            auth, instruments, ticks, ticker bridge (Phase 2/3)
+  chain/           option-chain config/filter/assembler/table (Phase 2/3)
+  stocks/          F&O board discovery + L5 matrix (Phase 2/3)
+  capture/         1 Hz engine, writer threads, reconnect, monitor (Phase 3/4)
+  ws/              tagged-envelope protocol + topic routes (Phase 4)
+  ops/             calendar, scheduler, EOD sweep, session mgr, retention (Phase 5/7)
+  historical/      intervals/windows/limiter/client/assembly/jobs (Phase 6)
+  reconstruct/     Black-Scholes Greeks/IV, chain metrics, CalSpread spreads (Phase 7)
+  static/          self-contained Capture Monitor dashboard (/monitor)
 ```
+
+131 unit/integration tests (`pytest`), all green; `ruff` clean. Live Kite WS/REST paths
+are covered with mocks/fixtures + a synthetic tick stream (no credentials needed to run
+the suite).

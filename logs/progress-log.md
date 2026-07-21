@@ -14,6 +14,33 @@ Newest first. One entry per working session.
 
 ---
 
+## 2026-07-21 — Phase 7: Reconstruction + hardening (project build complete)
+
+**Done** (all on `ai-dev/made`, pushed batch-by-batch)
+- `reconstruct/bs.py` — Black-Scholes price / Greeks (theta per day, vega+rho per 1%) /
+  implied vol (Newton + bisection). Matches textbook reference within 1e-3; IV
+  round-trips within 1e-4.
+- `reconstruct/greeks.py` — per-strike IV+Greeks for an `IndexFrame` from stored raw +
+  header bond yield; time-to-expiry from `expiry_date`; `change = ltp − ohlc_close`.
+- `reconstruct/metrics.py` — ATM (round to step), max-pain, PCR (OI/volume).
+- `reconstruct/spreads.py` — CalSpread live/daily spread + summary (mean, min/max,
+  mean-deviation, std-dev, p95, mean-reversion probability).
+- `ops/retention.py` — storage report + `.zst` integrity spot-check (decode +
+  monotonic timestamps); `logging_config.py`.
+- 131 pytest tests (green) + ruff clean.
+
+**All phases (0–7) complete.** Backend + BIN codec + Kite discovery + live capture +
+Capture Monitor + EOD/rollover + historical downloader + reconstruction are implemented
+and tested. The only paths not exercisable in CI are the live Kite WS/REST calls (need
+credentials); they are covered by mocks/fixtures + a synthetic tick stream.
+
+**Follow-ups**
+- Full Next.js port of reused algo_engine `/option-chain` and `/stocks` pages (source
+  not in this repo; `/monitor` shipped standalone).
+- Live end-to-end validation once Kite credentials are available.
+
+---
+
 ## 2026-07-21 — Phase 6: Historical downloader
 
 **Done** (all on `ai-dev/made`, pushed batch-by-batch)

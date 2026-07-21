@@ -14,6 +14,19 @@ Design decisions and notable changes. Newest first.
 
 ---
 
+## 2026-07-21 — Phases 2–7 implemented (full backend build)
+- Built the entire capture pipeline on `ai-dev/made` per the locked specs, batch-by-batch
+  with tests + ruff after each: Kite auth/instruments/discovery, chain filter/assembler,
+  stock board, KiteTicker→asyncio bridge, L1/L5 tables + matrix, 1 Hz capture engine +
+  writer threads + reconnect/stall policy, WS tagged-envelope protocol/routes + Capture
+  Monitor, trading calendar/scheduler + EOD sweep + session resume, historical downloader
+  (intervals/windows/limiter/client/assembly/jobs), and reconstruction (BS Greeks/IV,
+  chain metrics, CalSpread spreads).
+- No schema/format decisions changed — specs implemented as-is. Non-schema choices:
+  price sentinels 0 for empty depth; VIX token fans out to all index tables; `/monitor`
+  shipped as a standalone dependency-free dashboard (algo_engine Next.js components are
+  not in this repo, so the reused option-chain/stocks pages are deferred).
+
 ## 2026-07-21 — Build started: Phase 0 scaffold + Phase 1 BIN codec landed
 - Implemented the `backend/` FastAPI scaffold and the full integer-native BIN codec
   (`app/bin_codec/{layout,writer,reader,compress}.py`) exactly per
