@@ -114,14 +114,22 @@ class CaptureEngine:
         bridge,
         stop_event: asyncio.Event,
         interval_s: float = 1.0,
+        broadcaster=None,
     ) -> None:  # pragma: no cover - live loop, integration-only
-        """Consume ticks and snapshot every ``interval_s`` until ``stop_event`` is set."""
+        """Consume ticks and snapshot every ``interval_s`` until ``stop_event`` is set.
+
+        If a ``broadcaster`` is supplied, live state is pushed to the WS topics after
+        each snapshot so the frontend updates at the capture cadence.
+        """
         self.start_writers()
         consumer = asyncio.create_task(self._consume(bridge))
         try:
             while not stop_event.is_set():
                 await asyncio.sleep(interval_s)
-                self.capture_once()
+                ts = self._clock()
+                self.capture_once(ts)
+                if broadcaster is not None:
+                    await broadcaster.broadcast_all(ts)
         finally:
             consumer.cancel()
             self.stop_writers()
