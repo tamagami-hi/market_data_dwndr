@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 
+import CaptureControl from "@/components/CaptureControl";
 import ConnectionDot from "@/components/ConnectionDot";
 import { formatBytes, formatClockTime, formatIndianNumber } from "@/lib/numberFormat";
 import { useTopicEnvelopes } from "@/lib/useTopic";
@@ -53,6 +54,8 @@ export default function MonitorPage() {
           <ConnectionDot connection={sessionConnection} label="session" />
         </div>
       </header>
+
+      <CaptureControl />
 
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Metric label="Tokens" value={globals ? formatIndianNumber(globals.tokens, 0) : "–"} />

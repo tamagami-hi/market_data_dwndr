@@ -14,15 +14,27 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 from app import __version__
 from app.api.auth import create_auth_router
+from app.api.capture import create_capture_router
 from app.logging_config import configure_logging
 from app.ws.routes import ConnectionManager, create_ws_router
 
 logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def cors_origins() -> list[str]:
+    """Allowed browser origins from env (``FRONTEND_URL``); empty if unconfigured."""
+    try:
+        from app.config import get_settings
+
+        return get_settings().cors_origins
+    except Exception:  # noqa: BLE001 - env-less (e.g. tests) -> no cross-origin allowed
+        return []
 
 
 def _init_session_service(app: FastAPI) -> None:
@@ -36,6 +48,10 @@ def _init_session_service(app: FastAPI) -> None:
         service = SessionService(settings)
         app.state.settings = settings
         app.state.session_service = service
+
+        from app.api.capture import CaptureController
+
+        app.state.capture_controller = CaptureController(settings, service, app.state.ws_hub)
 
         status = service.status()
         if status["authenticated"]:
@@ -52,6 +68,7 @@ def _init_session_service(app: FastAPI) -> None:
     except Exception as exc:  # noqa: BLE001 - unconfigured env shouldn't crash the app
         app.state.settings = None
         app.state.session_service = None
+        app.state.capture_controller = None
         logger.warning("session service not initialised (backend unconfigured): %s", exc)
 
 
@@ -75,8 +92,22 @@ app = FastAPI(
 ws_hub = ConnectionManager()
 app.state.ws_hub = ws_hub
 app.state.session_service = None
+app.state.capture_controller = None
+
+# CORS: the frontend runs on a different origin/port, so the browser needs the backend
+# to allow its origin. Origins come from FRONTEND_URL in the environment (no hardcoded
+# ports). WebSocket connections are not subject to CORS.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(create_ws_router(ws_hub))
 app.include_router(create_auth_router())
+app.include_router(create_capture_router())
 
 
 @app.get("/health", tags=["ops"])

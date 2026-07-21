@@ -15,9 +15,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Locked index universe (docs/90-decisions/decisions-and-open-questions.md #9).
 DEFAULT_INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"]
@@ -62,8 +63,22 @@ class Settings(BaseSettings):
         default=None, description="Optional proxy URL for Kite egress (e.g. http://host:port)"
     )
 
+    # --- networking (ports come ONLY from the environment; no hardcoded defaults) ---
+    # ``http_port`` is required so the backend port is configured entirely via .env.
+    http_host: str = Field(default="0.0.0.0", description="Bind host for the backend")
+    http_port: int = Field(..., ge=1, le=65535, description="Backend HTTP/WS port (from env)")
+    # Frontend origin(s) for CORS + allowed WebSocket origins. Contains the frontend
+    # port, so it too is env-only (comma-separate for multiple origins).
+    frontend_url: str = Field(
+        ..., description="Frontend origin(s) for CORS, e.g. http://localhost:3000"
+    )
+
     # --- optional, with locked defaults ---
-    indices: list[str] = Field(default_factory=lambda: list(DEFAULT_INDICES))
+    # NoDecode: keep pydantic-settings from JSON-decoding this list field so the
+    # comma-separated env value (``INDICES=NIFTY,BANKNIFTY,...``) reaches the validator.
+    indices: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: list(DEFAULT_INDICES)
+    )
     stock_universe: str = Field(default="all", description="'all' or a comma allow-list")
     capture_hz: int = Field(default=1, ge=1, description="Snapshot cadence (Hz)")
     zstd_level: int = Field(default=17, ge=1, le=22, description="EOD compression level")
@@ -71,7 +86,6 @@ class Settings(BaseSettings):
     market_close: str = Field(default="15:30", description="Session close (IST, HH:MM)")
     timezone: str = Field(default="Asia/Kolkata", description="Exchange timezone")
     log_level: str = Field(default="INFO")
-    http_port: int = Field(default=8000, ge=1, le=65535)
 
     @field_validator("indices", mode="before")
     @classmethod
@@ -80,6 +94,11 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [item.strip().upper() for item in value.split(",") if item.strip()]
         return value
+
+    @property
+    def cors_origins(self) -> list[str]:
+        """Allowed browser origins, parsed from ``frontend_url`` (comma-separated)."""
+        return [o.strip() for o in self.frontend_url.split(",") if o.strip()]
 
     # --- derived storage paths (docs/20-data-and-storage/storage-layout.md) ---
     @property
