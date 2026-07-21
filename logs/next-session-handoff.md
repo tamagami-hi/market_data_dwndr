@@ -59,4 +59,16 @@ TASK THIS SESSION:
 
 Update logs/progress-log.md (and logs/change-log.md if a decision changes) as you go.
 Stay on branch ai-dev/made. Follow the DoD gates in build-guide.md before advancing.
+
+WORKFLOW (git):
+- Work on `ai-dev/made`; never commit/push to `main` directly.
+- Commit in scoped batches as you complete build-guide tasks.
+- Push `ai-dev/made` to the remote (use the GitHub push tool, not raw `git push`).
+- When Phase 1's Definition-of-Done gates pass, open/update a Pull Request from
+  `ai-dev/made` into `main` for review.
 ```
+
+## Branch workflow
+
+- **`main`** = stable/default baseline. **`ai-dev/made`** = active development.
+- Each phase's work lands on `ai-dev/made` and is reviewed via a PR into `main`.

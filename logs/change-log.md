@@ -14,6 +14,11 @@ Design decisions and notable changes. Newest first.
 
 ---
 
+## 2026-07-21 — Branch setup: main (baseline/default) + ai-dev/made (working)
+- Created `main` as the stable/default baseline and `ai-dev/made` as the active
+  development branch. Phase work lands on `ai-dev/made` and PRs into `main`.
+- Documented the git/PR workflow in [[next-session-handoff]].
+
 ## 2026-07-21 — Gap docs + build guide added; vault completed
 - Added [[build-guide]] (phase/batch checklist with DoD gates), the `60-operations`
   domain ([[operations-runbook]], [[config-and-env]], [[session-state]],
