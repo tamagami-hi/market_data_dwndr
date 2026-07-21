@@ -65,10 +65,13 @@ Batches:
 **Depends on:** Phase 1.
 
 Batches:
-- [ ] `kite/auth.py` — `.env` api_key/secret; login-URL → `request_token` → `access_token`; capture the day's **bond yield**; persist to session state ([[session-state]]).
-- [ ] `kite/instruments.py` — fetch instrument dump per exchange; cache + **daily archive** to `_instruments/` ([[storage-layout]]).
-- [ ] `chain/filter.py` + `chain/assembler.py` — `get_spot_atm(step)`, `option_chain_filter`, per-index table + token map ([[option-chain-selection]]).
-- [ ] `stocks/board.py` — CalSpread discovery (spot + 3 nearest futures) ([[stocks-capture]]).
+- [x] `kite/auth.py` — `.env` api_key/secret; login-URL → `request_token` → `access_token`; capture the day's **bond yield**; persist to session state ([[session-state]]).
+- [x] `kite/instruments.py` — fetch instrument dump per exchange; cache + **daily archive** to `_instruments/` ([[storage-layout]]).
+- [x] `chain/filter.py` + `chain/assembler.py` — `get_spot_atm(step)`, `option_chain_filter`, per-index table + token map ([[option-chain-selection]]).
+- [x] `stocks/board.py` — CalSpread discovery (spot + 3 nearest futures) ([[stocks-capture]]).
+
+> Logic verified with fixtures + mocked Kite (token exchange, instrument CSV). Live
+> end-to-end verification against real Kite credentials is pending (no creds in CI).
 
 **Deliverables:** auth, instruments, chain assembler, stock board modules + tests.
 **DoD:**

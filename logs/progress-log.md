@@ -14,6 +14,33 @@ Newest first. One entry per working session.
 
 ---
 
+## 2026-07-21 — Phase 2: Kite integration + discovery
+
+**Done** (all on `ai-dev/made`, pushed batch-by-batch)
+- `app/session.py` + `kite/auth.py` — login URL, SHA-256 checksum, injectable token
+  exchange, and daily session-state persistence/resume (`_state/session-<date>.json`)
+  holding `access_token` + bond yield.
+- `kite/instruments.py` — instrument-dump parse (typed `Instrument`), injectable HTTP
+  fetcher, and daily archive to `_instruments/<date>/<EXCH>.csv` with cache/refresh.
+- `chain/config.py`, `chain/filter.py`, `chain/assembler.py` — per-index config
+  (locked 4 indices), `get_spot_atm`, `option_chain_filter` (exact ATM ± 50 window,
+  integer paise keys, empty-strike guard), and chain assembly producing the fixed
+  strike vector + `token -> Role` map.
+- `stocks/board.py` — CalSpread board discovery (NFO FUT names matched to NSE EQ
+  spots, indices excluded, 3 nearest futures), `StockHeader` refs, and a
+  `token -> (row, leg)` routing map.
+- 51 pytest tests total (green) + ruff clean.
+
+**Next**
+- **Phase 3: Live capture** — KiteTicker→asyncio bridge, NumPy tables/matrix, 1 Hz
+  snapshot engine + writer threads ([[build-guide]]).
+
+**Blockers**
+- None for coding. Phase 2 DoD's *live* checks (real access_token, real instrument
+  data) need Kite credentials; logic is verified against fixtures/mocks.
+
+---
+
 ## 2026-07-21 — Phase 0 scaffold + Phase 1 BIN codec
 
 **Done**
