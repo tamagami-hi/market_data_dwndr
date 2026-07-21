@@ -7,12 +7,13 @@ routes, and the historical downloader.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from fastapi import FastAPI
 
 from app import __version__
+from app.ws.routes import ConnectionManager, create_ws_router
 
 
 @asynccontextmanager
@@ -29,6 +30,12 @@ app = FastAPI(
     summary="Zerodha Kite market-data downloader (capture only, no trading).",
     lifespan=lifespan,
 )
+
+# WebSocket broadcast hub (topics: market-data, stocks, capture-status, session,
+# historical-jobs). The capture engine / monitor push frames here in later phases.
+ws_hub = ConnectionManager()
+app.state.ws_hub = ws_hub
+app.include_router(create_ws_router(ws_hub))
 
 
 @app.get("/health", tags=["ops"])
