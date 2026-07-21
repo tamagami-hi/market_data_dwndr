@@ -213,7 +213,7 @@ class RawBlock:
     columns: dict[str, np.ndarray]
 
     @classmethod
-    def zeros(cls, n: int) -> "RawBlock":
+    def zeros(cls, n: int) -> RawBlock:
         return cls({c.name: np.zeros(n, dtype=c.dtype) for c in RAW_BLOCK_COLUMNS})
 
     def length(self) -> int:
@@ -239,7 +239,7 @@ class InstrColumns:
     depth: list[dict[str, np.ndarray]]  # length DEPTH_LEVELS; index 0 = best (L1)
 
     @classmethod
-    def zeros(cls, n: int) -> "InstrColumns":
+    def zeros(cls, n: int) -> InstrColumns:
         scalars = {c.name: np.zeros(n, dtype=c.dtype) for c in INSTR_SCALAR_COLUMNS}
         depth = [
             {c.name: np.zeros(n, dtype=c.dtype) for c in DEPTH_LEVEL_COLUMNS}

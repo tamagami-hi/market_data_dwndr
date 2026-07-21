@@ -80,7 +80,7 @@ class _BaseReader:
 
     # -- open / close -------------------------------------------------------- #
 
-    def open(self) -> "_BaseReader":
+    def open(self) -> _BaseReader:
         if self.path.suffix == ".zst":
             from app.bin_codec import compress
 
@@ -106,7 +106,7 @@ class _BaseReader:
             self._fh.close()
             self._fh = None
 
-    def __enter__(self) -> "_BaseReader":
+    def __enter__(self) -> _BaseReader:
         return self.open()
 
     def __exit__(

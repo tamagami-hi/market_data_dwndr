@@ -118,7 +118,7 @@ class _BaseWriter:
         self._fh = None
         self._header_written = False
 
-    def open(self) -> "_BaseWriter":
+    def open(self) -> _BaseWriter:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # 'ab' = append; the header is only emitted when the file is empty.
         self._header_written = self.path.exists() and self.path.stat().st_size > 0
@@ -141,7 +141,7 @@ class _BaseWriter:
             self._fh.close()
             self._fh = None
 
-    def __enter__(self) -> "_BaseWriter":
+    def __enter__(self) -> _BaseWriter:
         return self.open()
 
     def __exit__(
