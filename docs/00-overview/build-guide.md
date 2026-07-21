@@ -86,9 +86,13 @@ Batches:
 **Depends on:** Phases 1–2.
 
 Batches:
-- [ ] `kite/ticker.py` — KiteTicker → `asyncio.Queue` bridge; `full` mode subscribe (~1,600 tokens, one connection).
-- [ ] `chain/table.py` + `stocks/matrix.py` — NumPy integer tables (index L1) and stock matrix (L5); O(1) token→index apply; unmatched counter.
-- [ ] `capture/engine.py` — 1 Hz snapshot loop; per-file writer threads; reconnect/backoff + stall detection ([[live-data-pipeline]]).
+- [x] `kite/ticker.py` — KiteTicker → `asyncio.Queue` bridge; `full` mode subscribe (~1,600 tokens, one connection). (+ `kite/ticks.py` field helpers)
+- [x] `chain/table.py` + `stocks/matrix.py` — NumPy integer tables (index L1) and stock matrix (L5); O(1) token→index apply; unmatched counter.
+- [x] `capture/engine.py` — 1 Hz snapshot loop; per-file writer threads; reconnect/backoff + stall detection ([[live-data-pipeline]]). (+ `capture/{writer_thread,reconnect}.py`)
+
+> Deterministic verification via synthetic tick batches: apply → 1 Hz snapshot → `.bin`
+> grows one frame/capture → reader replays; VIX fans out to all indices; L1/L5 depth
+> confirmed in written frames. Live feed end-to-end needs Kite credentials.
 
 **Deliverables:** ticker bridge, tables/matrix, capture engine + writer wiring.
 **DoD:**

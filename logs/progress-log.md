@@ -14,6 +14,31 @@ Newest first. One entry per working session.
 
 ---
 
+## 2026-07-21 — Phase 3: Live capture
+
+**Done** (all on `ai-dev/made`, pushed batch-by-batch)
+- `kite/ticks.py` + `kite/ticker.py` — tick-field extraction (rupees→paise, OHLC,
+  L1/L5 depth) and a KiteTicker→`asyncio.Queue` bridge (thread callbacks bridged with
+  `call_soon_threadsafe`, `full`-mode subscribe on connect, overflow drops oldest).
+- `chain/table.py` (`IndexTable`, L1) + `stocks/matrix.py` (`StockMatrix`, L5) —
+  in-place O(1) token→index apply, unmatched counter, copy-on-snapshot to
+  `IndexFrame`/`StockFrame`.
+- `capture/writer_thread.py` (thread-per-file), `capture/reconnect.py`
+  (`ReconnectPolicy` 5s→300s/20 attempts + `StallDetector` 30s), `capture/engine.py`
+  (`CaptureEngine`: multi-owner routing so VIX fans out to every index, `capture_once`
+  1 Hz snapshot→writer queues, async run loop).
+- 69 pytest tests (green) + ruff clean. End-to-end (synthetic): apply→snapshot→`.bin`
+  grows→reader replays both index (L1) and stock (L5) files.
+
+**Next**
+- **Phase 4: Interactive frontend (Capture Monitor)** — WS tagged-envelope protocol,
+  `CaptureStatus` metrics, dashboard ([[build-guide]]).
+
+**Blockers**
+- None for coding. Live WS end-to-end needs Kite credentials.
+
+---
+
 ## 2026-07-21 — Phase 2: Kite integration + discovery
 
 **Done** (all on `ai-dev/made`, pushed batch-by-batch)
