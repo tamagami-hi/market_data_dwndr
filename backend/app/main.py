@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse
 
 from app import __version__
 from app.api.auth import create_auth_router
+from app.api.capture import create_capture_router
 from app.logging_config import configure_logging
 from app.ws.routes import ConnectionManager, create_ws_router
 
@@ -37,6 +38,10 @@ def _init_session_service(app: FastAPI) -> None:
         app.state.settings = settings
         app.state.session_service = service
 
+        from app.api.capture import CaptureController
+
+        app.state.capture_controller = CaptureController(settings, service, app.state.ws_hub)
+
         status = service.status()
         if status["authenticated"]:
             logger.info(
@@ -52,6 +57,7 @@ def _init_session_service(app: FastAPI) -> None:
     except Exception as exc:  # noqa: BLE001 - unconfigured env shouldn't crash the app
         app.state.settings = None
         app.state.session_service = None
+        app.state.capture_controller = None
         logger.warning("session service not initialised (backend unconfigured): %s", exc)
 
 
@@ -75,8 +81,10 @@ app = FastAPI(
 ws_hub = ConnectionManager()
 app.state.ws_hub = ws_hub
 app.state.session_service = None
+app.state.capture_controller = None
 app.include_router(create_ws_router(ws_hub))
 app.include_router(create_auth_router())
+app.include_router(create_capture_router())
 
 
 @app.get("/health", tags=["ops"])
