@@ -19,10 +19,14 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from app.bin_codec.layout import FutureRef, StockRef
-from app.kite.instruments import Instrument
+from app.kite.instruments import Instrument, InstrumentStore
 
 MAX_FUTURES = 3
 LEG_SLOTS = ("spot", "fut_current", "fut_mid", "fut_far")
+
+# Kite exchange segments the F&O board is derived from.
+FUT_EXCHANGE = "NFO"  # equity + index futures (NOT currency/commodity)
+EQ_EXCHANGE = "NSE"
 
 
 @dataclass
@@ -69,6 +73,35 @@ def build_board(
         futures = sorted(futures_by_name[name], key=lambda f: f.expiry)[:MAX_FUTURES]
         entries.append(BoardEntry(name=name, spot=spot, futures=futures))
     return entries
+
+
+def parse_universe(stock_universe: str | None) -> set[str] | None:
+    """Turn the ``STOCK_UNIVERSE`` setting into an allow-set.
+
+    ``"all"`` / empty -> ``None`` (the whole F&O universe). A comma list -> the set of
+    uppercased underlying names to keep (e.g. ``"RELIANCE, M&M"``).
+    """
+    if not stock_universe or stock_universe.strip().lower() == "all":
+        return None
+    return {s.strip().upper() for s in stock_universe.split(",") if s.strip()}
+
+
+def discover_fno_board(
+    instrument_store: InstrumentStore,
+    trading_date: str,
+    stock_universe: str = "all",
+    *,
+    refresh: bool = False,
+) -> list[BoardEntry]:
+    """Fetch the NFO + NSE instrument dumps and derive the **F&O-only** stock board.
+
+    This is the bootstrap the live capture uses: only stocks that have NFO futures and a
+    matching NSE equity are included (indices and non-F&O equities are excluded), then
+    optionally narrowed by ``STOCK_UNIVERSE``.
+    """
+    nfo = instrument_store.get(FUT_EXCHANGE, trading_date, refresh=refresh)
+    nse = instrument_store.get(EQ_EXCHANGE, trading_date, refresh=refresh)
+    return build_board(nfo, nse, allow=parse_universe(stock_universe))
 
 
 def board_to_stock_refs(board: list[BoardEntry]) -> list[StockRef]:

@@ -7,6 +7,8 @@ from app.stocks.board import (
     board_to_stock_refs,
     build_board,
     build_board_token_map,
+    discover_fno_board,
+    parse_universe,
 )
 
 
@@ -93,3 +95,42 @@ def test_build_board_token_map_routing():
     assert token_map[1003].leg == "fut_far"
     # NIFTY future token was excluded from the board entirely.
     assert 3001 not in token_map
+
+
+
+# --- STOCK_UNIVERSE parsing + discovery bootstrap ----------------------------
+
+
+def test_parse_universe():
+    assert parse_universe("all") is None
+    assert parse_universe("") is None
+    assert parse_universe(None) is None
+    assert parse_universe("RELIANCE, m&m") == {"RELIANCE", "M&M"}
+
+
+class _FakeStore:
+    """Stand-in for InstrumentStore.get(exchange, date)."""
+
+    def __init__(self, nfo, nse):
+        self._by_exchange = {"NFO": nfo, "NSE": nse}
+        self.calls = []
+
+    def get(self, exchange, trading_date, refresh=False):
+        self.calls.append((exchange, trading_date, refresh))
+        return self._by_exchange[exchange]
+
+
+def test_discover_fno_board_is_fno_only():
+    nfo, nse = _sample_instruments()
+    store = _FakeStore(nfo, nse)
+    board = discover_fno_board(store, "2026-07-21")
+    # NIFTY index future has no NSE EQ row -> excluded; only real F&O stocks remain.
+    assert [e.name for e in board] == ["M&M", "RELIANCE"]
+    assert ("NFO", "2026-07-21", False) in store.calls
+    assert ("NSE", "2026-07-21", False) in store.calls
+
+
+def test_discover_fno_board_respects_stock_universe():
+    nfo, nse = _sample_instruments()
+    board = discover_fno_board(_FakeStore(nfo, nse), "2026-07-21", stock_universe="RELIANCE")
+    assert [e.name for e in board] == ["RELIANCE"]
