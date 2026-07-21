@@ -14,6 +14,25 @@ Newest first. One entry per working session.
 
 ---
 
+## 2026-07-21 — Phase 6: Historical downloader
+
+**Done** (all on `ai-dev/made`, pushed batch-by-batch)
+- `historical/intervals.py` (policy table), `windows.py` (chunking, clamp),
+  `request.py` (validation guards: from<to, span≤max_ui_days, weekly/monthly &
+  atm/strike-range exclusivity, expiry format), `limiter.py` (async token bucket,
+  injectable clock), `client.py` (windowed fetch, candle parse, 429/5xx retry+backoff).
+- `historical/assembly.py` — candle→frame assembly (bin_export pattern) for index
+  chains + stock legs, `INDICES_HIS/` & `STOCKS_HIS/` writers (round-trips via reader).
+- `historical/jobs.py` — `JobStore` (request + per-contract checkpoints under
+  `_state/`), `HistoricalJob` (bounded-concurrency download, resume by skipping
+  completed windows → no duplicate rows, cancel, progress via `historical-jobs` WS).
+- 118 pytest tests (green) + ruff clean.
+
+**Next**
+- **Phase 7: Reconstruction + hardening** (Greeks/IV on read, retention, final polish).
+
+---
+
 ## 2026-07-21 — Phase 5: EOD compression + rollover + session-state
 
 **Done** (all on `ai-dev/made`, pushed batch-by-batch)

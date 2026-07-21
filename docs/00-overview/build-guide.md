@@ -140,9 +140,13 @@ Batches:
 **Depends on:** Phases 1–2.
 
 Batches:
-- [ ] `historical/` — REST fetch, window chunking, token-bucket limiter, retries, request validation ([[historical-data]]).
-- [ ] Frame assembly (`bin_export` pattern) → `INDICES_HIS/` & `STOCKS_HIS/`.
-- [ ] Resume via `_state/` checkpoints; `historical-jobs` progress on WS.
+- [x] `historical/` — REST fetch, window chunking, token-bucket limiter, retries, request validation ([[historical-data]]).
+- [x] Frame assembly (`bin_export` pattern) → `INDICES_HIS/` & `STOCKS_HIS/`.
+- [x] Resume via `_state/` checkpoints; `historical-jobs` progress on WS.
+
+> Fetch path is verified with a mocked async fetcher (429 retry/backoff, token-bucket
+> throttle), assembly round-trips through the reader, and jobs resume by skipping
+> completed windows (no duplicate rows). Live REST needs Kite credentials.
 
 **Deliverables:** historical jobs, windows, limiter, storage + UI wiring.
 **DoD:** a job downloads a date range, writes valid `.bin`, and **resumes** from a mid-run checkpoint without duplicate rows.
