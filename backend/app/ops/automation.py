@@ -9,6 +9,7 @@ from datetime import time
 
 from app.ops.calendar import TradingCalendar
 from app.session import now_ms
+from app.ws import protocol
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,7 @@ class DailyAutomationService:
         session_service,
         capture_controller,
         *,
+        hub=None,
         eod_fn=None,
         clock=now_ms,
         tick_interval_s: float = 5.0,
@@ -106,6 +108,7 @@ class DailyAutomationService:
         self.settings = settings
         self.session_service = session_service
         self.capture_controller = capture_controller
+        self.hub = hub
         self.calendar = TradingCalendar(
             holidays=set(getattr(settings, "market_holidays", [])),
             timezone_name=settings.timezone,
@@ -122,6 +125,7 @@ class DailyAutomationService:
         self._state = AutomationState()
         self._last_action: str | None = None
         self._last_error: str | None = None
+        self._last_compression: dict | None = None
         self._last_tick_at_ms: int | None = None
         self._lock = asyncio.Lock()
         self._stop_event: asyncio.Event | None = None
@@ -174,11 +178,28 @@ class DailyAutomationService:
             elif action == ACTION_STOP_CAPTURE:
                 await self.capture_controller.stop()
             elif action == ACTION_RUN_EOD:
+                loop = asyncio.get_running_loop()
+
+                def _on_progress(state: dict) -> None:
+                    # Called from the compression worker thread; hand the
+                    # broadcast back to the event loop without blocking the sweep.
+                    self._last_compression = state
+                    if self.hub is not None:
+                        loop.call_soon_threadsafe(
+                            lambda s=state: loop.create_task(
+                                self.hub.broadcast(
+                                    "capture-status", protocol.compression_progress(s)
+                                )
+                            )
+                        )
+
                 await asyncio.to_thread(
                     self._eod_fn,
                     self.settings.market_data_path,
                     self.settings.archive_data_path,
                     level=self.settings.zstd_level,
+                    threads=getattr(self.settings, "zstd_threads", 0),
+                    progress_cb=_on_progress,
                 )
                 completed_date = self._state.eod_in_progress_date
                 self._state = replace(
@@ -192,6 +213,15 @@ class DailyAutomationService:
                 self._last_error = "shared token is not ready; retrying in the auth window"
             elif action == ACTION_RUN_EOD:
                 self._last_error = "end-of-day compression failed; raw files were retained"
+                failed = {**(self._last_compression or {}), "phase": "failed"}
+                self._last_compression = failed
+                if self.hub is not None:
+                    try:
+                        await self.hub.broadcast(
+                            "capture-status", protocol.compression_progress(failed)
+                        )
+                    except Exception:  # noqa: BLE001 - never mask the original failure
+                        pass
                 self._state = replace(
                     self._state,
                     eod_completed_date=None,
@@ -228,6 +258,7 @@ class DailyAutomationService:
             "last_broker_poll_at": self._state.last_broker_poll_at_ms,
             "eod_completed_date": self._state.eod_completed_date,
             "eod_in_progress_date": self._state.eod_in_progress_date,
+            "compression": self._last_compression,
         }
 
     def start(self) -> None:

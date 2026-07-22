@@ -18,7 +18,18 @@ from pathlib import Path
 import zstandard as zstd
 
 DEFAULT_LEVEL = 17
+# zstd worker threads for a single stream. 0 = single-threaded (legacy behaviour);
+# >0 spawns that many workers. Capped at MAX_THREADS regardless of caller input.
+DEFAULT_THREADS = 0
+MAX_THREADS = 6
 ZST_SUFFIX = ".zst"
+
+
+def _clamp_threads(threads: int) -> int:
+    """Clamp requested worker threads into ``0..MAX_THREADS``."""
+    if threads <= 0:
+        return 0
+    return min(threads, MAX_THREADS)
 
 
 def compressed_path(src: str | os.PathLike[str]) -> Path:
@@ -32,10 +43,13 @@ def compress_file(
     dst: str | os.PathLike[str] | None = None,
     *,
     level: int = DEFAULT_LEVEL,
+    threads: int = DEFAULT_THREADS,
     remove_src: bool = False,
 ) -> Path:
     """Compress ``src`` -> ``dst`` (default ``src + .zst``) with zstd ``level``.
 
+    ``threads`` enables zstd's multithreaded compression for a single stream
+    (capped at ``MAX_THREADS``); ``0`` keeps the legacy single-threaded path.
     If ``remove_src`` is set, the raw file is deleted only after the compressed
     copy verifies byte-for-byte.
     """
@@ -51,7 +65,7 @@ def compress_file(
             if remove_src:
                 src.unlink()
             return dst
-    cctx = zstd.ZstdCompressor(level=level)
+    cctx = zstd.ZstdCompressor(level=level, threads=_clamp_threads(threads))
     temp_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -127,6 +141,7 @@ def compress_directory(
     root: str | os.PathLike[str],
     *,
     level: int = DEFAULT_LEVEL,
+    threads: int = DEFAULT_THREADS,
     remove_src: bool = False,
 ) -> list[Path]:
     """Compress every ``*.bin`` under ``root`` (recursive). Used by the EOD sweep."""
@@ -134,6 +149,6 @@ def compress_directory(
     outputs: list[Path] = []
     for bin_path in sorted(root.rglob("*.bin")):
         outputs.append(
-            compress_file(bin_path, level=level, remove_src=remove_src)
+            compress_file(bin_path, level=level, threads=threads, remove_src=remove_src)
         )
     return outputs

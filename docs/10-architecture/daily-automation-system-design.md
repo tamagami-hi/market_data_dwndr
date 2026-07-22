@@ -14,11 +14,9 @@ may run EOD to repair raw files left by an interrupted prior process.
 
 ## Session readiness
 
-Daily session state records `risk_free_rate_as_of` and `rate_update_required` in a
-backward-compatible extension. A legacy state treats its trading date as the rate date.
-A rate is reusable while its calendar age is less than two days. At age two or more—the
-third Monday–Friday market day including the update day—capture is blocked until the operator posts
-today's yield.
+Daily session state records `risk_free_rate_as_of` alongside the token. The risk-free
+rate is fetched once per trading day from the calspread broker (env `RISK_FREE_RATE` is
+the fallback), so there is no freshness/expiry rule or operator update step.
 
 ## Failure policy
 

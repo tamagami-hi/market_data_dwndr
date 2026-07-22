@@ -55,7 +55,7 @@ u32       schema_version     = 1
 String    trading_date                     // "2026-07-21"
 String    underlying                       // "NIFTY"
 String    expiry_date                      // "2026-07-24"
-f64       risk_free_rate                   // 10-yr bond yield (login entry)
+f64       risk_free_rate                   // risk-free rate (login entry)
 Vec<i64>  strikes                          // ~101 strikes in paise, ascending, fixed for the day
 ```
 

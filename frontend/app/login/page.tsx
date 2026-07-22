@@ -1,10 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
-import { getAuthStatus, updateRiskFreeRate, type AuthStatus } from "@/lib/api";
+import { getAuthStatus, type AuthStatus } from "@/lib/api";
 import { automationMessage } from "@/lib/automationStatus";
-import { parseRiskFreeRate } from "@/lib/loginFlow";
 
 const STATUS_REFRESH_MS = 5_000;
 
@@ -18,17 +17,6 @@ interface InitializationStage {
 
 export default function LoginPage() {
   const [status, setStatus] = useState<AuthStatus | null | undefined>(undefined);
-  const [updatedRate, setUpdatedRate] = useState("");
-  const [rateBusy, setRateBusy] = useState(false);
-  const [rateUpdateMessage, setRateUpdateMessage] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    try {
-      setStatus(await getAuthStatus());
-    } catch {
-      setStatus(null);
-    }
-  }, []);
 
   useEffect(() => {
     let isActive = true;
@@ -48,27 +36,6 @@ export default function LoginPage() {
     };
   }, []);
 
-  const updateRate = async (event: FormEvent) => {
-    event.preventDefault();
-    const parsedRate = parseRiskFreeRate(updatedRate);
-    if (parsedRate === null) {
-      setRateUpdateMessage("Enter the decimal yield between 0 and 1.");
-      return;
-    }
-    setRateBusy(true);
-    setRateUpdateMessage(null);
-    try {
-      await updateRiskFreeRate(parsedRate);
-      setUpdatedRate("");
-      setRateUpdateMessage("Yield updated. Automatic capture is now ready.");
-      await refresh();
-    } catch (error) {
-      setRateUpdateMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setRateBusy(false);
-    }
-  };
-
   return (
     <div className="mx-auto max-w-3xl space-y-6 py-4">
       <header>
@@ -86,24 +53,6 @@ export default function LoginPage() {
       <StatusCard status={status} />
 
       {status && <AutomationCard status={status} />}
-      {rateUpdateMessage && !status?.rate_update_required && (
-        <p
-          className="rounded-xl border border-green-800/60 bg-green-950/20 p-4 text-sm text-green-300"
-          role="status"
-        >
-          {rateUpdateMessage}
-        </p>
-      )}
-      {status?.authenticated && status.rate_update_required && (
-        <YieldUpdateForm
-          value={updatedRate}
-          busy={rateBusy}
-          message={rateUpdateMessage}
-          hasPreviousYield={Boolean(status.risk_free_rate_as_of)}
-          onChange={setUpdatedRate}
-          onSubmit={updateRate}
-        />
-      )}
     </div>
   );
 }
@@ -200,14 +149,14 @@ function initializationState(status: AuthStatus | null | undefined): {
       stages,
     };
   }
-  if (status.rate_update_required || !status.capture_ready) {
+  if (!status.capture_ready) {
     const brokerConfigured = Boolean(status.external_token_source_configured);
     const stages = baseStages("complete", brokerConfigured ? "complete" : "pending", "complete", "active");
     if (!brokerConfigured) {
       stages[1].detail = "Not configured; this validated session came from the retained fallback flow.";
     }
     stages[2].detail = "Kite accepted the token and the daily session is saved.";
-    stages[3].detail = "A current 10-year yield is required before capture can initialize.";
+    stages[3].detail = "Waiting for the daily risk-free rate before capture can initialize.";
     return { progress: 75, headline: "Token validated; capture prerequisites pending", stages };
   }
 
@@ -256,9 +205,8 @@ function AutomationCard({ status }: { status: AuthStatus }) {
   const message = automationMessage(
     status.automation,
     Boolean(status.capture_ready),
-    Boolean(status.rate_update_required),
   );
-  const tone = status.rate_update_required || status.automation?.last_error
+  const tone = status.automation?.last_error
     ? "border-amber-900/60 bg-amber-950/20 text-amber-300"
     : "border-cyan-900/60 bg-cyan-950/20 text-cyan-200";
   return (
@@ -267,64 +215,10 @@ function AutomationCard({ status }: { status: AuthStatus }) {
       <p className="mt-1">{message}</p>
       {status.risk_free_rate != null && (
         <p className="mt-2 text-xs opacity-80">
-          10-year yield {status.risk_free_rate} · valid from {status.risk_free_rate_as_of ?? "today"}
+          Risk-free rate {status.risk_free_rate} · valid from {status.risk_free_rate_as_of ?? "today"}
         </p>
       )}
     </section>
-  );
-}
-
-function YieldUpdateForm({
-  value,
-  busy,
-  message,
-  hasPreviousYield,
-  onChange,
-  onSubmit,
-}: {
-  value: string;
-  busy: boolean;
-  message: string | null;
-  hasPreviousYield: boolean;
-  onChange: (value: string) => void;
-  onSubmit: (event: FormEvent) => Promise<void>;
-}) {
-  return (
-    <form onSubmit={onSubmit} className="space-y-3 rounded-xl border border-amber-800/60 bg-amber-950/20 p-5">
-      <div>
-        <h2 className="font-semibold text-amber-200">10-year bond yield update required</h2>
-        <p className="mt-1 text-sm text-amber-300/80">
-          {hasPreviousYield
-            ? "This is the third Monday–Friday market day for the stored yield."
-            : "No 10-year yield is stored yet."}
-          {" "}Update it to allow automatic capture; the validated broker token remains active.
-        </p>
-      </div>
-      <Field label="Today&apos;s 10-year bond yield" hint="Decimal form, for example 0.0691.">
-        <input
-          required
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          inputMode="decimal"
-          placeholder="0.0691"
-          className="w-full rounded-md border border-amber-800 bg-zinc-950 px-3 py-2 font-mono text-zinc-100"
-        />
-      </Field>
-      <button disabled={busy} className="rounded-md bg-amber-400 px-4 py-2 font-semibold text-amber-950 disabled:opacity-50">
-        {busy ? "Updating yield…" : "Update yield and enable capture"}
-      </button>
-      {message && <p role="status" className="text-sm text-amber-200">{message}</p>}
-    </form>
-  );
-}
-
-function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <label className="block">
-      <span className="mb-1 block text-xs uppercase tracking-wide text-zinc-500">{label}</span>
-      {children}
-      {hint && <span className="mt-1 block text-xs text-zinc-600">{hint}</span>}
-    </label>
   );
 }
 

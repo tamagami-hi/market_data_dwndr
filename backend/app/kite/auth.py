@@ -6,7 +6,7 @@ Kite issues a fresh ``access_token`` each day (resets ~06:00 IST). The morning f
 2. Kite redirects back with a ``request_token``.
 3. We exchange ``request_token`` -> ``access_token`` using the API secret
    (checksum = SHA-256(api_key + request_token + api_secret)).
-4. The 10-yr bond yield is entered on the same screen.
+4. The risk-free rate is entered on the same screen.
 5. Both are persisted to session state and reused on restart.
 
 The token exchange is injected (``SessionGenerator``) so it can be unit-tested

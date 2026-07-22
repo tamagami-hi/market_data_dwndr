@@ -11,6 +11,6 @@
 - Price precision: Kite rupee values are converted to integer paise once and round-trip
   exactly. UI formatting supplies two visible decimal places.
 - Greeks: IV and Greeks are computed by reconstruction and WebSocket broadcasting; BIN
-  files retain only the raw inputs and the header yield.
+  files retain only the raw inputs and the header risk-free rate.
 - L5: persisted spot/current/mid/far depth is serialized as five bid/ask levels for the
   frontend and rendered collapsed by default.

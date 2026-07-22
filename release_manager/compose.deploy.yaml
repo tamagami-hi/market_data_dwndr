@@ -1,4 +1,11 @@
-name: market-data-dwndr
+name: data-downloader
+
+# Self-contained DEPLOY compose (image-based; NO build). Shipped inside the
+# DATA_DOWNLOADER bundle as docker-compose.yml and run on the VPS by
+# DATA_DOWNLOADER/deploy.sh. All interpolation + backend config come from the
+# sibling `.env` (the VPS operator fills it once; it is preserved across updates).
+# The frontend image already has NEXT_PUBLIC_* baked in at build time, so it only
+# needs PORT at runtime and never receives backend secrets.
 
 x-service-security: &service-security
   init: true
@@ -18,29 +25,24 @@ services:
   backend:
     <<: *service-security
     stop_grace_period: 30s
-    image: market-data-dwndr-backend:${APP_VERSION:-local}
-    build:
-      context: ./backend
-      args:
-        APP_UID: ${APP_UID:-10001}
-        APP_GID: ${APP_GID:-10001}
+    image: market-data-dwndr-backend:${APP_VERSION:?Set APP_VERSION (managed by deploy.sh)}
     env_file:
-      - ./backend/.env
+      - ./.env
     ports:
       - name: backend-http
-        target: ${HTTP_PORT:?Set HTTP_PORT in backend/.env}
-        published: ${HTTP_PORT:?Set HTTP_PORT in backend/.env}
-        host_ip: ${HOST_BIND_ADDRESS:?Set HOST_BIND_ADDRESS in backend/.env}
+        target: ${HTTP_PORT:?Set HTTP_PORT in .env}
+        published: ${HTTP_PORT:?Set HTTP_PORT in .env}
+        host_ip: ${HOST_BIND_ADDRESS:?Set HOST_BIND_ADDRESS in .env}
         protocol: tcp
     volumes:
       - type: bind
-        source: ${MARKET_DATA_PATH:?Set MARKET_DATA_PATH in backend/.env}
-        target: ${MARKET_DATA_PATH:?Set MARKET_DATA_PATH in backend/.env}
+        source: ${MARKET_DATA_PATH:?Set MARKET_DATA_PATH in .env}
+        target: ${MARKET_DATA_PATH:?Set MARKET_DATA_PATH in .env}
         bind:
           create_host_path: false
       - type: bind
-        source: ${ARCHIVE_DATA_PATH:?Set ARCHIVE_DATA_PATH in backend/.env}
-        target: ${ARCHIVE_DATA_PATH:?Set ARCHIVE_DATA_PATH in backend/.env}
+        source: ${ARCHIVE_DATA_PATH:?Set ARCHIVE_DATA_PATH in .env}
+        target: ${ARCHIVE_DATA_PATH:?Set ARCHIVE_DATA_PATH in .env}
         bind:
           create_host_path: false
     tmpfs:
@@ -60,21 +62,18 @@ services:
 
   frontend:
     <<: *service-security
-    image: market-data-dwndr-frontend:${APP_VERSION:-local}
-    build:
-      context: ./frontend
-      args:
-        APP_UID: ${APP_UID:-10001}
-        APP_GID: ${APP_GID:-10001}
-        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:?Set NEXT_PUBLIC_BACKEND_URL in frontend/.env.local}
-        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-TickVault}
-    env_file:
-      - ./frontend/.env.local
+    image: market-data-dwndr-frontend:${APP_VERSION:?Set APP_VERSION (managed by deploy.sh)}
+    # No env_file: the browser URL + product name are baked at build; only PORT is
+    # needed at runtime, so backend secrets never enter the frontend container.
+    environment:
+      PORT: ${PORT:?Set PORT in .env}
+      HOSTNAME: 0.0.0.0
+      NODE_ENV: production
     ports:
       - name: frontend-http
-        target: ${PORT:?Set PORT in frontend/.env.local}
-        published: ${PORT:?Set PORT in frontend/.env.local}
-        host_ip: ${HOST_BIND_ADDRESS:?Set HOST_BIND_ADDRESS in backend/.env}
+        target: ${PORT:?Set PORT in .env}
+        published: ${PORT:?Set PORT in .env}
+        host_ip: ${HOST_BIND_ADDRESS:?Set HOST_BIND_ADDRESS in .env}
         protocol: tcp
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m

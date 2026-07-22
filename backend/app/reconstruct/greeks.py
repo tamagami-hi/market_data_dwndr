@@ -1,4 +1,4 @@
-"""Reconstruct option Greeks/IV for an index frame from stored raw + bond yield."""
+"""Reconstruct option Greeks/IV for an index frame from stored raw + risk-free rate."""
 
 from __future__ import annotations
 

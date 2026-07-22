@@ -24,6 +24,7 @@ from that IP.
 from __future__ import annotations
 
 import argparse
+import getpass
 import logging
 import math
 import re
@@ -34,8 +35,9 @@ from typing import Protocol
 from urllib.parse import parse_qs, urljoin, urlparse
 
 from app.kite.auth import auth_header, compute_checksum
+from app.kite.external_rate import resolve_daily_risk_free_rate
 from app.kite.external_token import ExternalTokenError, fetch_external_access_token
-from app.session import SessionState, now_ms, save_session
+from app.session import SessionState, load_session, now_ms, save_session
 
 KITE_LOGIN_BASE = "https://kite.zerodha.com"
 KITE_API_BASE = "https://api.kite.trade"
@@ -283,11 +285,11 @@ def validate_access_token(
 
 
 def validate_risk_free_rate(value: float) -> float:
-    """Return a plausible decimal yield or reject unsafe input."""
+    """Return a plausible decimal risk-free rate or reject unsafe input."""
     rate = float(value)
     if not math.isfinite(rate) or not 0 <= rate <= 1:
         raise KiteLoginError(
-            "risk_free_rate (10-year bond yield) must be a decimal between 0 and 1"
+            "risk_free_rate must be a decimal between 0 and 1"
         )
     return rate
 
@@ -323,7 +325,7 @@ def run_login(
     rate = risk_free_rate if risk_free_rate is not None else settings.risk_free_rate
     if rate is None:
         raise KiteLoginError(
-            "risk_free_rate (10-yr bond yield) is required; set RISK_FREE_RATE or pass it in"
+            "risk_free_rate is required; set RISK_FREE_RATE or pass it in"
         )
     rate = validate_risk_free_rate(rate)
 
@@ -426,10 +428,60 @@ def _resolve_interactive_rate(risk_free_rate: float | None) -> float:
     rate = risk_free_rate
     if rate is None:
         try:
-            rate = float(input("Enter 10-yr bond yield (decimal, e.g. 0.0691): ").strip())
+            rate = float(input("Enter risk-free rate (decimal, e.g. 0.0691): ").strip())
         except (ValueError, EOFError) as exc:
-            raise KiteLoginError("invalid bond yield") from exc
+            raise KiteLoginError("invalid risk-free rate") from exc
     return validate_risk_free_rate(rate)
+
+
+def _persist_credentials_session(
+    settings, trading_date: str, access_token: str, risk_free_rate: float | None
+) -> SessionState:
+    """Persist a credentials-login session; the rate is resolved (not prompted)."""
+    timestamp = now_ms()
+    validated = validate_risk_free_rate(risk_free_rate) if risk_free_rate is not None else None
+    state = SessionState(
+        trading_date=trading_date,
+        access_token=access_token,
+        risk_free_rate=validated,
+        access_token_at=timestamp,
+        started_at=timestamp,
+        risk_free_rate_as_of=trading_date if validated is not None else None,
+    )
+    save_session(settings.state_dir, state)
+    return state
+
+
+def run_credentials_login(
+    settings,
+    *,
+    trading_date: str,
+    user_id: str,
+    password: str,
+    api_key: str,
+    api_secret: str,
+    totp_provider: TotpProvider,
+    client: HttpClient | None = None,
+    rate_resolver: Callable[[], float | None] | None = None,
+) -> SessionState:
+    """Credentials + mandatory TOTP login (no external token), then persist.
+
+    Used by the ``md-login`` CLI. The risk-free rate is resolved from the calspread
+    broker (env fallback), never prompted. Kite's TOTP is a required second factor of
+    every credentials login, so ``totp_provider`` is always invoked.
+    """
+    owns_client = client is None
+    http = client or build_kite_http_client(settings.kite_static_ip, settings.kite_http_proxy)
+    try:
+        challenge = begin_login(http, user_id, password)
+        request_token = complete_totp(http, api_key, user_id, challenge, totp_provider())
+        access_token = exchange_request_token(http, api_key, api_secret, request_token)
+    finally:
+        if owns_client:
+            http.close()
+
+    resolve = rate_resolver or (lambda: resolve_daily_risk_free_rate(settings))
+    return _persist_credentials_session(settings, trading_date, access_token, resolve())
 
 
 # --------------------------------------------------------------------------- #
@@ -449,14 +501,55 @@ def _resolve_trading_date(settings) -> str:
     return cal.trading_date(now_ms())
 
 
+def _prompt_credentials_from_terminal() -> dict[str, str]:
+    """Read all four credentials from the TTY; secrets via getpass (no echo/history)."""
+    try:
+        user_id = input("Kite user id: ").strip()
+        password = getpass.getpass("Kite password: ").strip()
+        api_key = input("Kite API key: ").strip()
+        api_secret = getpass.getpass("Kite API secret: ").strip()
+    except EOFError as exc:
+        raise KiteLoginError("credentials must be entered on an interactive terminal") from exc
+    if not all((user_id, password, api_key, api_secret)):
+        raise KiteLoginError("all four credentials are required")
+    return {
+        "user_id": user_id,
+        "password": password,
+        "api_key": api_key,
+        "api_secret": api_secret,
+    }
+
+
+def _prompt_totp_hidden() -> str:
+    """Read the 6-digit TOTP from the TTY without echo."""
+    try:
+        code = getpass.getpass("Kite TOTP (6 digits): ").strip()
+    except EOFError as exc:
+        raise KiteLoginError("TOTP must be entered on an interactive terminal") from exc
+    if not code:
+        raise KiteLoginError("no TOTP entered")
+    return code
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Console entrypoint: seed creds from env, take TOTP from the terminal, log in."""
-    parser = argparse.ArgumentParser(prog="md-login", description="Automated Kite login")
+    """Console entrypoint (docker exec -it): credentials + mandatory TOTP login.
+
+    Default: use the four env-seeded credentials. ``--manual``: prompt for all four
+    credentials on the terminal (nothing is written back to the env). Either way Kite's
+    TOTP is entered on the terminal. A valid session for today hard-blocks the login
+    (mirroring the automated fetcher) unless ``--force`` is given.
+    """
+    parser = argparse.ArgumentParser(prog="md-login", description="Kite credentials + TOTP login")
     parser.add_argument("--date", help="Trading date YYYY-MM-DD (default: today IST)")
     parser.add_argument(
-        "--rate",
-        type=float,
-        help="10-yr bond yield as a decimal (e.g. 0.0691); prompted if unset",
+        "--manual",
+        action="store_true",
+        help="Prompt for all four credentials on the terminal instead of using the env",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Log in even if a valid session for today already exists",
     )
     args = parser.parse_args(argv)
 
@@ -470,18 +563,47 @@ def main(argv: list[str] | None = None) -> int:
 
     trading_date = args.date or _resolve_trading_date(settings)
 
+    # Hard block: once a valid session exists, both the manual login and the automated
+    # fetcher stand down until it becomes invalid.
+    existing = load_session(settings.state_dir, trading_date)
+    if existing is not None and existing.access_token and not args.force:
+        print(
+            f"already authenticated for {trading_date}; session is valid. Nothing to do. "
+            "(use --force to log in again)"
+        )
+        return 0
+
+    if args.manual:
+        creds = _prompt_credentials_from_terminal()
+    else:
+        if not settings.kite_user_id or not settings.kite_password:
+            print(
+                "KITE_USER_ID and KITE_PASSWORD are not set; use `md-login --manual` to "
+                "enter credentials on the terminal.",
+                file=sys.stderr,
+            )
+            return 2
+        creds = {
+            "user_id": settings.kite_user_id,
+            "password": settings.kite_password,
+            "api_key": settings.kite_api_key,
+            "api_secret": settings.kite_api_secret,
+        }
+
     try:
-        state = run_interactive_login(
+        state = run_credentials_login(
             settings,
             trading_date=trading_date,
-            risk_free_rate=args.rate,
+            totp_provider=_prompt_totp_hidden,
+            **creds,
         )
     except KiteLoginError as exc:
         print(f"login failed: {exc}", file=sys.stderr)
         return 1
 
+    rate_txt = state.risk_free_rate if state.risk_free_rate is not None else "unset (rate broker + env fallback both unavailable)"
     print(
-        f"login OK for {trading_date}: bond_yield={state.risk_free_rate}. "
+        f"login OK for {trading_date}: risk_free_rate={rate_txt}. "
         "Session saved under _state/."
     )
     return 0

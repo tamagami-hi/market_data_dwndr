@@ -21,7 +21,7 @@ corrupt an existing `.bin`; prefer pausing/retrying over crashing.**
 | **Truncated frame** (crash mid-write) | reader: declared `len` overruns EOF | reader stops at the last **complete** frame and ignores the trailing partial (matches `algo_engine` reader behavior) |
 | **Corrupt `.zst`** | zstd decode error | fall back to a raw `.bin` if present; otherwise flag the file; never delete raw until compression verified |
 | **Unmatched ticks** | token not in map | increment an `unmatched` counter (surfaced on the monitor); ignore — not fatal |
-| **Process restart mid-day** | startup finds today's session + files | reuse token + bond yield, **append** to today's files (header only if empty) ([[session-state]]) |
+| **Process restart mid-day** | startup finds today's session + files | reuse token + risk-free rate, **append** to today's files (header only if empty) ([[session-state]]) |
 | **Clock skew** | — | timestamps come from tick receive time (and optionally `exchange_timestamp`); files keyed by IST trading date |
 
 ## Invariants

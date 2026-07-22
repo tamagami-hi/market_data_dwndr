@@ -4,9 +4,10 @@ Reads a ``.env`` file. ``KITE_API_KEY``, ``KITE_API_SECRET``, ``MARKET_DATA_PATH
 ``ARCHIVE_DATA_PATH``, ``HTTP_PORT``, and ``FRONTEND_URL`` are required; other settings
 have sensible defaults.
 
-The daily ``access_token`` and the 10-yr bond yield are deliberately *not* here --
-they are entered at login and kept in session state (see docs/60-operations/
-session-state.md), because they change every day.
+The daily ``access_token`` and the risk-free rate are deliberately *not* here --
+the token is obtained at login and the risk-free rate is fetched daily from the
+calspread broker (``RISK_FREE_RATE`` in the env is the fallback), because they change
+every day.
 
 Derived paths (``indices_dir`` etc.) are rooted at ``MARKET_DATA_PATH`` and match the
 storage layout in docs/20-data-and-storage/storage-layout.md.
@@ -49,7 +50,10 @@ class Settings(BaseSettings):
     kite_password: str | None = Field(default=None, description="Zerodha login password")
     risk_free_rate: float | None = Field(
         default=None,
-        description="10-yr bond yield (decimal) stamped into headers; prompted if unset.",
+        description=(
+            "Fallback risk-free rate (decimal) stamped into headers when the rate "
+            "broker is unavailable; the daily value is normally fetched from calspread."
+        ),
     )
 
     # --- existing-session broker (backend-only; checked before local credentials) ---
@@ -59,7 +63,14 @@ class Settings(BaseSettings):
     )
     kite_token_broker_passcode: SecretStr | None = Field(
         default=None,
-        description="Backend-only x-token-passcode for the Kite token broker",
+        description="Backend-only x-token-passcode for the Kite token + risk-free-rate brokers",
+    )
+    kite_rate_broker_url: AnyHttpUrl | None = Field(
+        default=None,
+        description=(
+            "HTTPS endpoint returning the daily risk-free rate as a percent "
+            "(reuses x-token-passcode); e.g. https://calspread.online/api/rf"
+        ),
     )
 
     # --- internal release drain lease (backend-only) ---
@@ -103,6 +114,12 @@ class Settings(BaseSettings):
     stock_universe: str = Field(default="all", description="'all' or a comma allow-list")
     capture_hz: int = Field(default=1, ge=1, description="Snapshot cadence (Hz)")
     zstd_level: int = Field(default=17, ge=1, le=22, description="EOD compression level")
+    zstd_threads: int = Field(
+        default=6,
+        ge=1,
+        le=6,
+        description="Worker threads for EOD zstd compression (capped 1-6)",
+    )
     auth_poll_start: str = Field(default="08:30", description="Broker polling start (IST)")
     auth_poll_end: str = Field(default="09:00", description="Broker polling stop (IST)")
     auth_poll_interval_seconds: int = Field(

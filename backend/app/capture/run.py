@@ -30,7 +30,7 @@ def resolve_session(service) -> tuple[str, float]:
     from app.session import is_session_capture_ready
 
     if not is_session_capture_ready(session):
-        raise RuntimeError("risk-free rate update is required before capture")
+        raise RuntimeError("risk-free rate is unavailable; capture cannot start")
     return session.access_token, session.risk_free_rate
 
 
@@ -143,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - orchestrat
             settings.market_data_path,
             settings.archive_data_path,
             level=settings.zstd_level,
+            threads=getattr(settings, "zstd_threads", 0),
         )
         logger.info("EOD: compressed %d files", len(result.compressed))
 

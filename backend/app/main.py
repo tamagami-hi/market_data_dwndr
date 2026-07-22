@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse
 from app import __version__
 from app.api.auth import create_auth_router
 from app.api.capture import create_capture_router
+from app.api.status import create_status_router
 from app.logging_config import configure_logging
 from app.ws.routes import ConnectionManager, create_ws_router
 
@@ -58,6 +59,7 @@ def _init_session_service(app: FastAPI) -> None:
             settings,
             service,
             app.state.capture_controller,
+            hub=app.state.ws_hub,
         )
 
         status = service.status()
@@ -131,6 +133,7 @@ app.add_middleware(
 app.include_router(create_ws_router(ws_hub))
 app.include_router(create_auth_router())
 app.include_router(create_capture_router())
+app.include_router(create_status_router())
 
 
 @app.get("/health", tags=["ops"])

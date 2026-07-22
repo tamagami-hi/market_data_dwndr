@@ -24,7 +24,7 @@ cover it. Paths are relative to the repo root. See [[Build-Status]] for phase st
 backend/app/
 ├── main.py                 FastAPI app: /health, /monitor, /api/auth, /ws/*, lifespan resume
 ├── config.py               pydantic-settings (env), derived MARKET_DATA paths
-├── session.py              SessionState + load/save (daily access_token + bond yield)
+├── session.py              SessionState + load/save (daily access_token + risk-free rate)
 ├── session_service.py      app facade: status() / login() / login_url()
 ├── logging_config.py       central logging
 ├── bin_codec/              ← [[bin-structure-spec]] (the foundation)
@@ -71,7 +71,7 @@ backend/app/
 │   ├── intervals.py windows.py request.py limiter.py client.py assembly.py jobs.py
 └── reconstruct/            ← [[reconstruction]]
     ├── bs.py               Black-Scholes price/Greeks/IV (algo_engine parity)
-    ├── greeks.py           per-frame IV+Greeks from stored raw + bond yield
+    ├── greeks.py           per-frame IV+Greeks from stored raw + risk-free rate
     ├── metrics.py          ATM / max-pain / PCR
     └── spreads.py          CalSpread live/daily spread + summary
 ```
@@ -84,7 +84,7 @@ frontend/
 ├── app/monitor/page.tsx            Capture Monitor        ← capture-status, session
 ├── app/option-chain/page.tsx       chain + Greeks table   ← market-data
 ├── app/stocks/page.tsx             F&O board + spreads    ← stocks
-├── app/login/page.tsx              TOTP/bond-yield form   ← /api/auth
+├── app/login/page.tsx              downloader init/status view   ← /api/auth
 ├── components/                     NavBar, SessionBadge, ConnectionDot, OptionChainTable
 └── lib/                            wsTopicConnection, wsTypes, useTopic, api, config, numberFormat
 ```

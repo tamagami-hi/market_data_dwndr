@@ -52,7 +52,7 @@ New here? Read [[vault-guide]].
 - [[Tags]] — tag taxonomy for Graph groups
 
 ## 🔎 By concern
-- **Prices are integers** — paise (×100); floats only for the bond yield → [[lossless-and-precision]]
+- **Prices are integers** — paise (×100); floats only for the risk-free rate → [[lossless-and-precision]]
 - **Login is automated** — env-seeded creds + terminal/UI TOTP → [[config-and-env]], [[session-state]]
 - **Nothing derived is stored** — Greeks/IV recomputed on read → [[reconstruction]]
 - **Static-IP egress** (Kite, Apr 2026) → [[config-and-env]]

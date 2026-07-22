@@ -54,6 +54,6 @@ runs when analyzing/displaying data.
 
 ## Guarantee
 
-Because all raw inputs + the bond yield are stored, reconstruction is deterministic and
+Because all raw inputs + the risk-free rate are stored, reconstruction is deterministic and
 lossless-consistent — recomputing later yields the same values a live engine would,
 without ever having persisted them.

@@ -57,7 +57,6 @@ class LoginResponse(BaseModel):
     trading_date: str
     risk_free_rate: float | None = None
     risk_free_rate_as_of: str | None = None
-    rate_update_required: bool = False
     capture_ready: bool = False
 
 
@@ -87,7 +86,6 @@ def _login_response(service, state) -> LoginResponse:
         trading_date=state.trading_date,
         risk_free_rate=state.risk_free_rate,
         risk_free_rate_as_of=state.risk_free_rate_as_of,
-        rate_update_required=state.rate_update_required,
         capture_ready=state.capture_ready,
     )
 
@@ -206,17 +204,6 @@ def create_auth_router() -> APIRouter:
             logger.exception("login failed")
             raise HTTPException(status_code=502, detail="manual login failed") from exc
 
-        return _login_response(service, state)
-
-    @router.put("/risk-free-rate", response_model=LoginResponse)
-    async def update_risk_free_rate(
-        request: Request, body: RiskFreeRateRequest
-    ) -> LoginResponse:
-        service = _service(request)
-        if service is None:
-            raise HTTPException(status_code=503, detail="backend not configured")
-        _require_frontend_origin(request, service)
-        state = await _run_flow_action(service.update_risk_free_rate, body.risk_free_rate)
         return _login_response(service, state)
 
     return router

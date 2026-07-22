@@ -76,7 +76,7 @@ first ask at byte 124); we keep L1 for indices, L5 for stocks. `KiteTicker` pars
 
 - **Own integer-native schema** (paise `i64`, counts `u64`) instead of the `f64`
   `ReplayBlock` — [[bin-structure-spec]].
-- **Greeks/IV not stored** (reconstructed on read); the **10-yr bond yield is stored in
+- **Greeks/IV not stored** (reconstructed on read); the **risk-free rate is stored in
   the header** (algo_engine had no such header field) — [[bin-format]].
 - **Depth:** indices L1 (as algo_engine), **stocks L5** (new) — [[depth-level-research]].
 - **Cadence:** fixed **1 Hz** snapshots (algo_engine used its broadcast cadence).

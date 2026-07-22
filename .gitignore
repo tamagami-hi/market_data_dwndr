@@ -7,6 +7,8 @@ MARKET_DATA/
 z_market_data/
 *.bin
 *.bin.zst
+*.tar.gz
+*.tar
 
 # Python
 .venv/

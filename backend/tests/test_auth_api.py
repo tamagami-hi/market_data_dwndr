@@ -124,32 +124,6 @@ def test_status_route_includes_redacted_daily_automation_state(tmp_path):
     assert "TOKEN_MUST_NOT_ESCAPE" not in response.text
 
 
-def test_risk_free_rate_update_route_clears_third_day_requirement(tmp_path):
-    service = _service(tmp_path)
-    trading_date = service.trading_date()
-    save_session(
-        tmp_path,
-        SessionState(
-            trading_date,
-            "ACCESS",
-            0.065,
-            1,
-            1,
-            risk_free_rate_as_of="2025-07-19",
-            rate_update_required=True,
-        ),
-    )
-    client = _app(service)
-
-    response = client.put("/api/auth/risk-free-rate", json={"risk_free_rate": 0.066})
-
-    assert response.status_code == 200
-    assert response.json()["risk_free_rate"] == 0.066
-    status = client.get("/api/auth/status").json()
-    assert status["rate_update_required"] is False
-    assert status["capture_ready"] is True
-
-
 def test_legacy_login_rejects_automated_body(tmp_path):
     client = _app(_service(tmp_path))
     r = client.post("/api/auth/login", json={"totp": "111111", "risk_free_rate": 0.0691})

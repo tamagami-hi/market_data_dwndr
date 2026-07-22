@@ -5,79 +5,258 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Capture Monitor — market_data_dwndr</title>
 <style>
+  /* ---- design tokens ---------------------------------------------------- */
   :root {
-    --bg: #0b0f14; --panel: #131a22; --panel2: #1a232e; --line: #223140;
-    --text: #e6edf3; --muted: #8aa0b3; --green: #2ecc71; --red: #e74c3c;
-    --amber: #f1c40f; --accent: #4aa3ff;
+    --bg: #0a0e13;
+    --bg-grad: radial-gradient(1200px 600px at 85% -10%, #10202e 0%, transparent 60%),
+               radial-gradient(900px 500px at -10% 0%, #131a26 0%, transparent 55%);
+    --panel: #121924;
+    --panel-2: #0f1620;
+    --elev: #172232;
+    --line: #223042;
+    --line-soft: #1a2532;
+    --text: #e8eef5;
+    --muted: #8697aa;
+    --muted-2: #5f7183;
+    --green: #34d399;
+    --red: #f87171;
+    --amber: #fbbf24;
+    --accent: #4aa3ff;
+    --accent-2: #7c5cff;
+    --radius-lg: 16px;
+    --radius-md: 12px;
+    --radius-sm: 8px;
+    --shadow-1: 0 1px 0 rgba(255,255,255,.03) inset, 0 1px 2px rgba(0,0,0,.35);
+    --shadow-2: 0 8px 24px rgba(0,0,0,.35), 0 2px 6px rgba(0,0,0,.25);
+    --ease: cubic-bezier(.2,.7,.2,1);
+    color-scheme: dark;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  header { display: flex; align-items: center; gap: 16px; padding: 14px 20px;
-    background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; }
-  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-  .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
-  .dot.off { background: var(--red); }
+  html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); background-image: var(--bg-grad);
+    background-attachment: fixed; color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+  }
+  .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+
+  /* ---- header ----------------------------------------------------------- */
+  header {
+    display: flex; align-items: center; gap: 14px; padding: 14px 22px;
+    background: color-mix(in srgb, var(--panel) 88%, transparent);
+    backdrop-filter: blur(10px); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 20;
+  }
+  .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+  .brand .mark {
+    width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
+    background: linear-gradient(140deg, var(--accent), var(--accent-2));
+    box-shadow: 0 4px 12px rgba(74,163,255,.35); flex: none;
+  }
+  .brand .mark svg { width: 17px; height: 17px; display: block; }
+  .brand h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .2px; text-wrap: balance; }
+  .brand .sub { font-size: 11.5px; color: var(--muted-2); margin-top: -1px; }
   .spacer { flex: 1; }
-  input { background: var(--panel2); border: 1px solid var(--line); color: var(--text);
-    border-radius: 6px; padding: 6px 10px; }
-  button { background: var(--accent); border: 0; color: #04121f; font-weight: 600;
-    border-radius: 6px; padding: 6px 12px; cursor: pointer; }
-  main { padding: 20px; display: grid; gap: 20px; }
-  .globals { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 12px; }
-  .metric { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
-  .metric .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
-  .metric .value { font-size: 22px; font-weight: 700; margin-top: 6px; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px,1fr)); gap: 14px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
-  .card .top { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-  .card .name { font-weight: 700; font-size: 15px; }
-  .card .row { display: flex; justify-content: space-between; padding: 3px 0; color: var(--muted); }
-  .card .row b { color: var(--text); font-weight: 600; }
-  .beat { margin-left: auto; font-size: 11px; padding: 2px 8px; border-radius: 20px; }
-  .beat.ok { background: rgba(46,204,113,.15); color: var(--green); }
-  .beat.stale { background: rgba(231,76,60,.15); color: var(--red); }
-  h2 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 0 0 4px; }
-  #log { background: #05090d; border: 1px solid var(--line); border-radius: 10px; padding: 12px;
-    height: 180px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-  #log div { color: var(--muted); }
-  #log div span { color: var(--accent); }
+  .clock { color: var(--muted); font-size: 12.5px; letter-spacing: .3px; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px;
+    border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2);
+    font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted-2); flex: none;
+    transition-property: background-color, box-shadow; transition-duration: 200ms; transition-timing-function: var(--ease); }
+  .dot.on { background: var(--green); box-shadow: 0 0 0 3px rgba(52,211,153,.18); animation: pulse 2.4s ease-in-out infinite; }
+  .dot.off { background: var(--red); box-shadow: 0 0 0 3px rgba(248,113,113,.16); }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 3px rgba(52,211,153,.18);} 50% { box-shadow: 0 0 0 5px rgba(52,211,153,.05);} }
+
+  input {
+    height: 40px; background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+    border-radius: var(--radius-sm); padding: 0 12px; font-size: 13px; min-width: 0;
+    transition-property: border-color, box-shadow; transition-duration: 150ms; transition-timing-function: var(--ease);
+  }
+  input::placeholder { color: var(--muted-2); }
+  input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(74,163,255,.18); }
+  button {
+    height: 40px; min-width: 104px; padding: 0 16px; border: 0; cursor: pointer;
+    color: #05121f; font-weight: 700; font-size: 13px; border-radius: var(--radius-sm);
+    background: linear-gradient(180deg, #63b1ff, var(--accent)); box-shadow: var(--shadow-1);
+    transition-property: transform, filter, box-shadow; transition-duration: 140ms; transition-timing-function: var(--ease);
+  }
+  button:hover { filter: brightness(1.06); }
+  button:active { transform: scale(.97); }
+  button.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+
+  /* ---- layout ----------------------------------------------------------- */
+  main { padding: 22px; display: grid; gap: 22px; max-width: 1440px; margin: 0 auto; }
+  .section-title { display: flex; align-items: baseline; gap: 10px; margin: 0 2px 2px; }
+  .section-title h2 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .09em; margin: 0; font-weight: 700; }
+  .section-title .hint { font-size: 11.5px; color: var(--muted-2); text-wrap: pretty; }
+
+  .grid-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px,1fr)); gap: 14px; }
+  .metric {
+    background: linear-gradient(180deg, var(--panel), var(--panel-2));
+    border: 1px solid var(--line-soft); border-radius: var(--radius-md); padding: 15px 16px;
+    box-shadow: var(--shadow-1);
+  }
+  .metric .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+  .metric .value { font-size: 24px; font-weight: 720; margin-top: 7px; letter-spacing: .3px; }
+  .metric .value small { font-size: 13px; color: var(--muted); font-weight: 600; margin-left: 3px; }
+  .metric .value.good { color: var(--green); } .metric .value.warn { color: var(--amber); } .metric .value.bad { color: var(--red); }
+
+  /* ---- compression panel ------------------------------------------------ */
+  .panel {
+    background: linear-gradient(180deg, var(--panel), var(--panel-2));
+    border: 1px solid var(--line-soft); border-radius: var(--radius-lg); padding: 18px 20px;
+    box-shadow: var(--shadow-2);
+  }
+  .panel .head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+  .panel .head .title { font-size: 14.5px; font-weight: 650; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 999px;
+    font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+    border: 1px solid var(--line); color: var(--muted); background: var(--panel-2);
+    transition-property: color, background-color, border-color; transition-duration: 200ms; transition-timing-function: var(--ease);
+  }
+  .badge.running { color: #cfe6ff; background: rgba(74,163,255,.14); border-color: rgba(74,163,255,.4); }
+  .badge.done { color: #bff3df; background: rgba(52,211,153,.14); border-color: rgba(52,211,153,.4); }
+  .badge.failed { color: #ffd6d6; background: rgba(248,113,113,.14); border-color: rgba(248,113,113,.4); }
+  .badge.idle { color: var(--muted); }
+
+  .progress {
+    position: relative; height: 16px; border-radius: 999px; background: var(--panel-2);
+    border: 1px solid var(--line); overflow: hidden; box-shadow: inset 0 1px 3px rgba(0,0,0,.4);
+  }
+  .progress .fill {
+    position: absolute; inset: 0 auto 0 0; width: 0%; border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    transition-property: width, background; transition-duration: 550ms; transition-timing-function: var(--ease);
+  }
+  .progress .fill.done { background: linear-gradient(90deg, #2fbf8a, var(--green)); }
+  .progress .fill.failed { background: linear-gradient(90deg, #e05656, var(--red)); }
+  /* moving sheen only while running */
+  .progress .fill.running::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(100deg, transparent 20%, rgba(255,255,255,.25) 50%, transparent 80%);
+    background-size: 200% 100%; animation: sheen 1.4s linear infinite;
+  }
+  @keyframes sheen { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+  .cmeta { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px,1fr)); gap: 12px 20px; margin-top: 16px; }
+  .cmeta .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  .cmeta .v { font-size: 16px; font-weight: 680; margin-top: 4px; }
+  .cfile { margin-top: 14px; font-size: 12.5px; color: var(--muted); text-wrap: pretty; }
+  .cfile b { color: var(--text); font-weight: 600; }
+
+  /* ---- per-underlying cards --------------------------------------------- */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(248px,1fr)); gap: 14px; }
+  .card {
+    background: linear-gradient(180deg, var(--panel), var(--panel-2));
+    border: 1px solid var(--line-soft); border-radius: var(--radius-md); padding: 15px 16px; box-shadow: var(--shadow-1);
+    transition-property: transform, border-color, box-shadow; transition-duration: 160ms; transition-timing-function: var(--ease);
+  }
+  .card:hover { transform: translateY(-2px); border-color: var(--line); box-shadow: var(--shadow-2); }
+  .card .top { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
+  .card .name { font-weight: 700; font-size: 15px; letter-spacing: .3px; }
+  .card .beat { margin-left: auto; font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: .04em; }
+  .card .beat.ok { background: rgba(52,211,153,.15); color: var(--green); }
+  .card .beat.stale { background: rgba(248,113,113,.15); color: var(--red); }
+  .card .row { display: flex; justify-content: space-between; align-items: baseline; padding: 4px 0; color: var(--muted); font-size: 12.5px; }
+  .card .row b { color: var(--text); font-weight: 640; }
+  .empty { color: var(--muted-2); font-size: 13px; padding: 8px 2px; text-wrap: pretty; }
+
+  /* ---- log -------------------------------------------------------------- */
+  #log {
+    background: #06090e; border: 1px solid var(--line-soft); border-radius: var(--radius-md); padding: 12px 14px;
+    height: 200px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  }
+  #log div { color: var(--muted); padding: 1px 0; }
+  #log div .t { color: var(--accent); margin-right: 8px; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #223042; border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
 </style>
 </head>
 <body>
 <header>
-  <span id="conn" class="dot off"></span>
-  <h1>Capture Monitor</h1>
+  <div class="brand">
+    <span class="mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none"><path d="M3 17l5-5 4 4 8-9" stroke="#05121f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </span>
+    <div>
+      <h1>Capture Monitor</h1>
+      <div class="sub">market_data_dwndr · live telemetry</div>
+    </div>
+  </div>
   <span class="spacer"></span>
-  <input id="token" placeholder="access token" size="24" />
+  <span class="clock num" id="clock">--:--:--</span>
+  <span class="pill"><span id="conn" class="dot off"></span><span id="conn-label">Disconnected</span></span>
+  <input id="token" placeholder="access token (optional)" size="20" aria-label="access token" />
   <button id="connect">Connect</button>
 </header>
+
 <main>
+  <!-- HEALTH / OVERVIEW -->
   <section>
-    <h2>Global</h2>
-    <div class="globals" id="globals">
-      <div class="metric"><div class="label">Tokens</div><div class="value" id="g-tokens">–</div></div>
-      <div class="metric"><div class="label">Frames / sec</div><div class="value" id="g-fps">–</div></div>
-      <div class="metric"><div class="label">Captures</div><div class="value" id="g-captures">–</div></div>
-      <div class="metric"><div class="label">Disk (MARKET_DATA)</div><div class="value" id="g-disk">–</div></div>
+    <div class="section-title"><h2>Overview</h2><span class="hint">Is capture healthy right now?</span></div>
+    <div class="grid-metrics">
+      <div class="metric"><div class="label">Link</div><div class="value" id="g-link">–</div></div>
+      <div class="metric"><div class="label">Session phase</div><div class="value" id="g-phase" style="font-size:18px">–</div></div>
+      <div class="metric"><div class="label">Tokens</div><div class="value num" id="g-tokens">–</div></div>
+      <div class="metric"><div class="label">Frames / sec</div><div class="value num" id="g-fps">–</div></div>
+      <div class="metric"><div class="label">Captures</div><div class="value num" id="g-captures">–</div></div>
+      <div class="metric"><div class="label">Disk · MARKET_DATA</div><div class="value num" id="g-disk">–</div></div>
     </div>
   </section>
+
+  <!-- COMPRESSION / EOD -->
   <section>
-    <h2>Per underlying</h2>
-    <div class="cards" id="cards"></div>
+    <div class="section-title"><h2>End-of-day compression</h2><span class="hint">zstd archive sweep — multithreaded (max 6 threads)</span></div>
+    <div class="panel">
+      <div class="head">
+        <span class="title">Archive progress</span>
+        <span class="badge idle" id="c-phase">idle</span>
+        <span class="spacer" style="flex:1"></span>
+        <span class="num" id="c-pct" style="font-size:20px;font-weight:720">0%</span>
+      </div>
+      <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="c-bar">
+        <div class="fill" id="c-fill"></div>
+      </div>
+      <div class="cmeta">
+        <div><div class="k">Files</div><div class="v num" id="c-files">0 / 0</div></div>
+        <div><div class="k">Raw → Archive</div><div class="v num" id="c-bytes">– → –</div></div>
+        <div><div class="k">Ratio</div><div class="v num" id="c-ratio">–</div></div>
+        <div><div class="k">Threads</div><div class="v num" id="c-threads">–</div></div>
+        <div><div class="k">Elapsed</div><div class="v num" id="c-elapsed">–</div></div>
+      </div>
+      <div class="cfile" id="c-file">Waiting for an end-of-day sweep. Progress appears here when compression runs after market close.</div>
+    </div>
   </section>
+
+  <!-- PER-UNDERLYING -->
   <section>
-    <h2>Session / log</h2>
+    <div class="section-title"><h2>Per underlying</h2><span class="hint">Connection, heartbeat, and write throughput</span></div>
+    <div class="cards" id="cards"><div class="empty">No capture telemetry yet — connect to begin streaming.</div></div>
+  </section>
+
+  <!-- LOG -->
+  <section>
+    <div class="section-title"><h2>Session log</h2><span class="hint">Latest events first</span></div>
     <div id="log"></div>
   </section>
 </main>
+
 <script>
-  // Self-contained Capture Monitor. Consumes /ws/capture-status and /ws/session.
+  // Self-contained Capture Monitor. Consumes /ws/capture-status (CaptureStatus +
+  // CompressionProgress) and /ws/session (Log, SessionStatus, Heartbeat).
   const qs = new URLSearchParams(location.search);
-  const tokenInput = document.getElementById("token");
+  const $ = (id) => document.getElementById(id);
+  const tokenInput = $("token");
   tokenInput.value = qs.get("token") || "";
 
+  // ---- live clock ----
+  setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString(); }, 1000);
+
+  // ---- formatters ----
   function fmtBytes(n) {
     if (!n) return "0 B";
     const u = ["B", "KB", "MB", "GB", "TB"];
@@ -85,15 +264,30 @@
     return (n / Math.pow(1024, i)).toFixed(i ? 1 : 0) + " " + u[i];
   }
   function fmtTime(ms) { return ms ? new Date(ms).toLocaleTimeString() : "–"; }
-
-  function renderGlobal(g) {
-    document.getElementById("g-tokens").textContent = g.tokens ?? "–";
-    document.getElementById("g-fps").textContent = (g.fps ?? 0).toFixed(2);
-    document.getElementById("g-captures").textContent = g.captures ?? "–";
-    document.getElementById("g-disk").textContent = fmtBytes(g.disk_bytes || 0);
+  function fmtDur(ms) {
+    if (!ms || ms < 0) return "–";
+    const s = Math.floor(ms / 1000), m = Math.floor(s / 60);
+    return m ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
   }
+
+  // ---- overview ----
+  function renderGlobal(g) {
+    $("g-tokens").textContent = g.tokens ?? "–";
+    $("g-fps").textContent = (g.fps ?? 0).toFixed(2);
+    $("g-captures").textContent = (g.captures ?? 0).toLocaleString();
+    $("g-disk").textContent = fmtBytes(g.disk_bytes || 0);
+  }
+  function setLink(up) {
+    $("conn").className = "dot " + (up ? "on" : "off");
+    $("conn-label").textContent = up ? "Connected" : "Disconnected";
+    const el = $("g-link"); el.textContent = up ? "Live" : "Down";
+    el.className = "value " + (up ? "good" : "bad");
+  }
+
+  // ---- per-underlying cards ----
   function renderCards(list) {
-    const root = document.getElementById("cards");
+    const root = $("cards");
+    if (!list || !list.length) { root.innerHTML = '<div class="empty">No capture telemetry yet — connect to begin streaming.</div>'; return; }
     root.innerHTML = "";
     for (const u of list) {
       const el = document.createElement("div");
@@ -104,52 +298,87 @@
           <span class="name">${u.underlying}</span>
           <span class="beat ${u.heartbeat_ok ? "ok" : "stale"}">${u.heartbeat_ok ? "1 Hz" : "stale"}</span>
         </div>
-        <div class="row"><span>Frames today</span><b>${(u.frames_written ?? 0).toLocaleString()}</b></div>
-        <div class="row"><span>File size</span><b>${fmtBytes(u.file_bytes || 0)}</b></div>
-        <div class="row"><span>Last tick</span><b>${fmtTime(u.last_tick_ms)}</b></div>
-        <div class="row"><span>Unmatched</span><b>${u.unmatched ?? 0}</b></div>`;
+        <div class="row"><span>Frames today</span><b class="num">${(u.frames_written ?? 0).toLocaleString()}</b></div>
+        <div class="row"><span>File size</span><b class="num">${fmtBytes(u.file_bytes || 0)}</b></div>
+        <div class="row"><span>Last tick</span><b class="num">${fmtTime(u.last_tick_ms)}</b></div>
+        <div class="row"><span>Unmatched</span><b class="num">${u.unmatched ?? 0}</b></div>`;
       root.appendChild(el);
     }
   }
+
+  // ---- compression progress ----
+  function renderCompression(c) {
+    const phase = c.phase || "idle";
+    const total = c.bytes_total || 0, done = c.bytes_done || 0;
+    const pct = total ? Math.min(100, Math.round((done / total) * 100)) : (phase === "done" ? 100 : 0);
+
+    const badge = $("c-phase"); badge.className = "badge " + phase; badge.textContent = phase;
+    $("c-pct").textContent = pct + "%";
+    const fill = $("c-fill");
+    fill.className = "fill" + (phase === "running" ? " running" : phase === "done" ? " done" : phase === "failed" ? " failed" : "");
+    fill.style.width = pct + "%";
+    const bar = $("c-bar"); bar.setAttribute("aria-valuenow", String(pct));
+
+    $("c-files").textContent = `${c.files_done ?? 0} / ${c.files_total ?? 0}`;
+    $("c-bytes").textContent = `${fmtBytes(done)} → ${fmtBytes(c.zst_bytes || 0)}`;
+    $("c-ratio").textContent = c.ratio ? `${(+c.ratio).toFixed(2)}×` : "–";
+    $("c-threads").textContent = c.threads ?? "–";
+    $("c-elapsed").textContent = (c.started_at && c.updated_at) ? fmtDur(c.updated_at - c.started_at) : "–";
+
+    if (phase === "running" && c.current_file) $("c-file").innerHTML = `Compressing <b>${c.current_file}</b>…`;
+    else if (phase === "done") $("c-file").innerHTML = `Sweep complete — <b>${c.files_done ?? 0}</b> file(s) archived at <b>${c.ratio ? (+c.ratio).toFixed(2) + "×" : "?"}</b>.`;
+    else if (phase === "failed") $("c-file").innerHTML = `Compression failed — raw files were retained. Check backend logs.`;
+  }
+
+  // ---- log ----
   function log(msg) {
-    const box = document.getElementById("log");
+    const box = $("log");
     const line = document.createElement("div");
-    line.innerHTML = `<span>${new Date().toLocaleTimeString()}</span> ${msg}`;
+    line.innerHTML = `<span class="t num">${new Date().toLocaleTimeString()}</span>${msg}`;
     box.prepend(line);
     while (box.children.length > 200) box.removeChild(box.lastChild);
   }
 
-  let sockets = [];
-  function closeAll() { sockets.forEach((s) => { try { s.close(); } catch (e) {} }); sockets = []; }
+  // ---- websockets ----
+  let sockets = [], connected = false;
+  function closeAll() { connected = false; sockets.forEach((s) => { try { s.close(); } catch (e) {} }); sockets = []; setLink(false); }
 
   function connectTopic(topic, onMessage) {
     const token = encodeURIComponent(tokenInput.value);
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const url = `${proto}://${location.host}/ws/${topic}?token=${token}`;
     const ws = new WebSocket(url);
-    ws.onopen = () => { document.getElementById("conn").className = "dot on"; log(`connected /ws/${topic}`); };
-    ws.onclose = () => { document.getElementById("conn").className = "dot off"; log(`closed /ws/${topic}, retrying…`);
-      setTimeout(() => { if (sockets.includes(ws)) { sockets = sockets.filter(s=>s!==ws); connectTopic(topic, onMessage); } }, 3000); };
+    ws.onopen = () => { connected = true; setLink(true); log(`connected <b>/ws/${topic}</b>`); };
+    ws.onclose = () => {
+      setLink(false); log(`closed /ws/${topic} — retrying in 3s…`);
+      setTimeout(() => { if (sockets.includes(ws)) { sockets = sockets.filter((s) => s !== ws); connectTopic(topic, onMessage); } }, 3000);
+    };
     ws.onmessage = (ev) => { try { onMessage(JSON.parse(ev.data)); } catch (e) {} };
     sockets.push(ws);
   }
 
   function handleCaptureStatus(env) {
-    if (env.type !== "CaptureStatus") return;
-    renderGlobal(env.payload.global || {});
-    renderCards(env.payload.per_underlying || []);
+    if (env.type === "CaptureStatus") {
+      renderGlobal(env.payload.global || {});
+      renderCards(env.payload.per_underlying || []);
+    } else if (env.type === "CompressionProgress") {
+      renderCompression(env.payload || {});
+    }
   }
   function handleSession(env) {
     if (env.type === "Log") log(env.payload.message);
-    else if (env.type === "SessionStatus") log(`session: ${env.payload.phase}`);
+    else if (env.type === "SessionStatus") { $("g-phase").textContent = env.payload.phase; log(`session: <b>${env.payload.phase}</b>`); }
   }
 
-  document.getElementById("connect").onclick = () => {
+  const btn = $("connect");
+  btn.onclick = () => {
+    if (connected || sockets.length) { closeAll(); btn.textContent = "Connect"; btn.classList.remove("ghost"); log("disconnected"); return; }
     closeAll();
     connectTopic("capture-status", handleCaptureStatus);
     connectTopic("session", handleSession);
+    btn.textContent = "Disconnect"; btn.classList.add("ghost");
   };
-  if (tokenInput.value) document.getElementById("connect").click();
+  if (tokenInput.value) btn.click();
 </script>
 </body>
 </html>

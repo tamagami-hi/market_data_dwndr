@@ -65,7 +65,7 @@ Batches:
 **Depends on:** Phase 1.
 
 Batches:
-- [x] `kite/auth.py` — `.env` api_key/secret; login-URL → `request_token` → `access_token`; capture the day's **bond yield**; persist to session state ([[session-state]]).
+- [x] `kite/auth.py` — `.env` api_key/secret; login-URL → `request_token` → `access_token`; capture the day's **risk-free rate**; persist to session state ([[session-state]]).
 - [x] `kite/instruments.py` — fetch instrument dump per exchange; cache + **daily archive** to `_instruments/` ([[storage-layout]]).
 - [x] `chain/filter.py` + `chain/assembler.py` — `get_spot_atm(step)`, `option_chain_filter`, per-index table + token map ([[option-chain-selection]]).
 - [x] `stocks/board.py` — CalSpread discovery (spot + 3 nearest futures) ([[stocks-capture]]).
@@ -75,7 +75,7 @@ Batches:
 
 **Deliverables:** auth, instruments, chain assembler, stock board modules + tests.
 **DoD:**
-- Login yields a usable `access_token`; bond yield stored in session state.
+- Login yields a usable `access_token`; risk-free rate stored in session state.
 - For each index (NIFTY/BANKNIFTY/FINNIFTY/SENSEX) the filter returns exactly the ATM ± 50 window on real instrument data.
 - Board lists ~all F&O stocks, each with spot + up to 3 futures.
 
@@ -134,7 +134,7 @@ Batches:
 - [x] Session-state persistence + mid-day restart/resume ([[session-state]], [[failure-modes]]).
 
 **Deliverables:** scheduler, EOD sweep, session-state module.
-**DoD:** at close, raw `.bin` → `.bin.zst` (raw removed); a mid-day restart resumes with the same access_token + bond yield and appends to today's files.
+**DoD:** at close, raw `.bin` → `.bin.zst` (raw removed); a mid-day restart resumes with the same access_token + risk-free rate and appends to today's files.
 
 ---
 
@@ -161,7 +161,7 @@ Batches:
 **Depends on:** all above.
 
 Batches:
-- [x] `reconstruction` — Greeks/IV on read (Black-Scholes + header bond yield); CalSpread spread/summary rebuild ([[reconstruction]]).
+- [x] `reconstruction` — Greeks/IV on read (Black-Scholes + header risk-free rate); CalSpread spread/summary rebuild ([[reconstruction]]).
 - [x] Failure-mode handling + data-retention ([[failure-modes]], [[data-retention]]).
 - [x] Full test pass, logging/metrics, docs finalize ([[testing-strategy]]).
 
@@ -183,7 +183,7 @@ Batches:
 - [x] Capture Monitor reflects reality (files, sizes, health) — backend telemetry +
   `/monitor` dashboard.
 - [x] Historical backfill resumes cleanly.
-- [x] Greeks/spreads reconstructable on read from stored raw + bond yield.
+- [x] Greeks/spreads reconstructable on read from stored raw + risk-free rate.
 - [x] Ops: morning start, EOD compression, restart/resume all documented and working
   ([[operations-runbook]]).
 

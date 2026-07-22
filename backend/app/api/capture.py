@@ -114,7 +114,7 @@ class CaptureController:
         from app.session import is_session_capture_ready
 
         if not is_session_capture_ready(session):
-            raise CaptureError("risk-free rate update is required before capture")
+            raise CaptureError("risk-free rate is unavailable; capture cannot start")
 
         bootstrap_fn, run_fn = self._resolve_fns()
         try:
@@ -216,6 +216,24 @@ class CaptureController:
             "skipped_indices": ctx.skipped_indices if ctx else [],
             "error": self._error,
         }
+
+    def monitor_snapshot(self) -> dict | None:
+        """Live capture telemetry payload (per_underlying + global), or ``None``.
+
+        Only available while capture is running; drives the curl-friendly
+        ``GET /api/status`` view of the monitor dashboard.
+        """
+        ctx = self._context
+        if ctx is None or not self.running:
+            return None
+        monitor = getattr(ctx, "monitor", None)
+        if monitor is None:
+            return None
+        try:
+            return monitor.snapshot().get("payload")
+        except Exception:  # noqa: BLE001 - telemetry must never break status reads
+            logger.debug("monitor snapshot failed", exc_info=True)
+            return None
 
     def stock_depth(self, symbol: str) -> dict:
         matrix = self._context.stock_matrix if self._context is not None else None

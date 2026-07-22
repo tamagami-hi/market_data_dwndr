@@ -25,7 +25,7 @@ related: ["[[implementation-plan]]", "[[decisions-and-open-questions]]", "[[bin-
 Everything stored is **raw API data in native integer form** (prices as paise). All
 engineered/derived values (Greeks, IV, net-change, change-in-OI, calendar spreads,
 summary stats) are **not stored** — they are reconstructed on read from the raw fields
-plus the day's bond yield (see [[bin-format]], [[stocks-capture]], [[lossless-and-precision]]).
+plus the day's risk-free rate (see [[bin-format]], [[stocks-capture]], [[lossless-and-precision]]).
 
 ## In scope
 
@@ -44,10 +44,10 @@ plus the day's bond yield (see [[bin-format]], [[stocks-capture]], [[lossless-an
 
 - **No order placement or management.** No execution, positions, P&L, risk, strategies.
 - **No IV or Greeks computed at capture.** They are reconstructed on read for display
-  only (Black-Scholes + the stored bond yield).
-- **No automated bond-yield fetch.** The 10-year government bond yield is confirmed
-  manually, may be reused the following Monday–Friday market day, and must be updated
-  on the third market day. It is stored in each file header and is not fetched from an API.
+  only (Black-Scholes + the stored risk-free rate).
+- **Daily risk-free-rate fetch.** The risk-free rate is fetched once per trading day
+  from the calspread broker (env `RISK_FREE_RATE` is the fallback). It is stored in each
+  file header for deterministic Greek reconstruction.
 - **No backtest playback engine.** We produce `.bin` files; replay is a later add-on.
 
 ## What we keep vs. drop (relative to algo_engine)
@@ -61,7 +61,7 @@ plus the day's bond yield (see [[bin-format]], [[stocks-capture]], [[lossless-an
 | Frontend option-chain UI | ✅ | ✅ (Greeks columns computed on read) |
 | F&O stock spot + futures capture | ❌ | ✅ added (CalSpread board, L5) |
 | Implied volatility / Greeks | ✅ stored | ❌ not stored — reconstructed on read |
-| Risk-free / 10-yr bond yield | ✅ | ✅ stored in header (manual freshness policy) |
+| Risk-free / risk-free rate | ✅ | ✅ stored in header (fetched daily from calspread) |
 | VIX (raw from API) | ✅ | ✅ kept (raw) |
 | Order execution / strategies / risk | ✅ | ❌ dropped |
 

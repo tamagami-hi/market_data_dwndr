@@ -3,7 +3,7 @@
 ## Outcome
 
 Run the downloader unattended on the home VPS while preserving an explicit operator
-decision for the 10-year bond yield. The shared calspread.online session is the primary
+decision for the risk-free rate. The shared calspread.online session is the primary
 authentication source; the TOTP flow remains a manual fallback.
 
 ## Required behaviour
@@ -15,15 +15,15 @@ authentication source; the TOTP flow remains a manual fallback.
   after a validated token is saved.
 - On a late Monday–Friday market-day start, validate the newest persisted token first;
   if it fails, continue broker polling during market hours until capture can start.
-- Start capture at 09:00 when token and yield are capture-ready; stop and flush at
+- Start capture at 09:00 when token and risk-free rate are capture-ready; stop and flush at
   15:30, then run verified EOD compression.
-- Reuse the previous yield on the next Monday–Friday market day. On the third market day from
-  its `as_of` date, require an operator update before capture can begin.
+- Fetch the risk-free rate once per trading day from the calspread broker (env
+  `RISK_FREE_RATE` is the fallback); no freshness/expiry rule.
 - Transport and display the already-persisted five-level stock order book.
 - Ship the deployable stack under `release_manager/DATA_DOWNLOADER` without Nginx.
 
 ## Acceptance
 
 Automation exposes a redacted status and next action, survives restarts idempotently,
-never logs broker secrets/tokens, never starts capture with a stale required yield, and
+never logs broker secrets/tokens, never starts capture with a stale required risk-free rate, and
 never compresses before capture writers have stopped.

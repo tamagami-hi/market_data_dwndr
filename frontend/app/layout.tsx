@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import NavBar from "@/components/NavBar";
+import { APP_NAME, APP_TAGLINE } from "@/lib/branding";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "market_data_dwndr",
-  description: "Zerodha Kite market-data capture monitor",
+  title: APP_NAME,
+  description: APP_TAGLINE,
 };
 
 export default function RootLayout({

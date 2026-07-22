@@ -26,7 +26,7 @@ Configuration is via **pydantic-settings** reading a `.env` file (typed, validat
 | `KITE_TOKEN_BROKER_PASSCODE` | – | `••••` | Secret `x-token-passcode`; rotate and set with broker URL |
 | `RELEASE_MAINTENANCE_TOKEN` | release | `••••` | At least 32 characters; authenticates the internal capture drain API |
 | `RELEASE_MAINTENANCE_TTL_SECONDS` | – | `900` | Persistent drain lease lifetime; release tooling requires 600–900 seconds |
-| `RISK_FREE_RATE` | – | `0.0691` | Legacy fallback for the 10-year government bond yield (decimal); staged UI/CLI asks the user to confirm it |
+| `RISK_FREE_RATE` | – | `0.0691` | Fallback risk-free rate (decimal) used only when `KITE_RATE_BROKER_URL` is unavailable |
 | `KITE_STATIC_IP` | – | `203.0.113.7` | Source IP to bind Kite calls to (static-IP whitelist, Apr 2026) |
 | `KITE_HTTP_PROXY` | – | `http://10.0.0.5:3128` | Proxy that egresses from the static IP (alternative to bind) |
 | `INDICES` | – | `NIFTY,BANKNIFTY,FINNIFTY,SENSEX` | Index universe (default locked set) |
@@ -69,7 +69,7 @@ network. The release-maintenance API keeps its dedicated
 On trading days the backend does not contact the token broker before 08:30. From
 08:30 (inclusive) until 09:00 (exclusive), it periodically calls the configured HTTPS
 endpoint, validates any returned token directly with Kite, and persists it. Capture
-starts at 09:00 only when the token and a permitted 10-year government bond yield are
+starts at 09:00 only when the token and the risk-free rate are
 present. The local TOTP flow remains an explicit operator fallback.
 
 On configured market holidays and weekends, the backend does not poll the broker,
@@ -81,10 +81,10 @@ recent persisted access token. If that token is no longer usable, shared-token p
 continues at the configured interval for the remainder of the capture window; capture
 starts automatically as soon as a valid session is available.
 
-The latest yield may be reused on the following Monday–Friday market day. Saturday and
-Sunday do not age it. On the third market day (`age >= 2`), capture remains blocked
-until the operator confirms a new yield.
-Enter yields as decimals, for example `0.0691` for 6.91%.
+The risk-free rate is fetched once per trading day from `KITE_RATE_BROKER_URL` (it
+returns a percent, which the backend converts to a decimal, reusing the
+`x-token-passcode`). `RISK_FREE_RATE` is used only as a fallback when that broker is
+unavailable.
 
 ## Release-maintenance lease
 
