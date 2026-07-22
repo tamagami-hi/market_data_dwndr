@@ -14,6 +14,7 @@ storage layout in docs/20-data-and-storage/storage-layout.md.
 
 from __future__ import annotations
 
+from datetime import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
@@ -61,6 +62,18 @@ class Settings(BaseSettings):
         description="Backend-only x-token-passcode for the Kite token broker",
     )
 
+    # --- internal release drain lease (backend-only) ---
+    release_maintenance_token: SecretStr | None = Field(
+        default=None,
+        description="Secret header value for the internal release-maintenance API",
+    )
+    release_maintenance_ttl_seconds: int = Field(
+        default=900,
+        ge=30,
+        le=900,
+        description="Bounded lifetime for a persisted release-maintenance lease",
+    )
+
     # --- egress control (Kite requires a whitelisted static IP from Apr 2026) ---
     # Bind outbound Kite calls to this source address (the host's static IP), and/or
     # route them through a proxy that egresses from the static IP.
@@ -79,6 +92,20 @@ class Settings(BaseSettings):
     # port, so it too is env-only (comma-separate for multiple origins).
     frontend_url: str = Field(..., description="Frontend origin(s) for CORS")
 
+    # --- browser operator authentication ---
+    # The long-lived token is exchanged for a short-lived opaque HttpOnly cookie.
+    operator_api_token: SecretStr = Field(
+        ...,
+        description="Backend-only operator unlock token (32-256 characters)",
+    )
+    operator_session_ttl_seconds: int = Field(default=3_600, ge=300, le=43_200)
+    operator_login_max_attempts: int = Field(default=5, ge=1, le=20)
+    operator_login_window_seconds: int = Field(default=60, ge=10, le=3_600)
+    operator_cookie_secure: bool = Field(
+        default=False,
+        description="Require HTTPS when sending the operator session cookie",
+    )
+
     # --- optional, with locked defaults ---
     # NoDecode: keep pydantic-settings from JSON-decoding this list field so the
     # comma-separated env value (``INDICES=NIFTY,BANKNIFTY,...``) reaches the validator.
@@ -86,7 +113,15 @@ class Settings(BaseSettings):
     stock_universe: str = Field(default="all", description="'all' or a comma allow-list")
     capture_hz: int = Field(default=1, ge=1, description="Snapshot cadence (Hz)")
     zstd_level: int = Field(default=17, ge=1, le=22, description="EOD compression level")
-    market_open: str = Field(default="09:15", description="Session open (IST, HH:MM)")
+    auth_poll_start: str = Field(default="08:30", description="Broker polling start (IST)")
+    auth_poll_end: str = Field(default="09:00", description="Broker polling stop (IST)")
+    auth_poll_interval_seconds: int = Field(
+        default=60,
+        ge=5,
+        le=1_800,
+        description="Seconds between shared-token checks inside the auth window",
+    )
+    market_open: str = Field(default="09:00", description="Capture start (IST, HH:MM)")
     market_close: str = Field(default="15:30", description="Session close (IST, HH:MM)")
     timezone: str = Field(default="Asia/Kolkata", description="Exchange timezone")
     log_level: str = Field(default="INFO")
@@ -97,6 +132,26 @@ class Settings(BaseSettings):
         """Treat an empty optional env value as unset instead of an invalid float."""
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator("release_maintenance_token")
+    @classmethod
+    def _release_maintenance_token_must_not_be_blank(
+        cls, value: SecretStr | None
+    ) -> SecretStr | None:
+        if value is None:
+            return None
+        token_length = len(value.get_secret_value().strip())
+        if not 32 <= token_length <= 256:
+            raise ValueError("RELEASE_MAINTENANCE_TOKEN must contain 32 to 256 characters")
+        return value
+
+    @field_validator("operator_api_token")
+    @classmethod
+    def _operator_api_token_must_be_strong(cls, value: SecretStr) -> SecretStr:
+        token_length = len(value.get_secret_value().strip())
+        if not 32 <= token_length <= 256:
+            raise ValueError("OPERATOR_API_TOKEN must contain 32 to 256 characters")
         return value
 
     @field_validator("indices", mode="before")
@@ -140,6 +195,28 @@ class Settings(BaseSettings):
         archive_root = self.archive_data_path.resolve(strict=False)
         if live_root == archive_root:
             raise ValueError("MARKET_DATA_PATH and ARCHIVE_DATA_PATH must differ")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_daily_schedule(self) -> Settings:
+        def parse(value: str) -> time:
+            try:
+                hour_text, minute_text = value.split(":")
+                if len(hour_text) != 2 or len(minute_text) != 2:
+                    raise ValueError
+                return time(int(hour_text), int(minute_text))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("daily schedule values must use HH:MM") from exc
+
+        auth_start = parse(self.auth_poll_start)
+        auth_end = parse(self.auth_poll_end)
+        market_open = parse(self.market_open)
+        market_close = parse(self.market_close)
+        if not auth_start < auth_end <= market_open < market_close:
+            raise ValueError(
+                "daily schedule must satisfy AUTH_POLL_START < AUTH_POLL_END "
+                "<= MARKET_OPEN < MARKET_CLOSE"
+            )
         return self
 
     @property

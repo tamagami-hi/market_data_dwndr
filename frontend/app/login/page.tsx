@@ -11,6 +11,7 @@ import {
   postLogin,
   startAutomatedLogin,
   submitLoginTotp,
+  updateRiskFreeRate,
   type AuthStatus,
   type LoginResult,
 } from "@/lib/api";
@@ -20,8 +21,10 @@ import {
   loginFlowReducer,
   parseRiskFreeRate,
 } from "@/lib/loginFlow";
+import { automationMessage } from "@/lib/automationStatus";
 
 const LOGIN_ATTEMPT_STORAGE_KEY = "md_login_attempt";
+const STATUS_REFRESH_MS = 15_000;
 
 export default function LoginPage() {
   const [status, setStatus] = useState<AuthStatus | null | undefined>(undefined);
@@ -31,6 +34,8 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<LoginResult | null>(null);
   const [loginUrl, setLoginUrl] = useState<string | null>(null);
+  const [updatedRate, setUpdatedRate] = useState("");
+  const [rateUpdateMessage, setRateUpdateMessage] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -65,10 +70,33 @@ export default function LoginPage() {
         method: savedAttempt.method,
       });
     }
+    const refreshTimer = window.setInterval(() => void refresh(), STATUS_REFRESH_MS);
     return () => {
       isActive = false;
+      window.clearInterval(refreshTimer);
     };
-  }, []);
+  }, [refresh]);
+
+  const updateRate = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const parsedRate = parseRiskFreeRate(updatedRate);
+    if (parsedRate === null) {
+      setRateUpdateMessage("Enter the decimal yield between 0 and 1.");
+      return;
+    }
+    setBusy(true);
+    setRateUpdateMessage(null);
+    try {
+      await updateRiskFreeRate(parsedRate);
+      setUpdatedRate("");
+      setRateUpdateMessage("Yield updated. Automatic capture is now ready.");
+      await refresh();
+    } catch (error) {
+      setRateUpdateMessage(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const start = async () => {
     dispatch({ type: "start" });
@@ -140,7 +168,7 @@ export default function LoginPage() {
     event.preventDefault();
     const parsedRate = parseRiskFreeRate(rate);
     if (parsedRate === null) {
-      dispatch({ type: "failed", message: "Enter a finite non-negative decimal rate." });
+      dispatch({ type: "failed", message: "Enter the decimal yield between 0 and 1." });
       return;
     }
     if (!flow.attemptId) return;
@@ -193,6 +221,25 @@ export default function LoginPage() {
       </div>
 
       <StatusCard status={status} />
+      {status && <AutomationCard status={status} />}
+      {rateUpdateMessage && !status?.rate_update_required && (
+        <p
+          className="rounded-xl border border-green-800/60 bg-green-950/20 p-4 text-sm text-green-300"
+          role="status"
+        >
+          {rateUpdateMessage}
+        </p>
+      )}
+      {status?.authenticated && status.rate_update_required && (
+        <YieldUpdateForm
+          value={updatedRate}
+          busy={busy}
+          message={rateUpdateMessage}
+          hasPreviousYield={Boolean(status.risk_free_rate_as_of)}
+          onChange={setUpdatedRate}
+          onSubmit={updateRate}
+        />
+      )}
       <LoginSteps currentStep={flow.step} />
 
       <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5">
@@ -290,8 +337,8 @@ function RateStep({
   onCancel,
 }: StepFormProps & { method: "shared_session" | "local_credentials" | null }) {
   const confirmation = method === "shared_session"
-    ? "Shared VPS session verified. Confirm today's risk-free rate to activate it here."
-    : "TOTP verified and the access token was issued. Confirm today's risk-free rate.";
+    ? "Shared VPS session verified. Confirm today's 10-year government bond yield to activate it here."
+    : "TOTP verified and the access token was issued. Confirm today's 10-year government bond yield.";
   return (
     <form onSubmit={onSubmit} className="space-y-4">
       <p className="text-sm text-green-400">{confirmation}</p>
@@ -317,7 +364,7 @@ function SuccessStep({ result, onReset }: { result: LoginResult | null; onReset:
     <div className="space-y-3" role="status">
       <p className="font-semibold text-green-400">Login cycle completed successfully.</p>
       <p className="text-sm text-zinc-300">
-        Session {result?.trading_date ?? "today"} · rate {result?.risk_free_rate ?? "confirmed"}
+        Session {result?.trading_date ?? "today"} · 10-year yield {result?.risk_free_rate ?? "confirmed"}
       </p>
       <button type="button" onClick={() => void onReset()} className="text-sm text-sky-400 underline">
         Start another login
@@ -326,11 +373,77 @@ function SuccessStep({ result, onReset }: { result: LoginResult | null; onReset:
   );
 }
 
+function AutomationCard({ status }: { status: AuthStatus }) {
+  const message = automationMessage(
+    status.automation,
+    Boolean(status.capture_ready),
+    Boolean(status.rate_update_required),
+  );
+  const tone = status.rate_update_required || status.automation?.last_error
+    ? "border-amber-900/60 bg-amber-950/20 text-amber-300"
+    : "border-cyan-900/60 bg-cyan-950/20 text-cyan-200";
+  return (
+    <section className={`rounded-xl border p-4 text-sm ${tone}`} aria-live="polite">
+      <p className="font-medium">Daily downloader automation</p>
+      <p className="mt-1">{message}</p>
+      {status.risk_free_rate != null && (
+        <p className="mt-2 text-xs opacity-80">
+          10-year yield {status.risk_free_rate} · valid from {status.risk_free_rate_as_of ?? "today"}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function YieldUpdateForm({
+  value,
+  busy,
+  message,
+  hasPreviousYield,
+  onChange,
+  onSubmit,
+}: {
+  value: string;
+  busy: boolean;
+  message: string | null;
+  hasPreviousYield: boolean;
+  onChange: (value: string) => void;
+  onSubmit: (event: React.FormEvent) => Promise<void>;
+}) {
+  return (
+    <form onSubmit={onSubmit} className="space-y-3 rounded-xl border border-amber-800/60 bg-amber-950/20 p-5">
+      <div>
+        <h2 className="font-semibold text-amber-200">10-year bond yield update required</h2>
+        <p className="mt-1 text-sm text-amber-300/80">
+          {hasPreviousYield
+            ? "The shared token is saved, but this is the third Monday–Friday market day for the stored yield."
+            : "The shared token is saved, but no 10-year yield is stored yet."}
+          {" "}Update it to allow automatic capture; no TOTP or new login is needed.
+        </p>
+      </div>
+      <Field label="Today's 10-year bond yield" hint="Decimal form, for example 0.0691.">
+        <input
+          required
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          inputMode="decimal"
+          placeholder="0.0691"
+          className="w-full rounded-md border border-amber-800 bg-zinc-950 px-3 py-2 font-mono text-zinc-100"
+        />
+      </Field>
+      <button disabled={busy} className="rounded-md bg-amber-400 px-4 py-2 font-semibold text-amber-950 disabled:opacity-50">
+        {busy ? "Updating yield…" : "Update yield and enable capture"}
+      </button>
+      {message && <p role="status" className="text-sm text-amber-200">{message}</p>}
+    </form>
+  );
+}
+
 function LoginSteps({ currentStep }: { currentStep: string }) {
   const activeIndex = currentStep === "totp" ? 1 : currentStep === "rate" ? 2 : currentStep === "success" ? 3 : 0;
   return (
     <ol className="grid grid-cols-3 gap-2" aria-label="Login progress">
-      {["Authenticate", "Risk-free rate", "Success"].map((label, index) => (
+      {["Authenticate", "10-year yield", "Success"].map((label, index) => (
         <li
           key={label}
           aria-current={index + 1 === activeIndex ? "step" : undefined}
@@ -363,7 +476,7 @@ function BrowserFallback({ loginUrl, onSuccess }: { loginUrl: string | null; onS
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     const parsedRate = parseRiskFreeRate(rate);
-    if (!requestToken.trim() || parsedRate === null) return setMessage("Token and rate are required.");
+    if (!requestToken.trim() || parsedRate === null) return setMessage("Token and 10-year yield are required.");
     setBusy(true);
     try {
       await postLogin({ request_token: requestToken.trim(), risk_free_rate: parsedRate });
@@ -381,7 +494,7 @@ function BrowserFallback({ loginUrl, onSuccess }: { loginUrl: string | null; onS
       <form onSubmit={submit} className="mt-3 space-y-3">
         {loginUrl && <a href={loginUrl} target="_blank" rel="noreferrer" className="text-sky-400 underline">Open Zerodha login →</a>}
         <Field label="Request token"><input required value={requestToken} onChange={(event) => setRequestToken(event.target.value)} placeholder="request_token" className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2" /></Field>
-        <Field label="Risk-free rate"><input required value={rate} onChange={(event) => setRate(event.target.value)} placeholder="0.0691" className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2" /></Field>
+        <Field label="10-year government bond yield"><input required value={rate} onChange={(event) => setRate(event.target.value)} placeholder="0.0691" className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2" /></Field>
         <button disabled={busy} className="rounded-md border border-zinc-700 px-3 py-2 text-zinc-200 disabled:opacity-50">{busy ? "Completing…" : "Complete fallback login"}</button>
         {message && <p role="status">{message}</p>}
       </form>

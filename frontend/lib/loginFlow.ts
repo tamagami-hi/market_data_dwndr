@@ -64,5 +64,5 @@ export function isValidTotp(value: string): boolean {
 export function parseRiskFreeRate(value: string): number | null {
   if (!value.trim()) return null;
   const rate = Number(value);
-  return Number.isFinite(rate) && rate >= 0 ? rate : null;
+  return Number.isFinite(rate) && rate >= 0 && rate <= 1 ? rate : null;
 }

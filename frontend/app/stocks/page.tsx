@@ -1,16 +1,22 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { Fragment, useCallback, useMemo, useState } from "react";
 
 import ConnectionDot from "@/components/ConnectionDot";
+import StockDepthPanel from "@/components/StockDepthPanel";
+import { getStockDepth } from "@/lib/api";
 import { fmtCell, formatClockTime, formatIndianNumber } from "@/lib/numberFormat";
 import { useTopicEnvelopes } from "@/lib/useTopic";
 import { stocksConnection } from "@/lib/wsTopicConnection";
-import { MSG, type StockBoardPayload, type StockRow, type WsEnvelope } from "@/lib/wsTypes";
+import { MSG, type StockBoardPayload, type StockDepthSnapshot, type StockRow, type WsEnvelope } from "@/lib/wsTypes";
 
 export default function StocksPage() {
   const [board, setBoard] = useState<StockBoardPayload | null>(null);
   const [query, setQuery] = useState("");
+  const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
+  const [depthBySymbol, setDepthBySymbol] = useState<Record<string, StockDepthSnapshot>>({});
+  const [depthLoading, setDepthLoading] = useState<string | null>(null);
+  const [depthError, setDepthError] = useState<Record<string, string>>({});
 
   const onEnvelope = useCallback((env: WsEnvelope) => {
     if (env.type !== MSG.STOCK_BOARD) return;
@@ -25,6 +31,25 @@ export default function StocksPage() {
     const filtered = q ? all.filter((s) => s.name.toUpperCase().includes(q)) : all;
     return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
   }, [board, query]);
+
+  const toggleDepth = useCallback(async (row: StockRow) => {
+    if (expandedSymbol === row.tradingsymbol) {
+      setExpandedSymbol(null);
+      return;
+    }
+    setExpandedSymbol(row.tradingsymbol);
+    setDepthLoading(row.tradingsymbol);
+    setDepthError((current) => ({ ...current, [row.tradingsymbol]: "" }));
+    try {
+      const depth = await getStockDepth(row.tradingsymbol);
+      setDepthBySymbol((current) => ({ ...current, [row.tradingsymbol]: depth }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "L5 order book is unavailable.";
+      setDepthError((current) => ({ ...current, [row.tradingsymbol]: message }));
+    } finally {
+      setDepthLoading((current) => current === row.tradingsymbol ? null : current);
+    }
+  }, [expandedSymbol]);
 
   return (
     <div className="space-y-4">
@@ -70,7 +95,16 @@ export default function StocksPage() {
             </thead>
             <tbody>
               {rows.map((row, i) => (
-                <StockRowView key={row.tradingsymbol} row={row} zebra={i % 2 === 0} />
+                <StockRowView
+                  key={row.tradingsymbol}
+                  row={row}
+                  zebra={i % 2 === 0}
+                  isExpanded={expandedSymbol === row.tradingsymbol}
+                  depth={depthBySymbol[row.tradingsymbol] ?? null}
+                  isDepthLoading={depthLoading === row.tradingsymbol}
+                  depthError={depthError[row.tradingsymbol] || null}
+                  onToggle={() => void toggleDepth(row)}
+                />
               ))}
             </tbody>
           </table>
@@ -80,22 +114,59 @@ export default function StocksPage() {
   );
 }
 
-function StockRowView({ row, zebra }: { row: StockRow; zebra: boolean }) {
+interface StockRowViewProps {
+  row: StockRow;
+  zebra: boolean;
+  isExpanded: boolean;
+  onToggle: () => void;
+  depth: StockDepthSnapshot | null;
+  isDepthLoading: boolean;
+  depthError: string | null;
+}
+
+function StockRowView({ row, zebra, isExpanded, onToggle, depth, isDepthLoading, depthError }: StockRowViewProps) {
   const fut = (i: number) => row.futures[i];
+  const panelId = `depth-${row.tradingsymbol.replace(/[^A-Za-z0-9_-]/g, "-")}`;
   return (
-    <tr className={`${zebra ? "bg-zinc-900" : "bg-zinc-900/50"} hover:bg-zinc-700/30`}>
-      <td className="px-2 py-1.5 text-left font-medium text-zinc-100 whitespace-nowrap">
-        {row.name}
-      </td>
-      <td className="px-2 py-1.5 text-right font-mono text-zinc-200">
-        {fmtCell(row.spot_ltp, 2)}
-      </td>
-      <FutureCell f={fut(0)} />
-      <FutureCell f={fut(1)} />
-      <FutureCell f={fut(2)} />
-      <SpreadCell value={row.live_spread} />
-      <SpreadCell value={row.daily_spread} />
-    </tr>
+    <Fragment>
+      <tr className={`${zebra ? "bg-zinc-900" : "bg-zinc-900/50"} hover:bg-zinc-700/30`}>
+        <td className="px-2 py-1.5 text-left font-medium text-zinc-100 whitespace-nowrap">
+          <button
+            type="button"
+            aria-expanded={isExpanded}
+            aria-controls={panelId}
+            aria-label={`${isExpanded ? "Hide" : "Show"} L5 depth for ${row.name}`}
+            onClick={onToggle}
+            className="inline-flex items-center gap-2 rounded-sm text-left hover:text-cyan-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
+          >
+            <span aria-hidden="true" className="w-2 text-zinc-500">
+              {isExpanded ? "▾" : "▸"}
+            </span>
+            {row.name}
+          </button>
+        </td>
+        <td className="px-2 py-1.5 text-right font-mono text-zinc-200">
+          {fmtCell(row.spot_ltp, 2)}
+        </td>
+        <FutureCell f={fut(0)} />
+        <FutureCell f={fut(1)} />
+        <FutureCell f={fut(2)} />
+        <SpreadCell value={row.live_spread} />
+        <SpreadCell value={row.daily_spread} />
+      </tr>
+      {isExpanded && (
+        <tr>
+          <td colSpan={7} className="p-0">
+            <StockDepthPanel
+              depth={depth}
+              id={panelId}
+              isLoading={isDepthLoading}
+              error={depthError}
+            />
+          </td>
+        </tr>
+      )}
+    </Fragment>
   );
 }
 

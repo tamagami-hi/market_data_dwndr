@@ -71,7 +71,7 @@ class TradingCalendar:
         t = self.local_dt(now_ms).time()
         if t < self.market_open:
             return PHASE_PRE_OPEN
-        if t <= self.market_close:
+        if t < self.market_close:
             return PHASE_OPEN
         return PHASE_CLOSED
 

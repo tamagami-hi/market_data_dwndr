@@ -283,10 +283,12 @@ def validate_access_token(
 
 
 def validate_risk_free_rate(value: float) -> float:
-    """Return a safe decimal rate or reject non-finite/negative input."""
+    """Return a plausible decimal yield or reject unsafe input."""
     rate = float(value)
-    if not math.isfinite(rate) or rate < 0:
-        raise KiteLoginError("risk_free_rate must be a finite non-negative decimal")
+    if not math.isfinite(rate) or not 0 <= rate <= 1:
+        raise KiteLoginError(
+            "risk_free_rate (10-year bond yield) must be a decimal between 0 and 1"
+        )
     return rate
 
 

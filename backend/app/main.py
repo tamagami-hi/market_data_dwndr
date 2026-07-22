@@ -21,6 +21,11 @@ from app import __version__
 from app.api.auth import create_auth_router
 from app.api.capture import create_capture_router
 from app.logging_config import configure_logging
+from app.security.operator_auth import (
+    OperatorAuthMiddleware,
+    OperatorAuthService,
+    create_operator_router,
+)
 from app.ws.routes import ConnectionManager, create_ws_router
 
 logger = logging.getLogger(__name__)
@@ -39,19 +44,35 @@ def cors_origins() -> list[str]:
 
 def _init_session_service(app: FastAPI) -> None:
     """Build the session service from env; report resume state. Never raises."""
+    app.state.settings = None
+    app.state.operator_auth = None
     try:
         from app.config import get_settings
         from app.session_service import SessionService
 
         settings = get_settings()
         configure_logging(settings.log_level)
-        service = SessionService(settings)
         app.state.settings = settings
+        app.state.operator_auth = OperatorAuthService(
+            operator_token=settings.operator_api_token.get_secret_value(),
+            session_ttl_seconds=settings.operator_session_ttl_seconds,
+            login_max_attempts=settings.operator_login_max_attempts,
+            login_window_seconds=settings.operator_login_window_seconds,
+            cookie_secure=settings.operator_cookie_secure,
+            allowed_origins=settings.cors_origins,
+        )
+        service = SessionService(settings)
         app.state.session_service = service
 
         from app.api.capture import CaptureController
+        from app.ops.automation import DailyAutomationService
 
         app.state.capture_controller = CaptureController(settings, service, app.state.ws_hub)
+        app.state.daily_automation = DailyAutomationService(
+            settings,
+            service,
+            app.state.capture_controller,
+        )
 
         status = service.status()
         if status["authenticated"]:
@@ -62,23 +83,33 @@ def _init_session_service(app: FastAPI) -> None:
             )
         else:
             logger.info(
-                "no Kite session for %s yet — run `md-login` or start the staged login API",
+                "no Kite session for %s yet — shared-token polling begins at %s IST; "
+                "manual login remains available",
                 status["trading_date"],
+                settings.auth_poll_start,
             )
     except Exception as exc:  # noqa: BLE001 - unconfigured env shouldn't crash the app
-        app.state.settings = None
         app.state.session_service = None
         app.state.capture_controller = None
+        app.state.daily_automation = None
         logger.warning("session service not initialised (backend unconfigured): %s", exc)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Application lifespan: resume today's session; wire capture in later."""
+    """Resume state and run the broker/capture/EOD automation task."""
     _init_session_service(app)
+    automation = getattr(app.state, "daily_automation", None)
+    if automation is not None:
+        automation.start()
     try:
         yield
     finally:
+        if automation is not None:
+            await automation.stop()
+        controller = getattr(app.state, "capture_controller", None)
+        if controller is not None and controller.running:
+            await controller.stop()
         service = getattr(app.state, "session_service", None)
         if service is not None:
             service.close()
@@ -97,10 +128,14 @@ ws_hub = ConnectionManager()
 app.state.ws_hub = ws_hub
 app.state.session_service = None
 app.state.capture_controller = None
+app.state.daily_automation = None
+app.state.settings = None
+app.state.operator_auth = None
 
 # CORS: the frontend runs on a different origin/port, so the browser needs the backend
 # to allow its origin. Origins come from FRONTEND_URL in the environment (no hardcoded
 # ports). WebSocket connections are not subject to CORS.
+app.add_middleware(OperatorAuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins(),
@@ -110,6 +145,7 @@ app.add_middleware(
 )
 
 app.include_router(create_ws_router(ws_hub))
+app.include_router(create_operator_router())
 app.include_router(create_auth_router())
 app.include_router(create_capture_router())
 

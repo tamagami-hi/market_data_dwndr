@@ -32,6 +32,16 @@ dist/
 release_manager/rollback/*
 !release_manager/rollback/.gitkeep
 release_manager/current-version
+release_manager/.operation.lock
+release_manager/.bundle-stage.*
+release_manager/recent_builds/*
+!release_manager/recent_builds/.gitkeep
+release_manager/DATA_DOWNLOADER/docker-compose.yml
+release_manager/DATA_DOWNLOADER/manifest.json
+release_manager/DATA_DOWNLOADER/manifest.sig
+release_manager/DATA_DOWNLOADER/version.json
+release_manager/DATA_DOWNLOADER/images/*
+!release_manager/DATA_DOWNLOADER/images/.gitkeep
 
 # Obsidian workspace (keep notes, ignore local UI state)
 .obsidian/workspace*

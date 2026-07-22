@@ -27,6 +27,10 @@ def resolve_session(service) -> tuple[str, float]:
         )
     if not session.access_token:
         raise RuntimeError("session has no access_token — re-run `md-login`")
+    from app.session import is_session_capture_ready
+
+    if not is_session_capture_ready(session):
+        raise RuntimeError("risk-free rate update is required before capture")
     return session.access_token, session.risk_free_rate
 
 

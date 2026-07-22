@@ -64,8 +64,8 @@ MARKET_DATA_PATH=/srv/dev_stack/market_data_dwndr/MARKET_DATA
 ARCHIVE_DATA_PATH=/srv/data/z_market_data
 HTTP_HOST=0.0.0.0
 HTTP_PORT=<backend-port>
-HOST_BIND_ADDRESS=100.122.85.101
-FRONTEND_URL=http://100.122.85.101:<frontend-port>
+HOST_BIND_ADDRESS=<tailscale-ip>
+FRONTEND_URL=http://<tailscale-ip>:<frontend-port>
 APP_UID=10001
 APP_GID=10001
 ```
@@ -74,7 +74,7 @@ Also set the Kite credentials, the rotated broker passcode, and `KITE_USER_ID`. 
 `frontend/.env.local`:
 
 ```dotenv
-NEXT_PUBLIC_BACKEND_URL=http://100.122.85.101:<backend-port>
+NEXT_PUBLIC_BACKEND_URL=http://<tailscale-ip>:<backend-port>
 PORT=<frontend-port>
 E2E_FRONTEND_PORT=<unused-test-port>
 ```
@@ -86,7 +86,7 @@ and bind mounts.
 ## 3. Home-VPS network access
 
 This home VPS has no static public IP and does not use Nginx. Bind both published ports
-to its Tailscale address (`100.122.85.101`) as shown above, then restrict those ports to
+to its Tailscale address (`<tailscale-ip>`) as shown above, then restrict those ports to
 the intended tailnet users/devices with Tailscale ACLs. The backend is not exposed on a
 public interface.
 
@@ -102,7 +102,7 @@ frontend with a localhost backend URL, and use an SSH tunnel:
 ssh -i ~/.ssh/beonedge_vps \
   -L <frontend-port>:127.0.0.1:<frontend-port> \
   -L <backend-port>:127.0.0.1:<backend-port> \
-  beonedge@100.122.85.101
+  beonedge@<tailscale-ip>
 ```
 
 Do not publish the backend to the public internet: CORS/Origin checks are not

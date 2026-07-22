@@ -26,9 +26,3 @@ export function getBackendUrl(): string {
 export function getBackendWsUrl(): string {
   return getBackendUrl().replace(/^http/, "ws");
 }
-
-/** Token used for the `?token=` WS auth query. Any non-empty value is accepted. */
-export function getAuthToken(): string {
-  if (typeof window === "undefined") return "anonymous";
-  return window.localStorage.getItem("md_access_token") || "anonymous";
-}

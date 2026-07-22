@@ -15,9 +15,13 @@ delta since the previous broadcast (we don't store a prior-day baseline).
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import math
+from dataclasses import dataclass
 
-from app.bin_codec.layout import IndexFrame, RawBlock
+from app.bin_codec.layout import IndexFrame, IndexHeader, RawBlock, StockFrame
+from app.capture.snapshot import CaptureSnapshot
 from app.chain.table import IndexTable
 from app.reconstruct.greeks import reconstruct_greeks
 from app.reconstruct.metrics import reconstruct_chain_metrics
@@ -25,6 +29,27 @@ from app.reconstruct.spreads import daily_spread, live_spread
 from app.session import now_ms
 from app.stocks.matrix import StockMatrix
 from app.ws import protocol
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _StockDisplayRef:
+    tradingsymbol: str
+    name: str
+    future_expiries: tuple[str, ...]
+
+
+def _copy_header(header: IndexHeader) -> IndexHeader:
+    """Return a header owned exclusively by the display worker."""
+    return IndexHeader(
+        trading_date=header.trading_date,
+        underlying=header.underlying,
+        expiry_date=header.expiry_date,
+        risk_free_rate=header.risk_free_rate,
+        strikes=header.strikes.copy(),
+        schema_version=header.schema_version,
+    )
 
 
 def _rupees(paise: int) -> float:
@@ -74,31 +99,55 @@ class Broadcaster:
         self.monitor = monitor
         self._clock = clock
         self._prev_oi: dict[str, tuple[list[int], list[int]]] = {}
+        self._index_headers = {
+            name: _copy_header(table.header()) for name, table in index_tables.items()
+        }
+        self._stock_refs = tuple(
+            _StockDisplayRef(
+                tradingsymbol=ref.tradingsymbol,
+                name=ref.name,
+                future_expiries=tuple(future.expiry for future in ref.futures),
+            )
+            for ref in (stock_matrix.stock_refs if stock_matrix is not None else ())
+        )
+        self._latest_snapshot: CaptureSnapshot | None = None
+        self._publish_task: asyncio.Task[None] | None = None
 
     # -- message builders (pure) ------------------------------------------- #
 
     def index_messages(self, name: str, table: IndexTable, ts: int) -> list[dict]:
         header = table.header()
         frame = IndexFrame(ts, table.sequence, table.spot_price, table.vix, table.calls, table.puts)
+        return self._index_frame_messages(name, header, frame)
+
+    def _index_frame_messages(
+        self,
+        name: str,
+        header: IndexHeader,
+        frame: IndexFrame,
+    ) -> list[dict]:
         greeks = reconstruct_greeks(frame, header)
         metrics = reconstruct_chain_metrics(frame, header)
 
         prev = self._prev_oi.get(name)
-        calls_block = _build_grid_block(table.calls, greeks["calls"], prev[0] if prev else None)
-        puts_block = _build_grid_block(table.puts, greeks["puts"], prev[1] if prev else None)
-        self._prev_oi[name] = (
-            [int(v) for v in table.calls.columns["oi"]],
-            [int(v) for v in table.puts.columns["oi"]],
-        )
+        calls_block = _build_grid_block(frame.calls, greeks["calls"], prev[0] if prev else None)
+        puts_block = _build_grid_block(frame.puts, greeks["puts"], prev[1] if prev else None)
+        self._prev_oi = {
+            **self._prev_oi,
+            name: (
+                [int(v) for v in frame.calls.columns["oi"]],
+                [int(v) for v in frame.puts.columns["oi"]],
+            ),
+        }
 
         header_msg = protocol.market_header(
             underlying=name,
             expiry=header.expiry_date,
-            spot_paise=table.spot_price,
+            spot_paise=frame.spot_price,
             atm_paise=int(round(metrics.atm * 100)),
-            vix_paise=table.vix,
-            timestamp_unix_ms=ts,
-            sequence=table.sequence,
+            vix_paise=frame.vix,
+            timestamp_unix_ms=frame.timestamp_unix_ms,
+            sequence=frame.sequence,
         )
         grid_msg = protocol.envelope(
             protocol.TYPE_OPTION_GRID,
@@ -111,8 +160,8 @@ class Broadcaster:
                 "market_atm": metrics.atm,
                 "max_pain": metrics.max_pain,
                 "spot_atm": metrics.atm_strike,
-                "spot": _rupees(table.spot_price),
-                "vix": _rupees(table.vix),
+                "spot": _rupees(frame.spot_price),
+                "vix": _rupees(frame.vix),
             },
         )
         return [header_msg, grid_msg]
@@ -121,8 +170,11 @@ class Broadcaster:
         matrix = self.stock_matrix
         assert matrix is not None
         frame = matrix.snapshot(ts)  # copy; safe to read
+        return self._stock_frame_message(frame)
+
+    def _stock_frame_message(self, frame: StockFrame) -> dict:
         rows = []
-        for row, ref in enumerate(matrix.stock_refs):
+        for row, ref in enumerate(self._stock_refs):
             legs = {
                 "spot": frame.spot,
                 "fut_current": frame.fut_current,
@@ -131,11 +183,11 @@ class Broadcaster:
             }
             futures = []
             leg_names = ["fut_current", "fut_mid", "fut_far"]
-            for i, fref in enumerate(ref.futures):
+            for i, expiry in enumerate(ref.future_expiries):
                 leg = legs[leg_names[i]]
                 futures.append(
                     {
-                        "expiry": fref.expiry,
+                        "expiry": expiry,
                         "ltp": _rupees(leg.scalars["ltp"][row]),
                         "oi": int(leg.scalars["oi"][row]),
                     }
@@ -146,11 +198,18 @@ class Broadcaster:
                     "name": ref.name,
                     "spot_ltp": _rupees(frame.spot.scalars["ltp"][row]),
                     "futures": futures,
-                    "live_spread": live_spread(frame, row) if len(ref.futures) >= 2 else 0.0,
-                    "daily_spread": daily_spread(frame, row) if len(ref.futures) >= 2 else 0.0,
+                    "live_spread": (
+                        live_spread(frame, row) if len(ref.future_expiries) >= 2 else 0.0
+                    ),
+                    "daily_spread": (
+                        daily_spread(frame, row) if len(ref.future_expiries) >= 2 else 0.0
+                    ),
                 }
             )
-        return protocol.envelope(protocol.TYPE_STOCK_BOARD, {"timestamp": ts, "stocks": rows})
+        return protocol.envelope(
+            protocol.TYPE_STOCK_BOARD,
+            {"timestamp": frame.timestamp_unix_ms, "stocks": rows},
+        )
 
     # -- async broadcast --------------------------------------------------- #
 
@@ -164,3 +223,76 @@ class Broadcaster:
         if self.monitor is not None:
             await self.hub.broadcast("capture-status", self.monitor.snapshot())
         await self.hub.broadcast("session", protocol.heartbeat(ts))
+
+    def publish_latest(self, snapshot: CaptureSnapshot) -> None:
+        """Queue a best-effort display update without delaying capture.
+
+        Only one websocket publish runs at a time. While it is in flight, newer
+        timestamps replace the pending one, so a slow frontend cannot create an
+        unbounded queue or backpressure the API-ingestion/BIN-writer path.
+        """
+        self._latest_snapshot = snapshot
+        if self._publish_task is None or self._publish_task.done():
+            self._publish_task = asyncio.create_task(
+                self._drain_latest(), name="capture-ui-publisher"
+            )
+
+    async def _drain_latest(self) -> None:
+        try:
+            while self._latest_snapshot is not None:
+                snapshot = self._latest_snapshot
+                self._latest_snapshot = None
+                try:
+                    await self._publish_snapshot(snapshot)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - UI must never stop capture
+                    logger.warning(
+                        "best-effort frontend broadcast failed (%s)",
+                        type(exc).__name__,
+                    )
+                await asyncio.sleep(0)
+        finally:
+            self._publish_task = None
+            if self._latest_snapshot is not None:
+                self._publish_task = asyncio.create_task(
+                    self._drain_latest(), name="capture-ui-publisher"
+                )
+
+    async def _publish_snapshot(self, snapshot: CaptureSnapshot) -> None:
+        messages = await asyncio.to_thread(self._build_snapshot_messages, snapshot)
+        for topic, message in messages:
+            await self.hub.broadcast(topic, message)
+
+    def _build_snapshot_messages(
+        self, snapshot: CaptureSnapshot
+    ) -> tuple[tuple[str, dict], ...]:
+        messages: list[tuple[str, dict]] = []
+        for name, frame in snapshot.index_frames:
+            header = self._index_headers.get(name)
+            if header is None:
+                raise ValueError(f"missing display metadata for index {name}")
+            messages.extend(
+                ("market-data", message)
+                for message in self._index_frame_messages(name, header, frame)
+            )
+        if snapshot.stock_frame is not None:
+            messages.append(("stocks", self._stock_frame_message(snapshot.stock_frame)))
+        if self.monitor is not None:
+            messages.append(("capture-status", self.monitor.snapshot()))
+        messages.append(("session", protocol.heartbeat(snapshot.timestamp_unix_ms)))
+        return tuple(messages)
+
+    async def wait_until_idle(self) -> None:
+        """Wait until the current and coalesced display updates are complete."""
+        while self._publish_task is not None:
+            await self._publish_task
+
+    async def close(self) -> None:
+        """Discard pending display work during capture shutdown."""
+        self._latest_snapshot = None
+        task = self._publish_task
+        if task is None:
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

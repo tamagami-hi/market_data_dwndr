@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from app.bin_codec.reader import IndexBinReader, StockBinReader
 from app.bin_codec.writer import IndexBinWriter
 from app.capture.engine import CaptureEngine, build_index_writer, build_stock_writer
@@ -132,3 +134,39 @@ def test_engine_capture_once_grows_files(tmp_path):
         assert len(r) == 2
         assert r.frame(0).spot.scalars["ltp"][0] == 295050
         assert len(r.frame(0).spot.depth) == 5  # L5 stocks
+
+
+async def test_live_loop_never_awaits_frontend_publishing():
+    """Saving cadence continues even while a display publish is still pending."""
+
+    class IdleBridge:
+        async def batches(self):
+            while True:
+                await asyncio.sleep(1)
+                yield []
+
+    class BestEffortBroadcaster:
+        def __init__(self):
+            self.timestamps: list[int] = []
+
+        def publish_latest(self, snapshot) -> None:
+            self.timestamps.append(snapshot.timestamp_unix_ms)
+
+    timestamps = iter(range(1000, 2000))
+    engine = CaptureEngine({}, None, {}, None, clock=lambda: next(timestamps))
+    stop_event = asyncio.Event()
+    broadcaster = BestEffortBroadcaster()
+
+    async def stop_after_several_intervals() -> None:
+        await asyncio.sleep(0.035)
+        stop_event.set()
+
+    stopper = asyncio.create_task(stop_after_several_intervals())
+    await asyncio.wait_for(
+        engine.run(IdleBridge(), stop_event, interval_s=0.01, broadcaster=broadcaster),
+        timeout=0.2,
+    )
+    await stopper
+
+    assert engine.captures >= 3
+    assert len(broadcaster.timestamps) == engine.captures

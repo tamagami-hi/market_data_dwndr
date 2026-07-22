@@ -12,9 +12,9 @@ related: ["[[operations-runbook]]", "[[config-and-env]]", "[[failure-modes]]", "
 
 The daily `access_token` (and the **10-yr bond yield** stamped into headers) must
 survive a mid-day restart, so they are held in a small persisted **session-state**
-file. The automated login (`md-login`, see [[config-and-env]]) writes this file: the
-token comes from the login exchange, and the bond yield from `RISK_FREE_RATE` (or a
-terminal prompt).
+file. The morning automation normally writes it after validating the shared broker
+token; the manual `md-login`/TOTP flow remains a fallback. The bond yield comes from
+the most recent permitted session or an explicit frontend/terminal update.
 
 ## Location & shape
 
@@ -25,13 +25,17 @@ terminal prompt).
   "access_token": "…",          // day's Kite token
   "access_token_at": 1753070400000,
   "risk_free_rate": 0.0691,      // 10-yr bond yield entered at login (decimal)
+  "risk_free_rate_as_of": "2026-07-21",
+  "rate_update_required": false,
   "started_at": 1753070400000
 }
 ```
 
 ## Rules
 
-- Written once by `md-login` at the start of the day; read on every (re)start.
+- Written atomically after daily token validation; read on every (re)start.
+- The latest yield may be reused the next Monday–Friday market day. Weekends do not
+  count; on the third market day it is stale and capture stays blocked until updated.
 - The **bond yield** from here is stamped into every file header for the day
   ([[bin-structure-spec]]) so each `.bin` is self-contained.
 - On restart, if a session file exists for today with a valid token, **reuse it** — do
@@ -44,6 +48,7 @@ terminal prompt).
 
 ## Why not just `.env`
 
-`access_token` and bond yield change **every day** and are entered interactively;
-keeping them out of `.env` avoids stale secrets in config and keeps the daily value
-next to the data it stamps.
+The `access_token` changes daily and the bond yield has explicit freshness state.
+Keeping them out of the normal configuration path avoids stale secrets and keeps the
+effective yield next to the data it stamps. `RISK_FREE_RATE` remains only an optional
+legacy bootstrap fallback.

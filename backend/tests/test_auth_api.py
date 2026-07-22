@@ -106,6 +106,50 @@ def test_status_route(tmp_path):
     assert r.json()["authenticated"] is False
 
 
+def test_status_route_includes_redacted_daily_automation_state(tmp_path):
+    app = FastAPI()
+    app.state.session_service = _service(tmp_path)
+    app.state.daily_automation = SimpleNamespace(
+        status=lambda: {
+            "phase": "auth_window",
+            "last_error": "shared token is not ready; retrying in the auth window",
+        }
+    )
+    app.include_router(create_auth_router())
+    client = TestClient(app, headers={"Origin": "http://localhost:3000"})
+
+    response = client.get("/api/auth/status")
+
+    assert response.json()["automation"]["phase"] == "auth_window"
+    assert "TOKEN_MUST_NOT_ESCAPE" not in response.text
+
+
+def test_risk_free_rate_update_route_clears_third_day_requirement(tmp_path):
+    service = _service(tmp_path)
+    trading_date = service.trading_date()
+    save_session(
+        tmp_path,
+        SessionState(
+            trading_date,
+            "ACCESS",
+            0.065,
+            1,
+            1,
+            risk_free_rate_as_of="2025-07-19",
+            rate_update_required=True,
+        ),
+    )
+    client = _app(service)
+
+    response = client.put("/api/auth/risk-free-rate", json={"risk_free_rate": 0.066})
+
+    assert response.status_code == 200
+    assert response.json()["risk_free_rate"] == 0.066
+    status = client.get("/api/auth/status").json()
+    assert status["rate_update_required"] is False
+    assert status["capture_ready"] is True
+
+
 def test_legacy_login_rejects_automated_body(tmp_path):
     client = _app(_service(tmp_path))
     r = client.post("/api/auth/login", json={"totp": "111111", "risk_free_rate": 0.0691})

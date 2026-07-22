@@ -40,6 +40,11 @@ Set `NEXT_PUBLIC_BACKEND_URL` to a browser-reachable backend host and the backen
 `npm run test:e2e` uses `E2E_FRONTEND_PORT` so its production server can run alongside
 the development server; that port is also read only from `.env.local`.
 
+The backend operator token is deliberately absent from frontend environment files.
+Enter it in the operator-unlock screen; it is exchanged for a short-lived HttpOnly
+cookie and is not saved in local/session storage. HTTP API requests use
+`credentials: include`, and WebSocket handshakes authenticate with the same cookie.
+
 ## Build / lint
 
 ```bash
@@ -58,7 +63,8 @@ app/
   stocks/           F&O board
 components/          NavBar, ConnectionDot, OptionChainTable
 lib/
-  config.ts             backend URL / WS URL / auth token
+  config.ts             backend URL / WS URL
+  operatorAuth.ts       operator gate state and validation
   wsTopicConnection.ts  ref-counted per-topic WebSocket (reconnect/backoff)
   wsTypes.ts            tagged-envelope message + payload types
   useTopic.ts           React hooks (useTopicEnvelopes, useConnectionState)

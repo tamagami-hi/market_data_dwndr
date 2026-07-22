@@ -29,7 +29,9 @@ work with minimal edits.
 | `historical-jobs` | Historical download progress | ✅ |
 | `backtest` / `execution` | replay / execution | ❌ (out of scope) |
 
-Auth: token as `?token=` query param (same as algo_engine).
+Auth: the backend-issued opaque operator cookie is sent by the browser during the
+WebSocket handshake. The backend validates both that HttpOnly cookie and the `Origin`
+header. Tokens are never placed in query strings.
 
 ## Message types
 
@@ -38,7 +40,7 @@ Auth: token as `?token=` query param (same as algo_engine).
 | `MarketHeader` | Status-bar scalars: underlying, expiry, spot, spot_atm, atm, vix, timestamp, sequence (+ optional PCR/max-pain, no IV/Greeks) |
 | `OptionGrid` | Full keyframe: `strikes[]` + per-side `GridBlock` (raw columns) |
 | `OptionGridDelta` | Sparse patch: `changed_indices[]` + per-field arrays |
-| `StockBoard` | Stock matrix snapshot (per stock: spot + 3 futures raw fields; live spread computed on read) |
+| `StockBoard` | Lightweight stock matrix snapshot (per stock: spot + up to 3 futures; live spread computed on read) |
 | `CaptureStatus` | Per-underlying: connected, last_tick_ms, frames_written, file_bytes, heartbeat_ok, unmatched; global: tokens, fps, disk_bytes |
 | `Heartbeat` | `{ ts }` liveness |
 | `SessionStatus` | Phase string + connection diagnostics |
@@ -60,6 +62,26 @@ interface GridBlock {
   oi_day_low: number[];
   // change, change_in_oi, iv, delta, gamma, theta, vega, rho: NOT in the feed —
   // computed on read for display if needed (raw + bond yield).
+}
+```
+
+## On-demand stock depth
+
+`StockBoard` intentionally excludes depth so the 1 Hz board does not repeatedly send the
+entire L5 matrix. Expanding a stock row calls
+`GET /api/capture/stocks/{symbol}/depth`. The response contains `spot_depth` and a
+`depth` array for each available futures leg. Each array has exactly five levels ordered
+best-first. Prices are display-ready rupees; quantities and order counts remain integers.
+
+```ts
+interface DepthLevel {
+  level: number;       // 1 through 5
+  bid_price: number;
+  bid_qty: number;
+  bid_orders: number;
+  ask_price: number;
+  ask_qty: number;
+  ask_orders: number;
 }
 ```
 
