@@ -17,8 +17,8 @@ backend's tagged-envelope WebSocket protocol (`app/ws/protocol.py`).
 ```bash
 cd frontend
 npm install
-cp .env.local.example .env.local   # set NEXT_PUBLIC_BACKEND_URL if backend isn't on :8000
-npm run dev                          # http://localhost:3000
+cp .env.local.example .env.local   # set the frontend and backend URLs for your environment
+npm run dev
 ```
 
 ### Port
@@ -29,13 +29,13 @@ scripts. `npm run dev` / `npm run start` load `.env.local` via `dotenv-cli`
 
 ```
 # frontend/.env.local
-NEXT_PUBLIC_BACKEND_URL=http://localhost:9000
-PORT=3000
+NEXT_PUBLIC_BACKEND_URL=http://localhost:<backend-port>
+PORT=<frontend-port>
 ```
 
-To change the port (e.g. if you hit `EADDRINUSE: address already in use :::3000`,
-which means something is already listening on that port), just edit `PORT` and re-run —
-no code change. You can still override for one run with a shell var: `PORT=3001 npm run dev`.
+To change the port, edit `PORT` and restart the frontend; no code change is needed.
+Set `NEXT_PUBLIC_BACKEND_URL` to a browser-reachable backend host and the backend's
+`.env` `HTTP_PORT`, then restart (or rebuild for production) after changing it.
 
 ## Build / lint
 

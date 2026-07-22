@@ -33,8 +33,8 @@ Configuration is via **pydantic-settings** reading a `.env` file (typed, validat
 | `TIMEZONE` | – | `Asia/Kolkata` | Exchange timezone |
 | `LOG_LEVEL` | – | `INFO` | Logging verbosity |
 | `HTTP_HOST` | – | `0.0.0.0` | Backend bind host |
-| `HTTP_PORT` | ✅ | `9000` | Backend HTTP/WS port — **no default**, env-only |
-| `FRONTEND_URL` | ✅ | `http://localhost:3000` | Frontend origin(s) for CORS (comma-separate for many) |
+| `HTTP_PORT` | ✅ | `9000` | Example seed for the backend HTTP/WS port — **no default**, env-only |
+| `FRONTEND_URL` | ✅ | `http://localhost:<frontend-port>` | Frontend origin(s) for CORS (comma-separate for many) |
 
 > **Ports are env-only.** `HTTP_PORT` has no code default; start the backend with
 > `md-serve` (reads `HTTP_PORT`/`HTTP_HOST`). `FRONTEND_URL` sets the CORS allow-list and

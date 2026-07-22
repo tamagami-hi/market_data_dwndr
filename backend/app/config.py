@@ -1,7 +1,7 @@
 """Typed application configuration (pydantic-settings).
 
-Reads a ``.env`` file. Only ``KITE_API_KEY``, ``KITE_API_SECRET`` and
-``MARKET_DATA_PATH`` are required; everything else has a sensible default.
+Reads a ``.env`` file. ``KITE_API_KEY``, ``KITE_API_SECRET``, ``MARKET_DATA_PATH``,
+``HTTP_PORT``, and ``FRONTEND_URL`` are required; other settings have sensible defaults.
 
 The daily ``access_token`` and the 10-yr bond yield are deliberately *not* here --
 they are entered at login and kept in session state (see docs/60-operations/
@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     # Frontend origin(s) for CORS + allowed WebSocket origins. Contains the frontend
     # port, so it too is env-only (comma-separate for multiple origins).
     frontend_url: str = Field(
-        ..., description="Frontend origin(s) for CORS, e.g. http://localhost:3000"
+        ..., description="Frontend origin(s) for CORS"
     )
 
     # --- optional, with locked defaults ---

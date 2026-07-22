@@ -2,8 +2,8 @@
  * Backend endpoints — configured entirely from the environment.
  *
  * `NEXT_PUBLIC_BACKEND_URL` (in `frontend/.env.local`) is the single source of truth for
- * the backend origin, e.g. `http://localhost:9000`. Both the HTTP base and the WebSocket
- * base are derived from it — there are no hardcoded host/port fallbacks anywhere.
+ * the backend origin. Both the HTTP base and the WebSocket base are derived from it —
+ * there are no hardcoded host/port fallbacks anywhere.
  */
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
@@ -16,7 +16,7 @@ export function getBackendUrl(): string {
   if (!BACKEND_URL) {
     throw new Error(
       "NEXT_PUBLIC_BACKEND_URL is not set. Define it in frontend/.env.local " +
-        "(e.g. http://localhost:9000) to match the backend HTTP_PORT.",
+        "to match the backend URL and HTTP_PORT.",
     );
   }
   return stripTrailingSlash(BACKEND_URL);

@@ -51,9 +51,9 @@ md-capture                    # or: python -m app.capture.run
 md-capture --ignore-market-hours   # run off-hours (no auto-stop), Ctrl-C to end
 
 # in-process (so the frontend gets live WS broadcasts): from the running API,
-curl -X POST localhost:8000/api/capture/start
-curl       localhost:8000/api/capture/status
-curl -X POST localhost:8000/api/capture/stop
+curl -X POST "http://<HTTP_HOST>:<HTTP_PORT>/api/capture/start"
+curl       "http://<HTTP_HOST>:<HTTP_PORT>/api/capture/status"
+curl -X POST "http://<HTTP_HOST>:<HTTP_PORT>/api/capture/stop"
 ```
 
 Both require a logged-in session (`md-login`) for the day.
