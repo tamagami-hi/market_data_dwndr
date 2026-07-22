@@ -17,6 +17,8 @@ import logging
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from app.kite.errors import is_authentication_error
+
 logger = logging.getLogger(__name__)
 
 MODE_FULL = "full"
@@ -63,6 +65,7 @@ class TickerBridge:
         self.tokens = list(tokens)
         self._factory = ticker_factory or _default_ticker_factory
         self.queue: asyncio.Queue[list[dict]] = asyncio.Queue(maxsize=queue_maxsize)
+        self.auth_failed = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ticker: Ticker | None = None
         self.connected = False
@@ -82,16 +85,30 @@ class TickerBridge:
         try:
             ws.subscribe(self.tokens)
             ws.set_mode(MODE_FULL, self.tokens)
-        except Exception:  # pragma: no cover - defensive; SDK-specific
-            logger.exception("subscribe/set_mode failed")
+        except Exception as exc:  # pragma: no cover - defensive; SDK-specific
+            if is_authentication_error(exc):
+                self._signal_auth_failure()
+                logger.warning("ticker subscription rejected by Kite authentication")
+            else:
+                logger.exception("subscribe/set_mode failed")
+            self.connected = False
+            return
         self.connected = True
 
     def _on_close(self, ws: Any, code: Any = None, reason: Any = None) -> None:
         logger.warning("ticker closed: code=%s reason=%s", code, reason)
+        if is_authentication_error(code=code, reason=reason):
+            self._signal_auth_failure()
         self.connected = False
 
     def _on_error(self, ws: Any, code: Any = None, reason: Any = None) -> None:
         logger.error("ticker error: code=%s reason=%s", code, reason)
+        if is_authentication_error(code=code, reason=reason):
+            self._signal_auth_failure()
+
+    def _signal_auth_failure(self) -> None:
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self.auth_failed.set)
 
     def _on_reconnect(self, ws: Any, attempts: Any = None) -> None:
         logger.warning("ticker reconnecting (attempt %s)", attempts)
@@ -119,6 +136,7 @@ class TickerBridge:
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
         self._loop = loop or asyncio.get_running_loop()
+        self.auth_failed.clear()
 
     def start(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
         """Create the ticker, wire callbacks, and connect on a background thread."""

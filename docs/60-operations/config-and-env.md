@@ -30,6 +30,7 @@ Configuration is via **pydantic-settings** reading a `.env` file (typed, validat
 | `KITE_STATIC_IP` | – | `203.0.113.7` | Source IP to bind Kite calls to (static-IP whitelist, Apr 2026) |
 | `KITE_HTTP_PROXY` | – | `http://10.0.0.5:3128` | Proxy that egresses from the static IP (alternative to bind) |
 | `INDICES` | – | `NIFTY,BANKNIFTY,FINNIFTY,SENSEX` | Index universe (default locked set) |
+| `MARKET_HOLIDAYS` | – | `2026-08-15,2026-10-02` | Comma-separated exchange closure dates (`YYYY-MM-DD`); no broker polling, capture, or EOD on these dates |
 | `STOCK_UNIVERSE` | – | `all` | `all` or a comma allow-list |
 | `CAPTURE_HZ` | – | `1` | Snapshot cadence (default 1) |
 | `ZSTD_LEVEL` | – | `17` | EOD compression level |
@@ -71,7 +72,11 @@ endpoint, validates any returned token directly with Kite, and persists it. Capt
 starts at 09:00 only when the token and a permitted 10-year government bond yield are
 present. The local TOTP flow remains an explicit operator fallback.
 
-If the backend starts late on a Monday–Friday market day, it first validates the most
+On configured market holidays and weekends, the backend does not poll the broker,
+start capture, or run EOD work. Keep `MARKET_HOLIDAYS` synchronized with the official
+exchange calendar before each calendar year.
+
+If the backend starts late on a market day, it first validates the most
 recent persisted access token. If that token is no longer usable, shared-token polling
 continues at the configured interval for the remainder of the capture window; capture
 starts automatically as soon as a valid session is available.

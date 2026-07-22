@@ -30,6 +30,7 @@ from app.kite.login_flow import LoginCoordinator, LoginProgress
 from app.ops.calendar import TradingCalendar
 from app.session import (
     SessionState,
+    invalidate_session,
     load_latest_session_before,
     load_session,
     now_ms,
@@ -64,6 +65,7 @@ class SessionService:
         self._previous_token_attempted_dates: frozenset[str] = frozenset()
         self._session_lock = threading.RLock()
         self.calendar = TradingCalendar(
+            holidays=set(getattr(settings, "market_holidays", [])),
             timezone_name=settings.timezone,
             market_open=settings.market_open,
             market_close=settings.market_close,
@@ -74,6 +76,15 @@ class SessionService:
 
     def active_session(self) -> SessionState | None:
         return load_session(self.settings.state_dir, self.trading_date())
+
+    def invalidate_active_session(self, expected_access_token: str) -> bool:
+        """Invalidate only the currently persisted token that actually failed."""
+        with self._session_lock:
+            return invalidate_session(
+                self.settings.state_dir,
+                self.trading_date(),
+                expected_access_token,
+            )
 
     def _validate_broker_token(self, access_token: str) -> None:
         client = build_kite_http_client(

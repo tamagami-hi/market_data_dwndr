@@ -14,7 +14,7 @@ storage layout in docs/20-data-and-storage/storage-layout.md.
 
 from __future__ import annotations
 
-from datetime import time
+from datetime import date, time
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
@@ -96,6 +96,10 @@ class Settings(BaseSettings):
     # NoDecode: keep pydantic-settings from JSON-decoding this list field so the
     # comma-separated env value (``INDICES=NIFTY,BANKNIFTY,...``) reaches the validator.
     indices: Annotated[list[str], NoDecode] = Field(default_factory=lambda: list(DEFAULT_INDICES))
+    market_holidays: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description="Comma-separated ISO dates when the exchange is closed",
+    )
     stock_universe: str = Field(default="all", description="'all' or a comma allow-list")
     capture_hz: int = Field(default=1, ge=1, description="Snapshot cadence (Hz)")
     zstd_level: int = Field(default=17, ge=1, le=22, description="EOD compression level")
@@ -139,6 +143,24 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [item.strip().upper() for item in value.split(",") if item.strip()]
         return value
+
+    @field_validator("market_holidays", mode="before")
+    @classmethod
+    def _parse_market_holidays(cls, value: object) -> object:
+        """Parse and normalize comma-separated ISO market-closure dates."""
+        items = value.split(",") if isinstance(value, str) else value
+        if not isinstance(items, (list, tuple, set)):
+            return items
+        normalized: set[str] = set()
+        for item in items:
+            text = str(item).strip()
+            if not text:
+                continue
+            try:
+                normalized.add(date.fromisoformat(text).isoformat())
+            except ValueError as exc:
+                raise ValueError("MARKET_HOLIDAYS must contain ISO dates (YYYY-MM-DD)") from exc
+        return sorted(normalized)
 
     @model_validator(mode="after")
     def _validate_token_broker(self) -> Settings:

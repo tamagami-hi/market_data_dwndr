@@ -41,9 +41,12 @@ the most recent permitted session or an explicit frontend/terminal update.
 - On restart, if a session file exists for today with a valid token, **reuse it** — do
   not re-prompt. Capture appends to today's files (headers are only written when a file
   is empty, so no duplicate header).
-- If the token is missing/expired mid-day, the service pauses capture and surfaces a
-  re-login prompt ([[failure-modes]]); once re-authorized, session state is updated and
-  capture resumes on the same files.
+- If Kite rejects the token on REST bootstrap or the live WebSocket, capture cancels and
+  flushes its writers, then atomically renames only that exact token's active file to
+  `session-<date>.invalidated-<timestamp>.json`. The invalidated record can still
+  provide bond-yield provenance but is never reused as an access token. Daily
+  automation fetches and validates a replacement from the existing HTTPS broker and
+  resumes on the same files without restarting the backend.
 - Never commit `_state/` (it lives under the gitignored `MARKET_DATA/`).
 
 ## Why not just `.env`

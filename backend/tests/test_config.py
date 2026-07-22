@@ -23,6 +23,7 @@ def _set(monkeypatch, **env):
     for key in [
         *_REQUIRED,
         "INDICES",
+        "MARKET_HOLIDAYS",
         "HTTP_HOST",
         "RISK_FREE_RATE",
         "KITE_TOKEN_BROKER_URL",
@@ -241,4 +242,21 @@ def test_token_broker_requires_expected_user_identity(monkeypatch):
     )
 
     with pytest.raises(ValidationError, match="KITE_USER_ID"):
+        _settings()
+
+
+
+def test_market_holidays_parse_normalize_and_deduplicate(monkeypatch):
+    _set(
+        monkeypatch,
+        MARKET_HOLIDAYS="2026-10-02, 2026-08-15,2026-10-02",
+    )
+
+    assert _settings().market_holidays == ["2026-08-15", "2026-10-02"]
+
+
+def test_market_holidays_reject_invalid_dates(monkeypatch):
+    _set(monkeypatch, MARKET_HOLIDAYS="2026-02-30")
+
+    with pytest.raises(ValidationError, match="MARKET_HOLIDAYS"):
         _settings()

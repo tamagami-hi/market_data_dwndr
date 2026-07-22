@@ -191,6 +191,7 @@ def test_session_state_rejects_invalid_persisted_yield(risk_free_rate):
 
 def _settings(tmp_path):
     return SimpleNamespace(
+        market_holidays=[],
         state_dir=tmp_path,
         timezone="Asia/Kolkata",
         market_open="09:00",
@@ -621,3 +622,46 @@ async def test_automation_loop_survives_and_redacts_unexpected_tick_error(
         "daily automation tick failed; retrying"
     )
     assert "SESSION_SECRET_MUST_NOT_ESCAPE" not in caplog.text
+
+
+
+def test_configured_market_holiday_never_polls_or_captures():
+    state = AutomationState()
+    calendar = TradingCalendar(
+        holidays={"2026-07-21"}, market_open="09:00", market_close="15:30"
+    )
+
+    for hour, minute in ((8, 30), (9, 0), (12, 0), (15, 30)):
+        state, actions = decide_automation(
+            _ms(21, hour, minute),
+            state,
+            calendar=calendar,
+            auth_poll_start="08:30",
+            auth_poll_end="09:00",
+            has_valid_session=False,
+            is_capture_ready=False,
+            is_capture_running=False,
+        )
+        assert actions == ()
+
+
+def test_invalidating_current_session_preserves_rate_and_rejects_stale_token(tmp_path):
+    state = SessionState(
+        "2026-07-21", "EXPIRED", 0.065, 1, 1, risk_free_rate_as_of="2026-07-20"
+    )
+    save_session(tmp_path, state)
+    service = SessionService(
+        _settings(tmp_path),
+        clock=lambda: _ms(21, 10, 0),
+        broker_fetcher=lambda: None,
+        broker_validator=lambda _token: None,
+    )
+
+    assert service.invalidate_active_session("OTHER") is False
+    assert load_session(tmp_path, "2026-07-21") == state
+    assert service.invalidate_active_session("EXPIRED") is True
+    assert load_session(tmp_path, "2026-07-21") is None
+
+    rate = resolve_risk_free_rate(tmp_path, "2026-07-21")
+    assert rate.risk_free_rate == 0.065
+    assert rate.risk_free_rate_as_of == "2026-07-20"

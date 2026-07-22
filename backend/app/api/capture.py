@@ -22,6 +22,7 @@ from app.capture.maintenance import (
     MaintenanceLeaseNotFoundError,
     MaintenanceLeaseStore,
 )
+from app.kite.errors import KiteAuthenticationError
 
 logger = logging.getLogger(__name__)
 
@@ -116,9 +117,15 @@ class CaptureController:
             raise CaptureError("risk-free rate update is required before capture")
 
         bootstrap_fn, run_fn = self._resolve_fns()
-        context = bootstrap_fn(
-            self.settings, session.access_token, session.risk_free_rate, hub=self.hub
-        )
+        try:
+            context = bootstrap_fn(
+                self.settings, session.access_token, session.risk_free_rate, hub=self.hub
+            )
+        except KiteAuthenticationError as exc:
+            self._handle_authentication_failure(session.access_token)
+            raise CaptureError(
+                "broker session expired; waiting for automatic token refresh"
+            ) from exc
         self._context = context
         self._stop = asyncio.Event()
         self._error = None
@@ -127,6 +134,9 @@ class CaptureController:
         async def _runner() -> None:
             try:
                 await run_fn(context, self._stop)
+            except KiteAuthenticationError:
+                self._handle_authentication_failure(session.access_token)
+                logger.warning("capture stopped because the Kite session expired")
             except Exception as exc:  # noqa: BLE001 - record, don't crash the server
                 self._has_failed = True
                 self._error = "capture task failed; inspect backend logs"
@@ -177,6 +187,14 @@ class CaptureController:
         async with self._lifecycle_lock:
             self._maintenance_store.release(lease_id)
             return True
+
+    def _handle_authentication_failure(self, expected_access_token: str) -> None:
+        invalidate = getattr(self.session_service, "invalidate_active_session", None)
+        invalidated = bool(invalidate and invalidate(expected_access_token))
+        self._has_failed = False
+        self._error = "broker session expired; waiting for automatic token refresh"
+        if not invalidated:
+            logger.warning("expired Kite session was already replaced or removed")
 
     def _authenticate_maintenance(self, provided_token: str | None) -> None:
         if self._maintenance_store is None or self._maintenance_token is None:

@@ -15,6 +15,7 @@ live loop until a stop event fires.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 
@@ -23,6 +24,7 @@ from app.capture.monitor import CaptureMonitor
 from app.chain.assembler import build_option_chain
 from app.chain.config import VIX_SYMBOL, get_index_config
 from app.chain.table import IndexTable
+from app.kite.errors import KiteAuthenticationError, is_authentication_error
 from app.kite.instruments import InstrumentStore
 from app.ops.calendar import TradingCalendar
 from app.session import now_ms
@@ -68,6 +70,7 @@ def bootstrap_capture(
 ) -> CaptureContext:
     """Assemble a :class:`CaptureContext` for today's session."""
     calendar = TradingCalendar(
+        holidays=set(getattr(settings, "market_holidays", [])),
         timezone_name=settings.timezone,
         market_open=settings.market_open,
         market_close=settings.market_close,
@@ -87,6 +90,8 @@ def bootstrap_capture(
     try:
         ltps = quote_fn([*spot_symbols, VIX_SYMBOL])
     except Exception as exc:  # noqa: BLE001 - a quote failure shouldn't abort stocks
+        if is_authentication_error(exc):
+            raise KiteAuthenticationError("Kite access token was rejected") from exc
         logger.warning("LTP quote failed; index chains may be skipped: %s", exc)
         ltps = {}
 
@@ -106,6 +111,8 @@ def bootstrap_capture(
             logger.info("chain ready: %s %s (%d strikes, spot %.2f)",
                         name, chain.expiry, chain.n_strikes, spot)
         except Exception as exc:  # noqa: BLE001 - skip a bad index, keep the rest
+            if is_authentication_error(exc):
+                raise KiteAuthenticationError("Kite access token was rejected") from exc
             skipped.append(name)
             logger.warning("skipping index %s: %s", name, exc)
 
@@ -120,6 +127,8 @@ def bootstrap_capture(
             stock_writer = build_stock_writer(stock_matrix, stock_path)
             logger.info("stock board ready: %d F&O stocks", len(board))
     except Exception as exc:  # noqa: BLE001
+        if is_authentication_error(exc):
+            raise KiteAuthenticationError("Kite access token was rejected") from exc
         logger.warning("stock board discovery failed: %s", exc)
 
     if not index_tables and stock_matrix is None:
@@ -172,12 +181,43 @@ async def run_capture(
     *,
     interval_s: float = 1.0,
 ) -> None:  # pragma: no cover - live loop, integration-only
-    """Start the ticker and run the 1 Hz engine until ``stop_event`` is set."""
+    """Run capture until stopped, surfacing a ticker authentication failure."""
     context.bridge.bind_loop()
-    context.bridge.start()
     try:
-        await context.engine.run(
-            context.bridge, stop_event, interval_s=interval_s, broadcaster=context.broadcaster
+        context.bridge.start()
+    except Exception as exc:
+        context.bridge.stop()
+        if is_authentication_error(exc):
+            raise KiteAuthenticationError("Kite ticker rejected the active access token") from exc
+        raise
+    engine_task = asyncio.create_task(
+        context.engine.run(
+            context.bridge,
+            stop_event,
+            interval_s=interval_s,
+            broadcaster=context.broadcaster,
         )
+    )
+    auth_task = asyncio.create_task(context.bridge.auth_failed.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {engine_task, auth_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if engine_task in done:
+            await engine_task
+            return
+
+        engine_task.cancel()
+        result = (await asyncio.gather(engine_task, return_exceptions=True))[0]
+        if isinstance(result, BaseException) and not isinstance(
+            result, asyncio.CancelledError
+        ):
+            raise result
+        raise KiteAuthenticationError("Kite ticker rejected the active access token")
     finally:
+        auth_task.cancel()
+        await asyncio.gather(auth_task, return_exceptions=True)
+        if not engine_task.done():
+            engine_task.cancel()
+            await asyncio.gather(engine_task, return_exceptions=True)
         context.bridge.stop()

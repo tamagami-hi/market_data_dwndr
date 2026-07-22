@@ -99,3 +99,31 @@ async def test_stop_closes_ticker():
     bridge.stop()
     assert created["ticker"].closed is True
     assert bridge.connected is False
+
+
+
+async def test_auth_error_from_ticker_thread_signals_event():
+    bridge, _ = _make_bridge([1])
+    bridge.bind_loop(asyncio.get_running_loop())
+
+    thread = threading.Thread(
+        target=lambda: bridge._on_error(None, 403, "Token is invalid or has expired")
+    )
+    thread.start()
+    thread.join()
+
+    await asyncio.wait_for(bridge.auth_failed.wait(), timeout=1.0)
+
+
+async def test_non_auth_close_does_not_signal_auth_failure():
+    bridge, _ = _make_bridge([1])
+    bridge.bind_loop(asyncio.get_running_loop())
+
+    thread = threading.Thread(
+        target=lambda: bridge._on_close(None, 1006, "connection reset")
+    )
+    thread.start()
+    thread.join()
+    await asyncio.sleep(0)
+
+    assert bridge.auth_failed.is_set() is False

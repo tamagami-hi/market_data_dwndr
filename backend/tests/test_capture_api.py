@@ -134,3 +134,53 @@ def test_routes_degrade_when_unavailable():
     app.include_router(create_capture_router())
     client = TestClient(app)
     assert client.get("/api/capture/status").json() == {"available": False, "running": False}
+
+
+
+async def test_auth_failure_invalidates_session_and_allows_automatic_restart():
+    from app.kite.errors import KiteAuthenticationError
+
+    session = SimpleNamespace(access_token="EXPIRED", risk_free_rate=0.07)
+    holder = {"session": session}
+    invalidated: list[str] = []
+
+    class Sessions:
+        def active_session(self):
+            return holder["session"]
+
+        def invalidate_active_session(self, expected_access_token):
+            invalidated.append(expected_access_token)
+            if holder["session"].access_token != expected_access_token:
+                return False
+            holder["session"] = None
+            return True
+
+    runs = {"count": 0}
+
+    async def auth_then_wait(_context, stop_event):
+        runs["count"] += 1
+        if runs["count"] == 1:
+            raise KiteAuthenticationError("secret details")
+        await stop_event.wait()
+
+    controller = CaptureController(
+        SimpleNamespace(),
+        Sessions(),
+        hub=None,
+        bootstrap_fn=lambda *_args, **_kwargs: _fake_context(),
+        run_fn=auth_then_wait,
+    )
+
+    await controller.start()
+    await asyncio.sleep(0)
+
+    assert invalidated == ["EXPIRED"]
+    assert holder["session"] is None
+    assert controller.status()["error"] == (
+        "broker session expired; waiting for automatic token refresh"
+    )
+
+    holder["session"] = SimpleNamespace(access_token="FRESH", risk_free_rate=0.07)
+    await controller.start()
+    assert controller.running is True
+    await controller.stop()

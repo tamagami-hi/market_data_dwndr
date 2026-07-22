@@ -107,6 +107,7 @@ class DailyAutomationService:
         self.session_service = session_service
         self.capture_controller = capture_controller
         self.calendar = TradingCalendar(
+            holidays=set(getattr(settings, "market_holidays", [])),
             timezone_name=settings.timezone,
             market_open=settings.market_open,
             market_close=settings.market_close,

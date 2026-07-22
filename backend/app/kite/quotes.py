@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 
 from app.kite.auth import auth_header
+from app.kite.errors import KiteAuthenticationError, is_authentication_error
 
 KITE_API_BASE = "https://api.kite.trade"
 
@@ -37,9 +38,14 @@ def fetch_ltp(client, api_key: str, access_token: str, symbols: Iterable[str]) -
     try:
         body = resp.json()
     except Exception as exc:  # noqa: BLE001
+        if is_authentication_error(code=resp.status_code):
+            raise KiteAuthenticationError("Kite access token was rejected") from exc
         raise RuntimeError(f"quote/ltp: non-JSON response ({resp.status_code})") from exc
     if body.get("status") != "success":
         message = body.get("message") or body.get("error_type") or "unknown error"
+        reason = f"{body.get('error_type', '')} {message}"
+        if is_authentication_error(code=resp.status_code, reason=reason):
+            raise KiteAuthenticationError("Kite access token was rejected")
         raise RuntimeError(f"quote/ltp failed: {message}")
     data = body.get("data") or {}
     out: dict[str, float] = {}

@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import os
+import secrets
 import tempfile
 import time
 from dataclasses import asdict, dataclass
@@ -145,12 +146,51 @@ def load_session(state_dir: str | os.PathLike[str], trading_date: str) -> Sessio
         return None
 
 
+def invalidate_session(
+    state_dir: str | os.PathLike[str],
+    trading_date: str,
+    expected_access_token: str,
+) -> bool:
+    """Quarantine today's exact token while retaining its yield provenance.
+
+    The active filename is removed atomically so the next automation tick sees no
+    session. The invalidated record remains available to ``resolve_risk_free_rate``
+    but is excluded from token reuse.
+    """
+    path = session_path(state_dir, trading_date)
+    if not path.exists():
+        return False
+    try:
+        state = SessionState.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    except (KeyError, OSError, TypeError, UnicodeError, ValueError, json.JSONDecodeError):
+        return False
+    if not secrets.compare_digest(state.access_token, expected_access_token):
+        return False
+
+    invalidated = path.with_name(
+        f"session-{trading_date}.invalidated-{now_ms()}.json"
+    )
+    try:
+        path.replace(invalidated)
+        invalidated.chmod(0o600)
+        directory_descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    except FileNotFoundError:
+        return False
+    return True
+
+
 def load_latest_session_before(
     state_dir: str | os.PathLike[str], trading_date: str
 ) -> SessionState | None:
     """Load the newest valid persisted session before ``trading_date``."""
     candidates: list[SessionState] = []
     for path in Path(state_dir).glob("session-*.json"):
+        if ".invalidated-" in path.name:
+            continue
         try:
             state = SessionState.from_dict(json.loads(path.read_text(encoding="utf-8")))
             if date.fromisoformat(state.trading_date) < date.fromisoformat(trading_date):

@@ -14,6 +14,14 @@ Design decisions and notable changes. Newest first.
 
 ---
 
+## 2026-07-21 — Unattended token recovery and boot lifecycle completed
+- Kite REST/WebSocket authentication failures now stop and flush capture, invalidate
+  only the exact rejected daily session, and return automation to the existing secure
+  broker polling path; replacement tokens resume capture without a backend restart.
+- Added validated `MARKET_HOLIDAYS` configuration to every runtime trading calendar.
+- Added a Docker Compose systemd unit ordered after Tailscale, Docker, networking, and
+  required storage mounts; it starts existing release images after preflight checks.
+
 ## 2026-07-21 — Operator-auth layer removed
 - Removed the separate operator token, unlock endpoint, HttpOnly browser session,
   HTTP middleware, WebSocket cookie gate, and frontend unlock screen for the private
