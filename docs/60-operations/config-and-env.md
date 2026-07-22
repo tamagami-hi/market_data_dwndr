@@ -40,12 +40,7 @@ Configuration is via **pydantic-settings** reading a `.env` file (typed, validat
 | `LOG_LEVEL` | – | `INFO` | Logging verbosity |
 | `HTTP_HOST` | – | `127.0.0.1` | Loopback bind; use TLS + API authentication before exposing remotely |
 | `HTTP_PORT` | ✅ | `9000` | Example seed for the backend HTTP/WS port — **no default**, env-only |
-| `FRONTEND_URL` | ✅ | `http://localhost:<frontend-port>` | Frontend origin(s) for CORS (comma-separate for many) |
-| `OPERATOR_API_TOKEN` | ✅ | `••••` | 32–256 character backend-only token exchanged for an opaque browser session |
-| `OPERATOR_SESSION_TTL_SECONDS` | – | `3600` | HttpOnly operator-session lifetime (300–43200 seconds) |
-| `OPERATOR_LOGIN_MAX_ATTEMPTS` | – | `5` | Failed unlock attempts permitted per client/window |
-| `OPERATOR_LOGIN_WINDOW_SECONDS` | – | `60` | Unlock rate-limit window |
-| `OPERATOR_COOKIE_SECURE` | – | `false` | Set `true` when the backend is accessed through HTTPS |
+| `FRONTEND_URL` | ✅ | `http://localhost:<frontend-port>` | Frontend origin(s) for CORS and WebSocket Origin checks (comma-separate for many) |
 
 > **Ports are env-only.** `HTTP_PORT` has no code default; start the backend with
 > `md-serve` (reads `HTTP_PORT`/`HTTP_HOST`). `FRONTEND_URL` sets the CORS allow-list and
@@ -59,19 +54,14 @@ Configuration is via **pydantic-settings** reading a `.env` file (typed, validat
 > so the automated login can run without a browser (algo_engine keeps these encrypted in
 > Postgres; here they come from the environment).
 
-## Operator browser access
+## Private VPS access
 
-Generate `OPERATOR_API_TOKEN` with `openssl rand -hex 32`. The browser submits it only
-to the origin-checked, rate-limited `/api/operator/unlock` endpoint. The backend uses a
-constant-time comparison and exchanges it for a short-lived opaque `HttpOnly`,
-`SameSite=Strict` cookie. The token is not stored in browser storage, returned, or
-logged. Auth and capture APIs, stock-depth reads, the monitor, API docs, and every
-WebSocket topic require that cookie. `/health` remains public; release maintenance
-continues to use its dedicated `X-Release-Maintenance-Token` credential.
-
-For the current HTTP-only Tailscale deployment keep `OPERATOR_COOKIE_SECURE=false`.
-Switch it to `true` when HTTPS is introduced. `OPERATOR_API_TOKEN` belongs only in the
-ignored backend `.env`; never add it to `frontend/.env.local` or a `NEXT_PUBLIC_*` key.
+There is no separate browser operator-authentication layer. HTTP APIs are reachable to
+clients that can reach the backend, and WebSocket handshakes enforce the browser origin
+allow-list from `FRONTEND_URL`. CORS and Origin checks are not user authentication, so
+bind the backend and frontend only to loopback, Tailscale, or another trusted private
+network. The release-maintenance API keeps its dedicated
+`X-Release-Maintenance-Token` credential.
 
 ## Daily authentication automation
 

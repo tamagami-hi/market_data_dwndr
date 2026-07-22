@@ -1,13 +1,15 @@
-"""Auth API: session status + frontend-triggered automated login.
+"""Auth API: session status plus retained manual fallback routes.
 
 Routes (mounted under ``/api/auth``):
 
-    GET  /api/auth/status      -> current session / market-phase snapshot (no secrets)
+    GET  /api/auth/status      -> session, automation, and capture snapshot (no secrets)
     POST /api/auth/login       -> exchange a manual browser ``request_token``
-    GET  /api/auth/login-url   -> Zerodha OAuth URL for the manual browser fallback
+    GET  /api/auth/login-url   -> Zerodha OAuth URL for a manual API fallback
 
-The service is read from ``request.app.state.session_service`` (built at startup). When
-the backend is unconfigured (missing env), routes degrade gracefully instead of 500.
+Normal VPS operation acquires the token through ``DailyAutomationService``; these login
+routes remain available for operational fallback but are not initiated by the frontend.
+The session service is read from ``request.app.state.session_service`` (built at startup).
+When the backend is unconfigured, routes degrade gracefully instead of returning 500.
 """
 
 from __future__ import annotations
@@ -118,6 +120,9 @@ def create_auth_router() -> APIRouter:
         automation = getattr(request.app.state, "daily_automation", None)
         if automation is not None:
             result = {**result, "automation": automation.status()}
+        controller = getattr(request.app.state, "capture_controller", None)
+        if controller is not None:
+            result = {**result, "capture": controller.status()}
         return result
 
     @router.get("/login-url")

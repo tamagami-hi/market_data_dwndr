@@ -9,7 +9,7 @@ const LINKS = [
   { href: "/monitor", label: "Capture Monitor" },
   { href: "/option-chain", label: "Option Chain" },
   { href: "/stocks", label: "Stocks" },
-  { href: "/login", label: "Login" },
+  { href: "/login", label: "Downloader" },
 ];
 
 export default function NavBar() {

@@ -92,20 +92,6 @@ class Settings(BaseSettings):
     # port, so it too is env-only (comma-separate for multiple origins).
     frontend_url: str = Field(..., description="Frontend origin(s) for CORS")
 
-    # --- browser operator authentication ---
-    # The long-lived token is exchanged for a short-lived opaque HttpOnly cookie.
-    operator_api_token: SecretStr = Field(
-        ...,
-        description="Backend-only operator unlock token (32-256 characters)",
-    )
-    operator_session_ttl_seconds: int = Field(default=3_600, ge=300, le=43_200)
-    operator_login_max_attempts: int = Field(default=5, ge=1, le=20)
-    operator_login_window_seconds: int = Field(default=60, ge=10, le=3_600)
-    operator_cookie_secure: bool = Field(
-        default=False,
-        description="Require HTTPS when sending the operator session cookie",
-    )
-
     # --- optional, with locked defaults ---
     # NoDecode: keep pydantic-settings from JSON-decoding this list field so the
     # comma-separated env value (``INDICES=NIFTY,BANKNIFTY,...``) reaches the validator.
@@ -144,14 +130,6 @@ class Settings(BaseSettings):
         token_length = len(value.get_secret_value().strip())
         if not 32 <= token_length <= 256:
             raise ValueError("RELEASE_MAINTENANCE_TOKEN must contain 32 to 256 characters")
-        return value
-
-    @field_validator("operator_api_token")
-    @classmethod
-    def _operator_api_token_must_be_strong(cls, value: SecretStr) -> SecretStr:
-        token_length = len(value.get_secret_value().strip())
-        if not 32 <= token_length <= 256:
-            raise ValueError("OPERATOR_API_TOKEN must contain 32 to 256 characters")
         return value
 
     @field_validator("indices", mode="before")

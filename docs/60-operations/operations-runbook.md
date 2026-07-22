@@ -40,8 +40,8 @@ The daily lifecycle of the capture service.
    government bond yield are available. The latest yield is reused the following
    Monday–Friday market day; weekends do not count, and on the third market day it must
    be updated before capture can start.
-4. If the shared token is unavailable, use the frontend/terminal TOTP flow as a manual
-   fallback. TOTP is always entered by the operator.
+4. If the shared token remains unavailable, use the terminal `md-login` TOTP flow as
+   an explicit operational fallback. The frontend only reports initialization state.
 5. For a late market-day start, the backend validates the newest saved token first. If
    it fails, broker polling resumes during market hours until a valid token is found.
 

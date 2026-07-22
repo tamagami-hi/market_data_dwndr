@@ -19,6 +19,6 @@ The broker client is the existing bounded `httpx` implementation of the curl-equ
 GET request. No shell subprocess receives the passcode. Manual login remains isolated in
 `LoginCoordinator` and is never invoked automatically.
 
-One process owns automation. CaptureController locking makes UI and scheduled actions
-idempotent. EOD work runs outside the event loop and remains safe to repeat after a
-restart.
+One process owns automation. `CaptureController` locking serializes scheduler and release-
+maintenance lifecycle changes; the browser has no manual Start/Stop control. EOD work
+runs outside the event loop and remains safe to repeat after a restart.

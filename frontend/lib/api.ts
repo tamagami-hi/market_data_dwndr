@@ -18,6 +18,7 @@ export interface AuthStatus {
   risk_free_rate_as_of?: string | null;
   rate_update_required?: boolean;
   capture_ready?: boolean;
+  capture?: CaptureStatus;
   automation?: AutomationStateView;
 }
 
@@ -30,14 +31,6 @@ export interface LoginResult {
   capture_ready?: boolean;
 }
 
-export interface LoginProgress {
-  attempt_id: string;
-  step: "awaiting_totp" | "awaiting_risk_free_rate";
-  method: "shared_session" | "local_credentials";
-  trading_date: string;
-  expires_at: number;
-}
-
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -48,17 +41,8 @@ export class ApiError extends Error {
   }
 }
 
-export const OPERATOR_AUTH_REQUIRED_EVENT = "operator-auth-required";
-
 async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const response = await fetch(`${getBackendUrl()}${path}`, {
-    ...init,
-    credentials: "include",
-  });
-  if (response.status === 401 && !path.startsWith("/api/operator/")) {
-    window.dispatchEvent(new Event(OPERATOR_AUTH_REQUIRED_EVENT));
-  }
-  return response;
+  return fetch(`${getBackendUrl()}${path}`, init);
 }
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {
@@ -80,51 +64,6 @@ export async function getAuthStatus(): Promise<AuthStatus> {
   return jsonOrThrow<AuthStatus>(res);
 }
 
-export async function postLogin(body: {
-  request_token: string;
-  risk_free_rate: number;
-}): Promise<LoginResult> {
-  const res = await apiFetch("/api/auth/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return jsonOrThrow<LoginResult>(res);
-}
-
-export async function startAutomatedLogin(): Promise<LoginProgress | LoginResult> {
-  const res = await apiFetch("/api/auth/login/start", { method: "POST" });
-  return jsonOrThrow<LoginProgress | LoginResult>(res);
-}
-
-export async function submitLoginTotp(attemptId: string, totp: string): Promise<LoginProgress> {
-  const res = await apiFetch(`/api/auth/login/${attemptId}/totp`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ totp }),
-  });
-  return jsonOrThrow<LoginProgress>(res);
-}
-
-export async function completeAutomatedLogin(
-  attemptId: string,
-  riskFreeRate: number,
-): Promise<LoginResult> {
-  const res = await apiFetch(`/api/auth/login/${attemptId}/complete`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ risk_free_rate: riskFreeRate }),
-  });
-  return jsonOrThrow<LoginResult>(res);
-}
-
-export async function cancelAutomatedLogin(attemptId: string): Promise<void> {
-  const res = await apiFetch(`/api/auth/login/${attemptId}`, {
-    method: "DELETE",
-  });
-  if (!res.ok) await jsonOrThrow(res);
-}
-
 export async function updateRiskFreeRate(riskFreeRate: number): Promise<LoginResult> {
   const res = await apiFetch("/api/auth/risk-free-rate", {
     method: "PUT",
@@ -134,13 +73,7 @@ export async function updateRiskFreeRate(riskFreeRate: number): Promise<LoginRes
   return jsonOrThrow<LoginResult>(res);
 }
 
-export async function getLoginUrl(): Promise<string> {
-  const res = await apiFetch("/api/auth/login-url", { cache: "no-store" });
-  const body = await jsonOrThrow<{ login_url: string }>(res);
-  return body.login_url;
-}
-
-// --- capture control ---------------------------------------------------------
+// --- capture status ----------------------------------------------------------
 
 export interface CaptureStatus {
   available: boolean;
@@ -158,14 +91,36 @@ export async function getCaptureStatus(): Promise<CaptureStatus> {
   return jsonOrThrow<CaptureStatus>(res);
 }
 
-export async function startCapture(): Promise<CaptureStatus> {
-  const res = await apiFetch("/api/capture/start", { method: "POST" });
-  return jsonOrThrow<CaptureStatus>(res);
+export interface CaptureHistorySession {
+  trading_date: string;
+  is_current: boolean;
+  total_bytes: number;
+  raw_bytes: number;
+  archived_bytes: number;
+  data_files: number;
+  raw_files: number;
+  archived_files: number;
+  index_files: number;
+  stock_files: number;
+  indices: string[];
 }
 
-export async function stopCapture(): Promise<CaptureStatus> {
-  const res = await apiFetch("/api/capture/stop", { method: "POST" });
-  return jsonOrThrow<CaptureStatus>(res);
+export interface CaptureHistory {
+  available: boolean;
+  generated_at: number | null;
+  totals: {
+    sessions: number;
+    total_bytes: number;
+    raw_bytes: number;
+    archived_bytes: number;
+    data_files: number;
+  };
+  sessions: CaptureHistorySession[];
+}
+
+export async function getCaptureHistory(): Promise<CaptureHistory> {
+  const res = await apiFetch("/api/capture/history", { cache: "no-store" });
+  return jsonOrThrow<CaptureHistory>(res);
 }
 
 export async function getStockDepth(symbol: string): Promise<StockDepthSnapshot> {
@@ -174,23 +129,4 @@ export async function getStockDepth(symbol: string): Promise<StockDepthSnapshot>
     { cache: "no-store" },
   );
   return normalizeStockDepth(await jsonOrThrow<unknown>(res));
-}
-
-export async function getOperatorStatus(): Promise<{ unlocked: boolean }> {
-  const res = await apiFetch("/api/operator/status", { cache: "no-store" });
-  return jsonOrThrow<{ unlocked: boolean }>(res);
-}
-
-export async function unlockOperator(token: string): Promise<void> {
-  const res = await apiFetch("/api/operator/unlock", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token }),
-  });
-  await jsonOrThrow<{ unlocked: boolean; expires_at: number }>(res);
-}
-
-export async function lockOperator(): Promise<void> {
-  const res = await apiFetch("/api/operator/lock", { method: "POST" });
-  if (!res.ok) await jsonOrThrow(res);
 }

@@ -119,23 +119,13 @@ async def test_controller_redacts_capture_task_failures(caplog):
 # --- routes ------------------------------------------------------------------
 
 
-def test_routes_status_start_stop():
+def test_status_route_is_read_only():
     controller, _ = _make_controller()
-    # context-manager form keeps a single event loop so the background capture task
-    # stays alive across requests.
-    with _client(controller) as client:
-        assert client.get("/api/capture/status").json()["running"] is False
+    client = _client(controller)
 
-        started = client.post("/api/capture/start")
-        assert started.status_code == 200
-        assert started.json()["running"] is True
-
-        # second start -> 400 (already running)
-        assert client.post("/api/capture/start").status_code == 400
-
-        stopped = client.post("/api/capture/stop")
-        assert stopped.status_code == 200
-        assert stopped.json()["running"] is False
+    assert client.get("/api/capture/status").json()["running"] is False
+    assert client.post("/api/capture/start").status_code == 404
+    assert client.post("/api/capture/stop").status_code == 404
 
 
 def test_routes_degrade_when_unavailable():
@@ -144,12 +134,3 @@ def test_routes_degrade_when_unavailable():
     app.include_router(create_capture_router())
     client = TestClient(app)
     assert client.get("/api/capture/status").json() == {"available": False, "running": False}
-    assert client.post("/api/capture/start").status_code == 503
-
-
-def test_route_start_not_logged_in_returns_400():
-    controller, _ = _make_controller(session=None)
-    client = _client(controller)
-    r = client.post("/api/capture/start")
-    assert r.status_code == 400
-    assert "not logged in" in r.json()["detail"]

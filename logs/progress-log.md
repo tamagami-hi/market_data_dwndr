@@ -14,6 +14,18 @@ Newest first. One entry per working session.
 
 ---
 
+## 2026-07-21 — Operator-auth layer removed
+
+- Removed the backend operator middleware/routes/settings and frontend unlock gate.
+- HTTP console APIs now work directly on the private VPS network; WebSockets still
+  enforce the `FRONTEND_URL` Origin allow-list.
+- No Kite login, token-broker, daily automation, capture, or downloader behavior was
+  changed by removing operator auth.
+- Removed manual capture Start/Stop APIs and UI while retaining scheduler/maintenance
+  controller methods. `/login` now polls automatic token fetch/validation progress.
+- Added `/api/capture/history` and a monitor history table for cumulative and per-session
+  live/archive bytes, file counts, index sets, and stock captures.
+
 ## 2026-07-21 — Frontend port fully env-file-driven
 
 - Removed the last hardcoded port: the `dev`/`start` scripts now load `.env.local` via

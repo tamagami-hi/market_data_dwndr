@@ -21,11 +21,6 @@ from app import __version__
 from app.api.auth import create_auth_router
 from app.api.capture import create_capture_router
 from app.logging_config import configure_logging
-from app.security.operator_auth import (
-    OperatorAuthMiddleware,
-    OperatorAuthService,
-    create_operator_router,
-)
 from app.ws.routes import ConnectionManager, create_ws_router
 
 logger = logging.getLogger(__name__)
@@ -45,7 +40,6 @@ def cors_origins() -> list[str]:
 def _init_session_service(app: FastAPI) -> None:
     """Build the session service from env; report resume state. Never raises."""
     app.state.settings = None
-    app.state.operator_auth = None
     try:
         from app.config import get_settings
         from app.session_service import SessionService
@@ -53,14 +47,6 @@ def _init_session_service(app: FastAPI) -> None:
         settings = get_settings()
         configure_logging(settings.log_level)
         app.state.settings = settings
-        app.state.operator_auth = OperatorAuthService(
-            operator_token=settings.operator_api_token.get_secret_value(),
-            session_ttl_seconds=settings.operator_session_ttl_seconds,
-            login_max_attempts=settings.operator_login_max_attempts,
-            login_window_seconds=settings.operator_login_window_seconds,
-            cookie_secure=settings.operator_cookie_secure,
-            allowed_origins=settings.cors_origins,
-        )
         service = SessionService(settings)
         app.state.session_service = service
 
@@ -130,12 +116,10 @@ app.state.session_service = None
 app.state.capture_controller = None
 app.state.daily_automation = None
 app.state.settings = None
-app.state.operator_auth = None
 
 # CORS: the frontend runs on a different origin/port, so the browser needs the backend
 # to allow its origin. Origins come from FRONTEND_URL in the environment (no hardcoded
-# ports). WebSocket connections are not subject to CORS.
-app.add_middleware(OperatorAuthMiddleware)
+# ports). WebSocket routes separately enforce the same FRONTEND_URL origin allow-list.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins(),
@@ -145,7 +129,6 @@ app.add_middleware(
 )
 
 app.include_router(create_ws_router(ws_hub))
-app.include_router(create_operator_router())
 app.include_router(create_auth_router())
 app.include_router(create_capture_router())
 

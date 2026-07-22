@@ -15,7 +15,6 @@ _REQUIRED = {
     "ARCHIVE_DATA_PATH": "/tmp/md-archive",
     "HTTP_PORT": "9000",
     "FRONTEND_URL": "http://localhost:3000",
-    "OPERATOR_API_TOKEN": "operator-secret-with-at-least-32-characters",
 }
 
 
@@ -36,10 +35,6 @@ def _set(monkeypatch, **env):
         "MARKET_CLOSE",
         "RELEASE_MAINTENANCE_TOKEN",
         "RELEASE_MAINTENANCE_TTL_SECONDS",
-        "OPERATOR_SESSION_TTL_SECONDS",
-        "OPERATOR_LOGIN_MAX_ATTEMPTS",
-        "OPERATOR_LOGIN_WINDOW_SECONDS",
-        "OPERATOR_COOKIE_SECURE",
     ]:
         monkeypatch.delenv(key, raising=False)
     for key, value in {**_REQUIRED, **env}.items():
@@ -136,42 +131,6 @@ def test_cors_origins_single_and_multiple(monkeypatch):
 def test_http_host_defaults(monkeypatch):
     _set(monkeypatch)
     assert _settings().http_host == "127.0.0.1"
-
-
-def test_operator_auth_config_is_secret_and_bounded(monkeypatch):
-    _set(
-        monkeypatch,
-        OPERATOR_API_TOKEN="operator-secret-with-at-least-32-characters",
-        OPERATOR_SESSION_TTL_SECONDS="3600",
-        OPERATOR_LOGIN_MAX_ATTEMPTS="5",
-        OPERATOR_LOGIN_WINDOW_SECONDS="60",
-        OPERATOR_COOKIE_SECURE="true",
-    )
-
-    settings = _settings()
-
-    assert isinstance(settings.operator_api_token, SecretStr)
-    assert "operator-secret" not in repr(settings)
-    assert settings.operator_session_ttl_seconds == 3600
-    assert settings.operator_login_max_attempts == 5
-    assert settings.operator_login_window_seconds == 60
-    assert settings.operator_cookie_secure is True
-
-
-def test_operator_api_token_is_required(monkeypatch):
-    _set(monkeypatch)
-    monkeypatch.delenv("OPERATOR_API_TOKEN")
-
-    with pytest.raises(ValidationError):
-        _settings()
-
-
-@pytest.mark.parametrize("token", ["", "too-short"])
-def test_operator_api_token_rejects_weak_values(monkeypatch, token):
-    _set(monkeypatch, OPERATOR_API_TOKEN=token)
-
-    with pytest.raises(ValidationError, match="OPERATOR_API_TOKEN"):
-        _settings()
 
 
 def test_daily_automation_schedule_defaults(monkeypatch):

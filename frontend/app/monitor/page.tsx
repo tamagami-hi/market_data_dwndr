@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import CaptureControl from "@/components/CaptureControl";
 import ConnectionDot from "@/components/ConnectionDot";
+import { getCaptureHistory, type CaptureHistory } from "@/lib/api";
 import { formatBytes, formatClockTime, formatIndianNumber } from "@/lib/numberFormat";
 import { useTopicEnvelopes } from "@/lib/useTopic";
 import { captureStatusConnection, sessionConnection } from "@/lib/wsTopicConnection";
@@ -24,6 +24,8 @@ export default function MonitorPage() {
   const [rows, setRows] = useState<PerUnderlyingStatus[]>([]);
   const [globals, setGlobals] = useState<GlobalStatus | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
+  const [history, setHistory] = useState<CaptureHistory | null | undefined>(undefined);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   const onCaptureStatus = useCallback((env: WsEnvelope) => {
     if (env.type !== MSG.CAPTURE_STATUS) return;
@@ -45,6 +47,29 @@ export default function MonitorPage() {
   useTopicEnvelopes(captureStatusConnection, onCaptureStatus);
   useTopicEnvelopes(sessionConnection, onSession);
 
+  useEffect(() => {
+    let isActive = true;
+    const poll = async () => {
+      try {
+        const nextHistory = await getCaptureHistory();
+        if (isActive) {
+          setHistory(nextHistory.available ? nextHistory : null);
+          setHistoryError(nextHistory.available ? null : "Capture history is unavailable until the backend is configured.");
+        }
+      } catch (error) {
+        if (isActive) {
+          setHistoryError(error instanceof Error ? error.message : "Capture history refresh failed.");
+        }
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 15_000);
+    return () => {
+      isActive = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   return (
     <div className="space-y-6">
       <header className="flex items-center gap-4">
@@ -54,8 +79,6 @@ export default function MonitorPage() {
           <ConnectionDot connection={sessionConnection} label="session" />
         </div>
       </header>
-
-      <CaptureControl />
 
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Metric label="Tokens" value={globals ? formatIndianNumber(globals.tokens, 0) : "–"} />
@@ -67,12 +90,14 @@ export default function MonitorPage() {
         />
       </section>
 
+      <DownloadHistory history={history} error={historyError} />
+
       <section>
         <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
           Per underlying
         </h2>
         {rows.length === 0 ? (
-          <EmptyState message="Waiting for capture status… start the backend capture to see live telemetry." />
+          <EmptyState message="Waiting for automatic capture telemetry from the market-hours scheduler…" />
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {rows.map((row) => (
@@ -100,6 +125,110 @@ export default function MonitorPage() {
         </div>
       </section>
     </div>
+  );
+}
+
+function DownloadHistory({
+  history,
+  error,
+}: {
+  history: CaptureHistory | null | undefined;
+  error: string | null;
+}) {
+  if (history === undefined || history === null) {
+    const message = error ?? "Loading capture history from live and archive storage…";
+    return (
+      <section>
+        <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+          Download history
+        </h2>
+        <EmptyState message={message} />
+      </section>
+    );
+  }
+
+  const archiveShare = history.totals.total_bytes > 0
+    ? (history.totals.archived_bytes / history.totals.total_bytes) * 100
+    : 0;
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-end justify-between gap-4">
+        <div>
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+            Download history
+          </h2>
+          <p className="mt-1 text-sm text-zinc-400">
+            Live raw captures and verified archives, refreshed while the service runs.
+          </p>
+        </div>
+        {error && history && (
+          <span className="text-xs text-amber-500">Refresh delayed; showing the last successful snapshot.</span>
+        )}
+        {history.generated_at && (
+          <span className="text-xs text-zinc-600">
+            Updated {formatClockTime(history.generated_at)}
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Metric label="Sessions" value={formatIndianNumber(history.totals.sessions, 0)} />
+        <Metric label="Data files" value={formatIndianNumber(history.totals.data_files, 0)} />
+        <Metric label="Stored data" value={formatBytes(history.totals.total_bytes)} />
+        <Metric label="Archived share" value={`${archiveShare.toFixed(1)}%`} />
+      </div>
+
+      {history.sessions.length === 0 ? (
+        <EmptyState message="No completed or active capture sessions are stored yet." />
+      ) : (
+        <div className="max-h-96 overflow-auto rounded-xl border border-zinc-800 bg-zinc-900/40">
+          <table className="w-full min-w-[760px] text-left text-sm">
+            <thead className="sticky top-0 bg-zinc-950 text-xs uppercase tracking-wide text-zinc-500">
+              <tr>
+                <th className="px-4 py-3">Session</th>
+                <th className="px-4 py-3">State</th>
+                <th className="px-4 py-3">Stored</th>
+                <th className="px-4 py-3">Raw / archive</th>
+                <th className="px-4 py-3">Files</th>
+                <th className="px-4 py-3">Captured sets</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-800">
+              {history.sessions.map((session) => {
+                const state = session.raw_files > 0 && session.archived_files > 0
+                  ? "Archiving"
+                  : session.raw_files > 0
+                    ? session.is_current ? "Recording" : "Raw"
+                    : "Archived";
+                return (
+                  <tr key={session.trading_date} className="text-zinc-300">
+                    <td className="whitespace-nowrap px-4 py-3 font-medium text-zinc-100">
+                      {session.trading_date}
+                      {session.is_current && (
+                        <span className="ml-2 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] text-sky-300">
+                          current
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">{state}</td>
+                    <td className="whitespace-nowrap px-4 py-3">{formatBytes(session.total_bytes)}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-xs text-zinc-500">
+                      {formatBytes(session.raw_bytes)} / {formatBytes(session.archived_bytes)}
+                    </td>
+                    <td className="px-4 py-3">{formatIndianNumber(session.data_files, 0)}</td>
+                    <td className="px-4 py-3 text-xs text-zinc-400">
+                      {session.indices.length > 0 ? session.indices.join(", ") : "No indices"}
+                      {session.stock_files > 0 ? ` · stocks (${session.stock_files})` : ""}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }
 
