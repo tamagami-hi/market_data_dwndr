@@ -31,11 +31,14 @@ scripts. `npm run dev` / `npm run start` load `.env.local` via `dotenv-cli`
 # frontend/.env.local
 NEXT_PUBLIC_BACKEND_URL=http://localhost:<backend-port>
 PORT=<frontend-port>
+E2E_FRONTEND_PORT=<unused-test-port>
 ```
 
 To change the port, edit `PORT` and restart the frontend; no code change is needed.
 Set `NEXT_PUBLIC_BACKEND_URL` to a browser-reachable backend host and the backend's
 `.env` `HTTP_PORT`, then restart (or rebuild for production) after changing it.
+`npm run test:e2e` uses `E2E_FRONTEND_PORT` so its production server can run alongside
+the development server; that port is also read only from `.env.local`.
 
 ## Build / lint
 
@@ -64,3 +67,7 @@ lib/
 
 The backend must be running with capture active to stream live data; otherwise pages
 render their connection state and "waiting for data" placeholders.
+
+For production Docker deployment, `NEXT_PUBLIC_BACKEND_URL` is embedded during the
+frontend image build. Update `frontend/.env.local` and rebuild the frontend whenever
+that browser-visible origin changes.

@@ -48,8 +48,9 @@ The daily lifecycle of the capture service.
 ## End of day (after 15:30 IST)
 
 1. Capture engine stops subscribing; writers flush and close today's files.
-2. **EOD compression sweep:** each `<date>.bin` → `<date>.bin.zst` (zstd L17), raw
-   removed ([[bin-format]]).
+2. **EOD compression sweep:** each `<date>.bin` under `MARKET_DATA_PATH` is written to
+   the same relative path plus `.zst` under `ARCHIVE_DATA_PATH` (zstd L17). The raw is
+   removed only after destination-side verification ([[bin-format]]).
 3. Instrument-master archive for the day is retained under `_instruments/`.
 4. Session state for the day is finalized.
 

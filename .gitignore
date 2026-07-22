@@ -4,6 +4,7 @@
 
 # Captured data — never commit
 MARKET_DATA/
+z_market_data/
 *.bin
 *.bin.zst
 
@@ -13,6 +14,7 @@ venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
 .mypy_cache/
 .ruff_cache/
 
@@ -25,6 +27,11 @@ dist/
 # OS / editor
 .DS_Store
 *.log
+
+# Local/VPS release state (images and data remain outside Git)
+release_manager/rollback/*
+!release_manager/rollback/.gitkeep
+release_manager/current-version
 
 # Obsidian workspace (keep notes, ignore local UI state)
 .obsidian/workspace*

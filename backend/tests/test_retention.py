@@ -24,19 +24,25 @@ def _write_index_file(path, n_frames=4):
 
 
 def test_scan_storage_counts(tmp_path):
-    idx = tmp_path / "INDICES" / "NIFTY" / "2026-07-21.bin"
+    live_root = tmp_path / "live"
+    archive_root = tmp_path / "archive"
+    idx = live_root / "INDICES" / "NIFTY" / "2026-07-21.bin"
     _write_index_file(idx)
-    (tmp_path / "_instruments" / "2026-07-21").mkdir(parents=True)
-    (tmp_path / "_instruments" / "2026-07-21" / "NFO.csv").write_text("x\n")
-    (tmp_path / "_state").mkdir()
-    (tmp_path / "_state" / "session-2026-07-21.json").write_text("{}")
+    archived = archive_root / "INDICES" / "NIFTY" / "2026-07-20.bin.zst"
+    _write_index_file(tmp_path / "archive-source.bin")
+    compress.compress_file(tmp_path / "archive-source.bin", archived)
+    (live_root / "_instruments" / "2026-07-21").mkdir(parents=True)
+    (live_root / "_instruments" / "2026-07-21" / "NFO.csv").write_text("x\n")
+    (live_root / "_state").mkdir()
+    (live_root / "_state" / "session-2026-07-21.json").write_text("{}")
 
-    report = scan_storage(tmp_path)
+    report = scan_storage(live_root, archive_root)
     assert report.raw_bin_files == 1
-    assert report.compressed_files == 0
+    assert report.compressed_files == 1
     assert report.instrument_files == 1
     assert report.state_files == 1
     assert report.raw_bytes > 0
+    assert report.compressed_bytes > 0
 
 
 def test_verify_integrity_raw_and_compressed(tmp_path):

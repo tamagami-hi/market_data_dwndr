@@ -1,7 +1,8 @@
 """Typed application configuration (pydantic-settings).
 
 Reads a ``.env`` file. ``KITE_API_KEY``, ``KITE_API_SECRET``, ``MARKET_DATA_PATH``,
-``HTTP_PORT``, and ``FRONTEND_URL`` are required; other settings have sensible defaults.
+``ARCHIVE_DATA_PATH``, ``HTTP_PORT``, and ``FRONTEND_URL`` are required; other settings
+have sensible defaults.
 
 The daily ``access_token`` and the 10-yr bond yield are deliberately *not* here --
 they are entered at login and kept in session state (see docs/60-operations/
@@ -17,7 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import AnyHttpUrl, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Locked index universe (docs/90-decisions/decisions-and-open-questions.md #9).
@@ -37,20 +38,27 @@ class Settings(BaseSettings):
     # --- required ---
     kite_api_key: str = Field(..., description="Kite Connect app key")
     kite_api_secret: str = Field(..., description="Kite Connect app secret")
-    market_data_path: Path = Field(..., description="Output root for captured data")
+    market_data_path: Path = Field(..., description="SSD root for live captured data")
+    archive_data_path: Path = Field(..., description="HDD root for verified zstd archives")
 
     # --- automated-login credentials (seeded from env; needed only to log in) ---
     # algo_engine stores these encrypted in Postgres; here they come from the env so a
     # single `md-login` run can complete the flow without a browser.
     kite_user_id: str | None = Field(default=None, description="Zerodha user id, e.g. AB1234")
     kite_password: str | None = Field(default=None, description="Zerodha login password")
-    kite_totp_secret: str | None = Field(
-        default=None,
-        description="Base32 TOTP secret. If unset, the TOTP is prompted from the terminal.",
-    )
     risk_free_rate: float | None = Field(
         default=None,
         description="10-yr bond yield (decimal) stamped into headers; prompted if unset.",
+    )
+
+    # --- existing-session broker (backend-only; checked before local credentials) ---
+    kite_token_broker_url: AnyHttpUrl | None = Field(
+        default=None,
+        description="HTTPS endpoint that returns an existing Kite access token",
+    )
+    kite_token_broker_passcode: SecretStr | None = Field(
+        default=None,
+        description="Backend-only x-token-passcode for the Kite token broker",
     )
 
     # --- egress control (Kite requires a whitelisted static IP from Apr 2026) ---
@@ -65,20 +73,16 @@ class Settings(BaseSettings):
 
     # --- networking (ports come ONLY from the environment; no hardcoded defaults) ---
     # ``http_port`` is required so the backend port is configured entirely via .env.
-    http_host: str = Field(default="0.0.0.0", description="Bind host for the backend")
+    http_host: str = Field(default="127.0.0.1", description="Bind host for the backend")
     http_port: int = Field(..., ge=1, le=65535, description="Backend HTTP/WS port (from env)")
     # Frontend origin(s) for CORS + allowed WebSocket origins. Contains the frontend
     # port, so it too is env-only (comma-separate for multiple origins).
-    frontend_url: str = Field(
-        ..., description="Frontend origin(s) for CORS"
-    )
+    frontend_url: str = Field(..., description="Frontend origin(s) for CORS")
 
     # --- optional, with locked defaults ---
     # NoDecode: keep pydantic-settings from JSON-decoding this list field so the
     # comma-separated env value (``INDICES=NIFTY,BANKNIFTY,...``) reaches the validator.
-    indices: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: list(DEFAULT_INDICES)
-    )
+    indices: Annotated[list[str], NoDecode] = Field(default_factory=lambda: list(DEFAULT_INDICES))
     stock_universe: str = Field(default="all", description="'all' or a comma allow-list")
     capture_hz: int = Field(default=1, ge=1, description="Snapshot cadence (Hz)")
     zstd_level: int = Field(default=17, ge=1, le=22, description="EOD compression level")
@@ -87,6 +91,14 @@ class Settings(BaseSettings):
     timezone: str = Field(default="Asia/Kolkata", description="Exchange timezone")
     log_level: str = Field(default="INFO")
 
+    @field_validator("risk_free_rate", mode="before")
+    @classmethod
+    def _blank_optional_float_is_none(cls, value: object) -> object:
+        """Treat an empty optional env value as unset instead of an invalid float."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("indices", mode="before")
     @classmethod
     def _split_indices(cls, value: object) -> object:
@@ -94,6 +106,41 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [item.strip().upper() for item in value.split(",") if item.strip()]
         return value
+
+    @model_validator(mode="after")
+    def _validate_token_broker(self) -> Settings:
+        url = self.kite_token_broker_url
+        passcode = self.kite_token_broker_passcode
+        if (url is None) != (passcode is None):
+            raise ValueError(
+                "KITE_TOKEN_BROKER_URL and KITE_TOKEN_BROKER_PASSCODE must be set together"
+            )
+        if url is None:
+            return self
+        if not passcode or not passcode.get_secret_value().strip():
+            raise ValueError("KITE_TOKEN_BROKER_PASSCODE must not be blank")
+        if not self.kite_user_id or not self.kite_user_id.strip():
+            raise ValueError("KITE_USER_ID is required when the shared token broker is enabled")
+        if (
+            url.scheme != "https"
+            or url.host != "calspread.online"
+            or url.port not in (None, 443)
+            or url.path != "/api/kite/token"
+            or url.query is not None
+            or url.fragment is not None
+            or url.username is not None
+            or url.password is not None
+        ):
+            raise ValueError("KITE_TOKEN_BROKER_URL must be the approved HTTPS token endpoint")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_storage_roots(self) -> Settings:
+        live_root = self.market_data_path.resolve(strict=False)
+        archive_root = self.archive_data_path.resolve(strict=False)
+        if live_root == archive_root:
+            raise ValueError("MARKET_DATA_PATH and ARCHIVE_DATA_PATH must differ")
+        return self
 
     @property
     def cors_origins(self) -> list[str]:

@@ -134,7 +134,11 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - orchestrat
     if should_eod:
         from app.ops.eod import compress_raw_files
 
-        result = compress_raw_files(settings.market_data_path)
+        result = compress_raw_files(
+            settings.market_data_path,
+            settings.archive_data_path,
+            level=settings.zstd_level,
+        )
         logger.info("EOD: compressed %d files", len(result.compressed))
 
     print(f"capture finished for {context.trading_date}.")

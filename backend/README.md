@@ -9,18 +9,21 @@ trading). See the knowledge base under [`../docs`](../docs) and the phase/batch 
 ```bash
 cd backend
 uv venv                      # or: python -m venv .venv
-uv pip install -e ".[dev]"   # runtime + dev deps
-cp .env.example .env         # then fill in KITE_API_KEY / SECRET / MARKET_DATA_PATH
+uv sync --extra dev           # locked runtime + dev dependencies
+cp .env.example .env         # then fill in credentials and both data paths
 ```
 
-## Login (automated, TOTP from terminal)
+## Login (shared token first, automated fallback)
 
-Kite creds are seeded from `.env` (`KITE_USER_ID`, `KITE_PASSWORD`, optional
-`KITE_TOTP_SECRET`). Run the headless login once per day to obtain and persist the
-`access_token`:
+When `KITE_TOKEN_BROKER_URL` and `KITE_TOKEN_BROKER_PASSCODE` are configured, login first
+checks the backend-only VPS endpoint for an existing session. A valid token skips TOTP
+and asks only for the daily risk-free rate. An explicit unauthenticated response falls
+back to `.env` credentials (`KITE_USER_ID`, `KITE_PASSWORD`), then asks for TOTP and rate.
+Before proceeding, the backend validates the broker token against Kite using this API
+key and the configured user id.
 
 ```bash
-md-login                    # prompts for TOTP (and bond yield if RISK_FREE_RATE unset)
+md-login                    # shared token → rate, or fallback TOTP → rate
 md-login --rate 0.0691      # or: python -m app.kite.login
 ```
 
@@ -38,7 +41,10 @@ md-serve                     # or: python -m app.server  (reads HTTP_PORT from .
 ```
 
 `FRONTEND_URL` in `.env` configures CORS (the browser origin[s] allowed to call the API);
-it must match the frontend's `NEXT_PUBLIC_BACKEND_URL` target.
+it must be the URL serving the frontend page. `NEXT_PUBLIC_BACKEND_URL` is different:
+it is the browser-reachable backend/API origin.
+The default bind is loopback-only because login endpoints use server-side credentials.
+Use TLS and API authentication before changing `HTTP_HOST` to a network-facing address.
 
 ## Capture
 
@@ -57,6 +63,13 @@ curl -X POST "http://<HTTP_HOST>:<HTTP_PORT>/api/capture/stop"
 ```
 
 Both require a logged-in session (`md-login`) for the day.
+
+At EOD, raw files remain under `MARKET_DATA_PATH` until a `.bin.zst` has been written,
+stream-verified, and atomically published under `ARCHIVE_DATA_PATH`. The archive keeps
+the same relative `INDICES/`, `STOCKS/`, and historical directory structure.
+
+For the production container workflow, see
+[`docs/60-operations/vps-docker-deployment.md`](../docs/60-operations/vps-docker-deployment.md).
 
 ## Test
 
@@ -84,6 +97,6 @@ app/
   static/          self-contained Capture Monitor dashboard (/monitor)
 ```
 
-185 unit/integration tests (`pytest`), all green; `ruff` clean. Live Kite WS/REST paths
+The unit/integration suite (`pytest`) and `ruff` checks cover the login and capture paths. Live Kite WS/REST paths
 are covered with mocks/fixtures + a synthetic tick stream (no credentials needed to run
 the suite).

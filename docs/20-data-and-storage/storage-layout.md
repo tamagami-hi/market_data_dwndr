@@ -10,34 +10,41 @@ related: ["[[bin-structure-spec]]", "[[bin-format]]", "[[historical-data]]", "[[
 
 # Storage Layout
 
-All captured data lives under a single `MARKET_DATA/` root (configurable path).
-Indices are stored per-index; stocks as a single matrix file per day. Historical data
-lives in separate `*_HIS` roots.
+Raw capture data and operational state live under `MARKET_DATA_PATH`. Verified zstd
+files live under the separate `ARCHIVE_DATA_PATH`, which mirrors the market-data
+relative layout. Indices are stored per-index; stocks as a single matrix file per day.
 
 ```
 MARKET_DATA/
 ├── INDICES/                         # live indices
 │   ├── NIFTY/
-│   │   ├── 2026-07-21.bin           # raw, during the session
-│   │   └── 2026-07-20.bin.zst       # zstd L17, after EOD compression
+│   │   └── 2026-07-21.bin           # raw, during the session
 │   ├── BANKNIFTY/
 │   ├── FINNIFTY/
 │   └── SENSEX/
 ├── STOCKS/                          # live stocks — ONE matrix file per day (all stocks)
-│   ├── 2026-07-21.bin
-│   └── 2026-07-20.bin.zst
+│   └── 2026-07-21.bin
 ├── INDICES_HIS/                     # historical indices (same format as live)
 │   ├── NIFTY/
-│   │   └── 2026-01-15.bin.zst
+│   │   └── 2026-01-15.bin
 │   └── BANKNIFTY/
 ├── STOCKS_HIS/                      # historical stocks (matrix format)
-│   └── 2026-01-15.bin.zst
+│   └── 2026-01-15.bin
 ├── _instruments/                    # daily instrument-master snapshots
 │   └── 2026-07-21/
 │       ├── NFO.csv
 │       ├── NSE.csv
 │       └── BFO.csv
 └── _meta/                           # run logs / capture manifests (optional)
+```
+
+After EOD, the market-data paths move to the archive root with a `.zst` suffix:
+
+```text
+ARCHIVE_DATA_PATH/INDICES/NIFTY/2026-07-21.bin.zst
+ARCHIVE_DATA_PATH/STOCKS/2026-07-21.bin.zst
+ARCHIVE_DATA_PATH/INDICES_HIS/NIFTY/2026-01-15.bin.zst
+ARCHIVE_DATA_PATH/STOCKS_HIS/2026-01-15.bin.zst
 ```
 
 ## Conventions
@@ -49,7 +56,8 @@ MARKET_DATA/
 - **Stocks:** a **single file per day** under `STOCKS/` (live) and `STOCKS_HIS/`
   (historical) holding **all** stocks as a matrix, `StockHeader` first ([[stocks-capture]]).
 - **Compression:** raw `.bin` during the session; whole file → `.bin.zst` (zstd L17)
-  at end of day, raw removed.
+  under `ARCHIVE_DATA_PATH` at end of day. The raw file is removed only after the
+  archive is streamed, verified, and atomically published on its destination disk.
 - **Bond yield:** the day's 10-yr yield (entered at login) is written into every
   file's header so each file is self-contained and Greeks are reconstructable.
 

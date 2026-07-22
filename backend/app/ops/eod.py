@@ -39,19 +39,30 @@ class EODResult:
 
 def compress_raw_files(
     market_data_path: str | os.PathLike[str],
+    archive_data_path: str | os.PathLike[str],
     *,
     level: int = DEFAULT_LEVEL,
     remove_src: bool = True,
 ) -> EODResult:
-    """Compress every raw ``*.bin`` under ``market_data_path`` (verify then remove)."""
+    """Move verified archives to ``archive_data_path``, retaining the live layout."""
     root = Path(market_data_path)
+    archive_root = Path(archive_data_path)
     raw_files = sorted(root.rglob("*.bin"))
     total_raw = sum(p.stat().st_size for p in raw_files)
     compressed: list[Path] = []
     for bin_path in raw_files:
+        if bin_path.is_symlink():
+            logger.warning("skipping symlinked raw file outside managed storage: %s", bin_path)
+            continue
         try:
-            dst = compress.compress_file(bin_path, level=level, remove_src=remove_src)
-            compressed.append(dst)
+            relative_archive = bin_path.relative_to(root).with_name(f"{bin_path.name}.zst")
+            dst = compress.compress_file(
+                bin_path,
+                archive_root / relative_archive,
+                level=level,
+                remove_src=remove_src,
+            )
+            compressed = [*compressed, dst]
         except Exception:  # noqa: BLE001 - one bad file must not abort the sweep
             logger.exception("failed to compress %s (keeping raw)", bin_path)
     total_zst = sum(p.stat().st_size for p in compressed if p.exists())
@@ -67,20 +78,22 @@ def compress_raw_files(
 def run_eod(
     stop_capture: Callable[[], None],
     market_data_path: str | os.PathLike[str],
+    archive_data_path: str | os.PathLike[str],
     *,
     level: int = DEFAULT_LEVEL,
 ) -> EODResult:
     """Full EOD sequence: stop/flush writers, then compress today's files."""
     logger.info("EOD: stopping capture and closing writers")
     stop_capture()
-    return compress_raw_files(market_data_path, level=level)
+    return compress_raw_files(market_data_path, archive_data_path, level=level)
 
 
 def prune_stale_raw(
     market_data_path: str | os.PathLike[str],
+    archive_data_path: str | os.PathLike[str],
     *,
     level: int = DEFAULT_LEVEL,
 ) -> EODResult:
     """Startup cleanup: compress any raw ``.bin`` left over from a prior crash."""
     logger.info("startup: pruning stale raw .bin under %s", market_data_path)
-    return compress_raw_files(market_data_path, level=level)
+    return compress_raw_files(market_data_path, archive_data_path, level=level)

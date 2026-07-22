@@ -62,7 +62,7 @@ def _init_session_service(app: FastAPI) -> None:
             )
         else:
             logger.info(
-                "no Kite session for %s yet — run `md-login` or POST /api/auth/login",
+                "no Kite session for %s yet — run `md-login` or start the staged login API",
                 status["trading_date"],
             )
     except Exception as exc:  # noqa: BLE001 - unconfigured env shouldn't crash the app
@@ -76,8 +76,12 @@ def _init_session_service(app: FastAPI) -> None:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan: resume today's session; wire capture in later."""
     _init_session_service(app)
-    yield
-    # Shutdown hooks (flush writers, EOD sweep) are driven by the scheduler (Phase 5).
+    try:
+        yield
+    finally:
+        service = getattr(app.state, "session_service", None)
+        if service is not None:
+            service.close()
 
 
 app = FastAPI(

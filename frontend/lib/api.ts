@@ -8,9 +8,8 @@ export interface AuthStatus {
   trading_date?: string;
   market_phase?: string;
   credentials_present?: boolean;
-  has_totp_secret?: boolean;
+  external_token_source_configured?: boolean;
   static_ip_configured?: boolean;
-  access_token?: string | null;
   risk_free_rate?: number | null;
   access_token_at?: number | null;
 }
@@ -18,8 +17,25 @@ export interface AuthStatus {
 export interface LoginResult {
   authenticated: boolean;
   trading_date: string;
-  access_token: string | null;
   risk_free_rate: number | null;
+}
+
+export interface LoginProgress {
+  attempt_id: string;
+  step: "awaiting_totp" | "awaiting_risk_free_rate";
+  method: "shared_session" | "local_credentials";
+  trading_date: string;
+  expires_at: number;
+}
+
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
 }
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {
@@ -31,7 +47,7 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
     } catch {
       /* ignore */
     }
-    throw new Error(detail);
+    throw new ApiError(res.status, detail);
   }
   return res.json() as Promise<T>;
 }
@@ -42,9 +58,8 @@ export async function getAuthStatus(): Promise<AuthStatus> {
 }
 
 export async function postLogin(body: {
-  totp?: string;
-  request_token?: string;
-  risk_free_rate?: number;
+  request_token: string;
+  risk_free_rate: number;
 }): Promise<LoginResult> {
   const res = await fetch(`${getBackendUrl()}/api/auth/login`, {
     method: "POST",
@@ -52,6 +67,39 @@ export async function postLogin(body: {
     body: JSON.stringify(body),
   });
   return jsonOrThrow<LoginResult>(res);
+}
+
+export async function startAutomatedLogin(): Promise<LoginProgress | LoginResult> {
+  const res = await fetch(`${getBackendUrl()}/api/auth/login/start`, { method: "POST" });
+  return jsonOrThrow<LoginProgress | LoginResult>(res);
+}
+
+export async function submitLoginTotp(attemptId: string, totp: string): Promise<LoginProgress> {
+  const res = await fetch(`${getBackendUrl()}/api/auth/login/${attemptId}/totp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ totp }),
+  });
+  return jsonOrThrow<LoginProgress>(res);
+}
+
+export async function completeAutomatedLogin(
+  attemptId: string,
+  riskFreeRate: number,
+): Promise<LoginResult> {
+  const res = await fetch(`${getBackendUrl()}/api/auth/login/${attemptId}/complete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ risk_free_rate: riskFreeRate }),
+  });
+  return jsonOrThrow<LoginResult>(res);
+}
+
+export async function cancelAutomatedLogin(attemptId: string): Promise<void> {
+  const res = await fetch(`${getBackendUrl()}/api/auth/login/${attemptId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) await jsonOrThrow(res);
 }
 
 export async function getLoginUrl(): Promise<string> {

@@ -15,17 +15,12 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from app.kite.auth import KiteAuthenticator, login_url
-from app.kite.login import make_totp_provider, run_login
+from app.kite.login import run_login
+from app.kite.login_flow import LoginCoordinator, LoginProgress
 from app.ops.calendar import TradingCalendar
 from app.session import SessionState, load_session, now_ms
 
 LoginFn = Callable[..., SessionState]
-
-
-def _mask(token: str | None) -> str | None:
-    if not token:
-        return None
-    return f"{token[:4]}\u2026{token[-4:]}" if len(token) > 8 else "\u2026"
 
 
 class SessionService:
@@ -34,11 +29,13 @@ class SessionService:
         settings,
         *,
         login_fn: LoginFn = run_login,
+        login_flow: LoginCoordinator | None = None,
         clock: Callable[[], int] = now_ms,
     ) -> None:
         self.settings = settings
         self._login_fn = login_fn
         self._clock = clock
+        self._login_flow = login_flow or LoginCoordinator(settings, clock=clock)
         self.calendar = TradingCalendar(
             timezone_name=settings.timezone,
             market_open=settings.market_open,
@@ -55,6 +52,13 @@ class SessionService:
     def credentials_present(self) -> bool:
         return bool(self.settings.kite_user_id and self.settings.kite_password)
 
+    @property
+    def external_token_source_configured(self) -> bool:
+        return bool(
+            getattr(self.settings, "kite_token_broker_url", None)
+            and getattr(self.settings, "kite_token_broker_passcode", None)
+        )
+
     def status(self) -> dict:
         """A JSON-friendly snapshot of auth/session state (no secrets)."""
         now = self._clock()
@@ -65,11 +69,10 @@ class SessionService:
             "trading_date": self.trading_date(),
             "market_phase": self.calendar.phase(now),
             "credentials_present": self.credentials_present,
-            "has_totp_secret": bool(self.settings.kite_totp_secret),
+            "external_token_source_configured": self.external_token_source_configured,
             "static_ip_configured": bool(
                 self.settings.kite_static_ip or self.settings.kite_http_proxy
             ),
-            "access_token": _mask(session.access_token) if session else None,
             "risk_free_rate": session.risk_free_rate if session else None,
             "access_token_at": session.access_token_at if session else None,
         }
@@ -84,8 +87,7 @@ class SessionService:
         """Log in for today's trading date.
 
         - ``request_token`` set  -> browser OAuth fallback: just exchange it.
-        - otherwise              -> automated login; ``totp`` (from the UI/terminal) is
-          used if given, else generated from ``KITE_TOTP_SECRET``.
+        - otherwise              -> automated login with a caller-supplied TOTP.
         """
         trading_date = self.trading_date()
         rate = risk_free_rate if risk_free_rate is not None else self.settings.risk_free_rate
@@ -98,7 +100,12 @@ class SessionService:
             )
             return authenticator.authenticate(request_token, float(rate), trading_date)
 
-        provider = (lambda: totp) if totp else make_totp_provider(self.settings.kite_totp_secret)
+        if not totp:
+            raise ValueError("TOTP must be entered by the user")
+
+        def provider() -> str:
+            return totp
+
         return self._login_fn(
             self.settings,
             trading_date=trading_date,
@@ -109,3 +116,18 @@ class SessionService:
     def login_url(self) -> str:
         """Browser OAuth fallback URL (manual login on Zerodha)."""
         return login_url(self.settings.kite_api_key)
+
+    def start_login(self) -> LoginProgress:
+        return self._login_flow.start(self.trading_date())
+
+    def submit_login_totp(self, attempt_id: str, totp: str) -> LoginProgress:
+        return self._login_flow.submit_totp(attempt_id, totp)
+
+    def complete_login(self, attempt_id: str, risk_free_rate: float) -> SessionState:
+        return self._login_flow.complete(attempt_id, risk_free_rate)
+
+    def cancel_login(self, attempt_id: str) -> None:
+        self._login_flow.cancel(attempt_id)
+
+    def close(self) -> None:
+        self._login_flow.close()

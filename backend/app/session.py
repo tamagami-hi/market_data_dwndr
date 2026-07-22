@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -52,16 +53,26 @@ def session_path(state_dir: str | os.PathLike[str], trading_date: str) -> Path:
 def save_session(state_dir: str | os.PathLike[str], state: SessionState) -> Path:
     """Write the session state atomically (temp file + rename)."""
     path = session_path(state_dir, state.trading_date)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(state.to_dict(), indent=2), encoding="utf-8")
-    tmp.replace(path)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    tmp = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as temp_file:
+            json.dump(state.to_dict(), temp_file, indent=2)
+        tmp.replace(path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+    path.chmod(0o600)
     return path
 
 
-def load_session(
-    state_dir: str | os.PathLike[str], trading_date: str
-) -> SessionState | None:
+def load_session(state_dir: str | os.PathLike[str], trading_date: str) -> SessionState | None:
     """Load today's session state, or ``None`` if it does not exist."""
     path = session_path(state_dir, trading_date)
     if not path.exists():
