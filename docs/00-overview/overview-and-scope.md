@@ -45,8 +45,9 @@ plus the day's bond yield (see [[bin-format]], [[stocks-capture]], [[lossless-an
 - **No order placement or management.** No execution, positions, P&L, risk, strategies.
 - **No IV or Greeks computed at capture.** They are reconstructed on read for display
   only (Black-Scholes + the stored bond yield).
-- **No automated RBI/bond-yield fetch.** The 10-yr yield is **entered manually at
-  login** and stored in each file header (it is *not* fetched from an API).
+- **No automated bond-yield fetch.** The 10-year government bond yield is confirmed
+  manually, may be reused the following Monday–Friday market day, and must be updated
+  on the third market day. It is stored in each file header and is not fetched from an API.
 - **No backtest playback engine.** We produce `.bin` files; replay is a later add-on.
 
 ## What we keep vs. drop (relative to algo_engine)
@@ -60,7 +61,7 @@ plus the day's bond yield (see [[bin-format]], [[stocks-capture]], [[lossless-an
 | Frontend option-chain UI | ✅ | ✅ (Greeks columns computed on read) |
 | F&O stock spot + futures capture | ❌ | ✅ added (CalSpread board, L5) |
 | Implied volatility / Greeks | ✅ stored | ❌ not stored — reconstructed on read |
-| Risk-free / 10-yr bond yield | ✅ (RBI rate) | ✅ stored in header (manual daily entry) |
+| Risk-free / 10-yr bond yield | ✅ | ✅ stored in header (manual freshness policy) |
 | VIX (raw from API) | ✅ | ✅ kept (raw) |
 | Order execution / strategies / risk | ✅ | ❌ dropped |
 

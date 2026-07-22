@@ -116,11 +116,14 @@ class CaptureMonitor:
         return delta / (elapsed_ms / 1000.0)
 
     def global_metrics(self) -> dict:
+        dropped_batches = self.bridge.dropped_batches if self.bridge is not None else 0
         return {
             "tokens": self._unique_token_count(),
             "fps": round(self._fps(), 3),
             "disk_bytes": directory_bytes(self.market_data_path) if self.market_data_path else 0,
             "captures": self.engine.captures if self.engine is not None else 0,
+            "dropped_batches": dropped_batches,
+            "ingestion_degraded": dropped_batches > 0,
         }
 
     def snapshot(self) -> dict:

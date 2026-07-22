@@ -17,8 +17,8 @@ backend's tagged-envelope WebSocket protocol (`app/ws/protocol.py`).
 ```bash
 cd frontend
 npm install
-cp .env.local.example .env.local   # set NEXT_PUBLIC_BACKEND_URL if backend isn't on :8000
-npm run dev                          # http://localhost:3000
+cp .env.local.example .env.local   # set the frontend and backend URLs for your environment
+npm run dev
 ```
 
 ### Port
@@ -29,13 +29,21 @@ scripts. `npm run dev` / `npm run start` load `.env.local` via `dotenv-cli`
 
 ```
 # frontend/.env.local
-NEXT_PUBLIC_BACKEND_URL=http://localhost:9000
-PORT=3000
+NEXT_PUBLIC_BACKEND_URL=http://localhost:<backend-port>
+PORT=<frontend-port>
+E2E_FRONTEND_PORT=<unused-test-port>
 ```
 
-To change the port (e.g. if you hit `EADDRINUSE: address already in use :::3000`,
-which means something is already listening on that port), just edit `PORT` and re-run —
-no code change. You can still override for one run with a shell var: `PORT=3001 npm run dev`.
+To change the port, edit `PORT` and restart the frontend; no code change is needed.
+Set `NEXT_PUBLIC_BACKEND_URL` to a browser-reachable backend host and the backend's
+`.env` `HTTP_PORT`, then restart (or rebuild for production) after changing it.
+`npm run test:e2e` uses `E2E_FRONTEND_PORT` so its production server can run alongside
+the development server; that port is also read only from `.env.local`.
+
+The backend operator token is deliberately absent from frontend environment files.
+Enter it in the operator-unlock screen; it is exchanged for a short-lived HttpOnly
+cookie and is not saved in local/session storage. HTTP API requests use
+`credentials: include`, and WebSocket handshakes authenticate with the same cookie.
 
 ## Build / lint
 
@@ -55,7 +63,8 @@ app/
   stocks/           F&O board
 components/          NavBar, ConnectionDot, OptionChainTable
 lib/
-  config.ts             backend URL / WS URL / auth token
+  config.ts             backend URL / WS URL
+  operatorAuth.ts       operator gate state and validation
   wsTopicConnection.ts  ref-counted per-topic WebSocket (reconnect/backoff)
   wsTypes.ts            tagged-envelope message + payload types
   useTopic.ts           React hooks (useTopicEnvelopes, useConnectionState)
@@ -64,3 +73,7 @@ lib/
 
 The backend must be running with capture active to stream live data; otherwise pages
 render their connection state and "waiting for data" placeholders.
+
+For production Docker deployment, `NEXT_PUBLIC_BACKEND_URL` is embedded during the
+frontend image build. Update `frontend/.env.local` and rebuild the frontend whenever
+that browser-visible origin changes.

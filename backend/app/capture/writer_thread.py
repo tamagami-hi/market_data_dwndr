@@ -19,6 +19,14 @@ from app.session import now_ms
 _STOP = object()
 
 
+class WriterThreadError(RuntimeError):
+    """Raised when a BIN writer cannot safely accept or persist more frames."""
+
+
+class WriterShutdownError(WriterThreadError):
+    """Raised when a writer has not proven that its queue drained and thread stopped."""
+
+
 class FileWriterThread(threading.Thread):
     """Owns a single BIN writer; drains a queue of frames and appends them.
 
@@ -35,6 +43,7 @@ class FileWriterThread(threading.Thread):
         self.last_write_ms: int | None = None
         self._started_ok = threading.Event()
         self._error: BaseException | None = None
+        self._stop_requested = False
 
     def run(self) -> None:  # pragma: no cover - exercised via integration test
         try:
@@ -53,23 +62,51 @@ class FileWriterThread(threading.Thread):
                 self._writer.append_frame(item)
                 self.frames_written += 1
                 self.last_write_ms = now_ms()
+        except BaseException as exc:  # noqa: BLE001 - propagate through health checks
+            self._error = exc
         finally:
-            self._writer.close()
+            try:
+                self._writer.close()
+            except BaseException as exc:  # noqa: BLE001 - close/flush failure is fatal
+                if self._error is None:
+                    self._error = exc
 
     def enqueue(self, frame: Any) -> None:
+        self.check_health()
+        if self._stop_requested:
+            raise WriterShutdownError(f"writer {self.name} is already stopping")
         self._queue.put(frame)
 
     def stop(self, join: bool = True, timeout: float | None = 5.0) -> None:
         """Signal a graceful stop after all queued frames are written."""
-        self._queue.put(_STOP)
+        self.request_stop()
         if join:
             self.join(timeout=timeout)
+            if self.is_alive():
+                raise WriterShutdownError(
+                    f"writer {self.name} did not stop after draining deadline"
+                )
+            self.check_health()
+
+    def request_stop(self) -> None:
+        """Enqueue the stop sentinel once without waiting for the writer."""
+        if self._stop_requested:
+            return
+        self._stop_requested = True
+        self._queue.put(_STOP)
+
+    def check_health(self) -> None:
+        """Raise a redacted error when open, append, flush, or close failed."""
+        if self._error is not None:
+            raise WriterThreadError(
+                f"writer {self.name} failed ({type(self._error).__name__})"
+            ) from self._error
 
     def wait_until_ready(self, timeout: float | None = 5.0) -> None:
         """Block until the header has been written (or startup failed)."""
-        self._started_ok.wait(timeout=timeout)
-        if self._error is not None:
-            raise self._error
+        if not self._started_ok.wait(timeout=timeout):
+            raise WriterShutdownError(f"writer {self.name} did not become ready")
+        self.check_health()
 
     @property
     def pending(self) -> int:

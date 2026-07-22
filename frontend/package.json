@@ -6,6 +6,8 @@
     "dev": "dotenv -e .env.local -- next dev",
     "build": "next build",
     "start": "dotenv -e .env.local -- next start",
+    "test": "node --test lib/*.test.mjs",
+    "test:e2e": "dotenv -e .env.local -- node --test e2e/*.e2e.mjs",
     "lint": "eslint"
   },
   "dependencies": {
@@ -21,6 +23,7 @@
     "dotenv-cli": "^11.0.0",
     "eslint": "^9",
     "eslint-config-next": "16.2.11",
+    "puppeteer-core": "25.3.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   },

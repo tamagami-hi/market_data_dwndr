@@ -39,7 +39,7 @@ def test_phases_across_the_day():
     assert cal.phase(_ms(2026, 7, 21, 8, 0)) == PHASE_PRE_OPEN
     assert cal.phase(_ms(2026, 7, 21, 9, 15)) == PHASE_OPEN  # open boundary
     assert cal.phase(_ms(2026, 7, 21, 12, 0)) == PHASE_OPEN
-    assert cal.phase(_ms(2026, 7, 21, 15, 30)) == PHASE_OPEN  # close boundary inclusive
+    assert cal.phase(_ms(2026, 7, 21, 15, 30)) == PHASE_CLOSED  # stop exactly at close
     assert cal.phase(_ms(2026, 7, 21, 15, 31)) == PHASE_CLOSED
 
 

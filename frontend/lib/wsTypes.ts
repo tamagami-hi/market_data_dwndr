@@ -63,6 +63,16 @@ export interface StockFutureRow {
   oi: number;
 }
 
+export interface DepthLevel {
+  level: number;
+  bid_price: number;
+  bid_qty: number;
+  bid_orders: number;
+  ask_price: number;
+  ask_qty: number;
+  ask_orders: number;
+}
+
 export interface StockRow {
   tradingsymbol: string;
   name: string;
@@ -70,6 +80,19 @@ export interface StockRow {
   futures: StockFutureRow[];
   live_spread: number;
   daily_spread: number;
+}
+
+export interface StockDepthFuture {
+  label: string;
+  expiry: string;
+  depth: DepthLevel[];
+}
+
+export interface StockDepthSnapshot {
+  tradingsymbol: string;
+  name: string;
+  spot_depth: DepthLevel[];
+  futures: StockDepthFuture[];
 }
 
 export interface StockBoardPayload {

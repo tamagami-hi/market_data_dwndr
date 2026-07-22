@@ -16,7 +16,12 @@ import asyncio
 import logging
 
 from app.capture.reconnect import ReconnectPolicy, StallDetector
-from app.capture.writer_thread import FileWriterThread
+from app.capture.snapshot import CaptureSnapshot
+from app.capture.writer_thread import (
+    FileWriterThread,
+    WriterShutdownError,
+    WriterThreadError,
+)
 from app.chain.table import IndexTable
 from app.session import now_ms
 from app.stocks.matrix import StockMatrix
@@ -76,18 +81,30 @@ class CaptureEngine:
 
     def capture_once(self, timestamp_unix_ms: int | None = None) -> int:
         """Snapshot every table/matrix at ``ts`` and enqueue to writers."""
+        snapshot = self.capture_snapshot(timestamp_unix_ms)
+        index_writes = sum(
+            1 for name, _frame in snapshot.index_frames if name in self.index_writers
+        )
+        stock_writes = int(snapshot.stock_frame is not None and self.stock_writer is not None)
+        return index_writes + stock_writes
+
+    def capture_snapshot(self, timestamp_unix_ms: int | None = None) -> CaptureSnapshot:
+        """Copy and enqueue frames, returning the same immutable display hand-off."""
         ts = timestamp_unix_ms if timestamp_unix_ms is not None else self._clock()
-        n = 0
-        for name, table in self.index_tables.items():
+        index_frames = tuple(
+            (name, table.snapshot(ts)) for name, table in self.index_tables.items()
+        )
+        for name, frame in index_frames:
             writer = self.index_writers.get(name)
             if writer is not None:
-                writer.enqueue(table.snapshot(ts))
-                n += 1
-        if self.stock_matrix is not None and self.stock_writer is not None:
-            self.stock_writer.enqueue(self.stock_matrix.snapshot(ts))
-            n += 1
+                writer.enqueue(frame)
+
+        stock_frame = self.stock_matrix.snapshot(ts) if self.stock_matrix is not None else None
+        if stock_frame is not None and self.stock_writer is not None:
+            self.stock_writer.enqueue(stock_frame)
+
         self.captures += 1
-        return n
+        return CaptureSnapshot(ts, index_frames, stock_frame)
 
     # -- writer lifecycle -------------------------------------------------- #
 
@@ -98,14 +115,30 @@ class CaptureEngine:
         return writers
 
     def start_writers(self) -> None:
-        for w in self._all_writers():
-            w.start()
-        for w in self._all_writers():
-            w.wait_until_ready()
+        writers = self._all_writers()
+        for writer in writers:
+            writer.start()
+        try:
+            for writer in writers:
+                writer.wait_until_ready()
+        except WriterThreadError:
+            self.stop_writers()
+            raise
 
     def stop_writers(self) -> None:
-        for w in self._all_writers():
-            w.stop()
+        writers = self._all_writers()
+        for writer in writers:
+            writer.request_stop()
+        failures: list[WriterThreadError] = []
+        for writer in writers:
+            try:
+                writer.stop()
+            except WriterThreadError as exc:
+                failures = [*failures, exc]
+        if failures:
+            raise WriterShutdownError(
+                f"{len(failures)} BIN writer(s) did not flush and stop safely"
+            ) from failures[0]
 
     # -- async live loop --------------------------------------------------- #
 
@@ -118,8 +151,9 @@ class CaptureEngine:
     ) -> None:  # pragma: no cover - live loop, integration-only
         """Consume ticks and snapshot every ``interval_s`` until ``stop_event`` is set.
 
-        If a ``broadcaster`` is supplied, live state is pushed to the WS topics after
-        each snapshot so the frontend updates at the capture cadence.
+        If a ``broadcaster`` is supplied, the latest display state is queued after
+        each snapshot. Websocket delivery is best-effort and never awaited here, so
+        slow frontend consumers cannot delay API ingestion or BIN persistence.
         """
         self.start_writers()
         consumer = asyncio.create_task(self._consume(bridge))
@@ -127,12 +161,18 @@ class CaptureEngine:
             while not stop_event.is_set():
                 await asyncio.sleep(interval_s)
                 ts = self._clock()
-                self.capture_once(ts)
+                snapshot = self.capture_snapshot(ts)
                 if broadcaster is not None:
-                    await broadcaster.broadcast_all(ts)
+                    broadcaster.publish_latest(snapshot)
         finally:
             consumer.cancel()
-            self.stop_writers()
+            await asyncio.gather(consumer, return_exceptions=True)
+            try:
+                self.stop_writers()
+            finally:
+                close_broadcaster = getattr(broadcaster, "close", None)
+                if close_broadcaster is not None:
+                    await close_broadcaster()
 
     async def _consume(self, bridge) -> None:  # pragma: no cover - live loop
         async for batch in bridge.batches():

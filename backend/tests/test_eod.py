@@ -40,18 +40,20 @@ def _make_market_data(tmp_path):
 
 def test_compress_raw_files_verifies_and_removes(tmp_path):
     idx, stk, inst, state = _make_market_data(tmp_path)
-    result = compress_raw_files(tmp_path)
+    archive_root = tmp_path / "archive"
+    result = compress_raw_files(tmp_path, archive_root)
 
     assert len(result.compressed) == 2
     assert all(p.suffix == ".zst" for p in result.compressed)
     assert not idx.exists() and not stk.exists()  # raw removed after verify
-    assert idx.with_name("2026-07-21.bin.zst").exists()
+    archived_index = archive_root / "INDICES" / "NIFTY" / "2026-07-21.bin.zst"
+    assert archived_index.exists()
     # non-.bin artifacts untouched
     assert inst.exists() and state.exists()
     assert result.total_raw_bytes > 0 and result.total_zst_bytes > 0
 
     # re-index the compressed index file transparently
-    with IndexBinReader(idx.with_name("2026-07-21.bin.zst")) as r:
+    with IndexBinReader(archived_index) as r:
         assert len(r) == 5
 
 
@@ -62,7 +64,7 @@ def test_run_eod_stops_capture_then_compresses(tmp_path):
     def stop():
         stopped["called"] = True
 
-    result = run_eod(stop, tmp_path)
+    result = run_eod(stop, tmp_path, tmp_path / "archive")
     assert stopped["called"] is True
     assert len(result.compressed) == 2
     assert result.ratio > 0
@@ -70,8 +72,50 @@ def test_run_eod_stops_capture_then_compresses(tmp_path):
 
 def test_prune_stale_raw(tmp_path):
     _make_market_data(tmp_path)
-    result = prune_stale_raw(tmp_path)
+    archive_root = tmp_path / "archive"
+    result = prune_stale_raw(tmp_path, archive_root)
     assert len(result.compressed) == 2
     # idempotent: a second run finds no raw files
-    again = prune_stale_raw(tmp_path)
+    again = prune_stale_raw(tmp_path, archive_root)
     assert again.compressed == []
+
+
+def test_compression_moves_archive_and_preserves_relative_layout(tmp_path):
+    live_root = tmp_path / "ssd-live"
+    archive_root = tmp_path / "hdd-archive"
+    source = live_root / "INDICES" / "NIFTY" / "2026-07-21.bin"
+    _write_index_file(source)
+
+    result = compress_raw_files(live_root, archive_root)
+
+    expected = archive_root / "INDICES" / "NIFTY" / "2026-07-21.bin.zst"
+    assert result.compressed == [expected]
+    assert expected.exists()
+    assert not source.exists()
+    assert not source.with_name("2026-07-21.bin.zst").exists()
+
+    with IndexBinReader(expected) as reader:
+        assert len(reader) == 5
+
+
+def test_archive_failure_keeps_raw_and_continues_other_files(tmp_path, monkeypatch):
+    live_root = tmp_path / "ssd-live"
+    archive_root = tmp_path / "hdd-archive"
+    first = live_root / "INDICES" / "NIFTY" / "2026-07-21.bin"
+    second = live_root / "STOCKS" / "2026-07-21.bin"
+    _write_index_file(first)
+    _write_index_file(second)
+    original = __import__("app.bin_codec.compress", fromlist=["compress_file"]).compress_file
+
+    def fail_first(src, dst=None, **kwargs):
+        if src == first:
+            raise OSError("archive disk unavailable")
+        return original(src, dst, **kwargs)
+
+    monkeypatch.setattr("app.ops.eod.compress.compress_file", fail_first)
+
+    result = compress_raw_files(live_root, archive_root)
+
+    assert first.exists()
+    assert result.compressed == [archive_root / "STOCKS" / "2026-07-21.bin.zst"]
+    assert not second.exists()

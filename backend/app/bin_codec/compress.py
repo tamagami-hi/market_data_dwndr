@@ -12,6 +12,7 @@ Streaming APIs keep memory flat for multi-GB daily files.
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 import zstandard as zstd
@@ -40,13 +41,43 @@ def compress_file(
     """
     src = Path(src)
     dst = Path(dst) if dst is not None else compressed_path(src)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        try:
+            is_existing_archive_valid = verify_roundtrip(src, dst)
+        except (OSError, zstd.ZstdError):
+            is_existing_archive_valid = False
+        if is_existing_archive_valid:
+            if remove_src:
+                src.unlink()
+            return dst
     cctx = zstd.ZstdCompressor(level=level)
-    with open(src, "rb") as fin, open(dst, "wb") as fout:
-        cctx.copy_stream(fin, fout)
-    if remove_src:
-        if not verify_roundtrip(src, dst):
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=dst.parent,
+            prefix=f".{dst.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            with open(src, "rb") as source_file:
+                cctx.copy_stream(source_file, temp_file)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+
+        if not verify_roundtrip(src, temp_path):
             raise ValueError(f"compressed {dst} did not verify against {src}; keeping raw")
-        src.unlink()
+
+        os.replace(temp_path, dst)
+        temp_path = None
+        _fsync_directory(dst.parent)
+        if remove_src:
+            src.unlink()
+    except Exception:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
     return dst
 
 
@@ -70,10 +101,26 @@ def decompress_file(
 
 
 def verify_roundtrip(src_bin: str | os.PathLike[str], dst_zst: str | os.PathLike[str]) -> bool:
-    """True if decompressing ``dst_zst`` reproduces ``src_bin`` byte-for-byte."""
-    with open(src_bin, "rb") as f:
-        raw = f.read()
-    return decompress_to_bytes(dst_zst) == raw
+    """Stream-compare a compressed file with its raw source byte-for-byte."""
+    dctx = zstd.ZstdDecompressor()
+    with open(src_bin, "rb") as raw_file, open(dst_zst, "rb") as compressed_file:
+        with dctx.stream_reader(compressed_file) as reader:
+            while raw_chunk := raw_file.read(1024 * 1024):
+                if reader.read(len(raw_chunk)) != raw_chunk:
+                    return False
+            return reader.read(1) == b""
+
+
+def _fsync_directory(path: Path) -> None:
+    """Persist a published filename when the platform supports directory fsync."""
+    try:
+        directory_fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def compress_directory(

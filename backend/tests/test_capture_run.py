@@ -34,3 +34,15 @@ def test_resolve_session_rejects_empty_token():
     session = SimpleNamespace(access_token="", risk_free_rate=0.07)
     with pytest.raises(RuntimeError, match="no access_token"):
         resolve_session(FakeService(session))
+
+
+def test_resolve_session_rejects_stale_risk_free_rate():
+    session = SimpleNamespace(
+        access_token="ACCESS",
+        risk_free_rate=0.065,
+        capture_ready=False,
+        rate_update_required=True,
+    )
+
+    with pytest.raises(RuntimeError, match="risk-free rate update is required"):
+        resolve_session(FakeService(session))

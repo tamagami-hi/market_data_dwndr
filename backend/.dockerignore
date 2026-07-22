@@ -1,0 +1,15 @@
+.env
+.env.*
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+tests
+Dockerfile*
+.git
+.gitignore
+MARKET_DATA
+*.bin
+*.bin.zst

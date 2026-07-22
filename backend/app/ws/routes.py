@@ -1,18 +1,19 @@
 """WebSocket routes + broadcast hub.
 
-One endpoint per topic ``/ws/{topic}`` (docs/50-frontend/websocket-protocol.md). Auth
-is a ``?token=`` query param (algo_engine parity). A ``ConnectionManager`` fans a
-message out to every client subscribed to a topic; dead sockets are pruned on send.
+One endpoint per topic ``/ws/{topic}`` (docs/50-frontend/websocket-protocol.md). Every
+connection requires the short-lived HttpOnly operator cookie and an allowed browser
+origin. A ``ConnectionManager`` fans a message out to every client subscribed to a
+topic; dead sockets are pruned on send.
 """
 
 from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from collections.abc import Callable
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.security.operator_auth import OPERATOR_COOKIE_NAME
 from app.ws import protocol
 
 logger = logging.getLogger(__name__)
@@ -22,11 +23,6 @@ ALLOWED_TOPICS = frozenset(
 )
 
 CLOSE_POLICY_VIOLATION = 1008
-
-
-def default_authorize(token: str | None) -> bool:
-    """Minimal auth: a non-empty token. Wire a stricter check in production."""
-    return bool(token)
 
 
 class ConnectionManager:
@@ -60,10 +56,7 @@ class ConnectionManager:
         return sent
 
 
-def create_ws_router(
-    hub: ConnectionManager,
-    authorize: Callable[[str | None], bool] = default_authorize,
-) -> APIRouter:
+def create_ws_router(hub: ConnectionManager) -> APIRouter:
     router = APIRouter()
 
     @router.websocket("/ws/{topic}")
@@ -71,7 +64,12 @@ def create_ws_router(
         if topic not in ALLOWED_TOPICS:
             await websocket.close(code=CLOSE_POLICY_VIOLATION)
             return
-        if not authorize(websocket.query_params.get("token")):
+        operator_auth = getattr(websocket.app.state, "operator_auth", None)
+        origin = websocket.headers.get("origin")
+        if operator_auth is None or origin not in operator_auth.allowed_origins:
+            await websocket.close(code=CLOSE_POLICY_VIOLATION)
+            return
+        if not operator_auth.is_authenticated(websocket.cookies.get(OPERATOR_COOKIE_NAME)):
             await websocket.close(code=CLOSE_POLICY_VIOLATION)
             return
 

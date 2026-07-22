@@ -8,7 +8,7 @@
  * Messages are parsed as JSON envelopes ({ type, payload }).
  */
 
-import { getAuthToken, getBackendWsUrl } from "@/lib/config";
+import { getBackendWsUrl } from "@/lib/config";
 import type { WsEnvelope } from "@/lib/wsTypes";
 
 export interface WsConnectionState {
@@ -68,7 +68,7 @@ function createTopicConnection(topic: string): TopicConnection {
     if (ws || refCount === 0) return;
     intentionalClose = false;
     try {
-      const url = `${getBackendWsUrl()}/ws/${topic}?token=${encodeURIComponent(getAuthToken())}`;
+      const url = `${getBackendWsUrl()}/ws/${topic}`;
       const socket = new WebSocket(url);
       ws = socket;
 

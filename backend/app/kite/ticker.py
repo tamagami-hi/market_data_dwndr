@@ -107,6 +107,10 @@ class TickerBridge:
         except asyncio.QueueFull:
             # 1 Hz consumer should never fall behind; drop oldest to stay live.
             self.dropped_batches += 1
+            logger.error(
+                "ticker ingestion queue overflow; dropped oldest batch (count=%d)",
+                self.dropped_batches,
+            )
             try:
                 self.queue.get_nowait()
                 self.queue.put_nowait(ticks)

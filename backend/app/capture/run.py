@@ -27,6 +27,10 @@ def resolve_session(service) -> tuple[str, float]:
         )
     if not session.access_token:
         raise RuntimeError("session has no access_token — re-run `md-login`")
+    from app.session import is_session_capture_ready
+
+    if not is_session_capture_ready(session):
+        raise RuntimeError("risk-free rate update is required before capture")
     return session.access_token, session.risk_free_rate
 
 
@@ -134,7 +138,11 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - orchestrat
     if should_eod:
         from app.ops.eod import compress_raw_files
 
-        result = compress_raw_files(settings.market_data_path)
+        result = compress_raw_files(
+            settings.market_data_path,
+            settings.archive_data_path,
+            level=settings.zstd_level,
+        )
         logger.info("EOD: compressed %d files", len(result.compressed))
 
     print(f"capture finished for {context.trading_date}.")

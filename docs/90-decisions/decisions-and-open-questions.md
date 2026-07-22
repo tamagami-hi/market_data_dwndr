@@ -16,7 +16,7 @@ related: ["[[overview-and-scope]]", "[[bin-structure-spec]]", "[[implementation-
 |---|---|---|
 | 1 | Storage approach | `algo_engine`-style framing (`[u32 LE len][payload]`, header-once, frame-by-frame, whole-file zstd L17) with **our own schema** — not byte-identical to algo_engine. ([[bin-format]], [[bin-structure-spec]]) |
 | 2 | Numeric types | **Integer-native / lossless:** prices `i64` paise, quantities/OI/volume `u64`, order counts `u32`, timestamps `u64`. `risk_free_rate` is the only `f64`. ([[lossless-and-precision]]) |
-| 3 | Bond yield | **Stored in every file header** (10-yr yield, entered manually at login ~06:30). Enables Greek reconstruction. ([[bin-format]]) |
+| 3 | Bond yield | **Stored in every file header.** The 10-year government bond yield is manually confirmed, reusable the next Monday–Friday market day, and mandatory to update on the third market day. Weekends do not count. Enables Greek reconstruction. ([[bin-format]]) |
 | 4 | Greeks / IV | **Not stored at all** — reconstructed on read via Black-Scholes + header bond yield. ([[bin-format]]) |
 | 5 | Raw only | Store raw API fields; drop all computable (`change`, `change_in_oi`, IV, Greeks, spreads, summary stats). No raw loss. ([[lossless-and-precision]]) |
 | 6 | Depth — indices | **L1** (top of book) for the option chain. ([[depth-level-research]]) |
@@ -29,7 +29,7 @@ related: ["[[overview-and-scope]]", "[[bin-structure-spec]]", "[[implementation-
 | 13 | VIX | Kept (raw). |
 | 14 | Compression | zstd level 17 at end of day. ([[bin-format]]) |
 | 15 | WebSocket lib | **KiteTicker** (decodes 5-level depth + reconnect), bridged into an asyncio queue. ([[tech-stack-and-efficiency]]) |
-| 16 | Auth | `.env` holds `KITE_API_KEY` + `KITE_API_SECRET`; daily login exchanges `request_token` → `access_token`; bond yield entered at the same step. ([[implementation-plan]]) |
+| 16 | Auth | The backend polls and validates the shared Kite token during 08:30–09:00 IST; env-seeded credentials + user-entered TOTP remain the fallback. Bond-yield freshness gates capture. ([[config-and-env]]) |
 | 17 | BIN tooling | Python `struct` + NumPy custom codec + `zstandard` (no bincode lib, no msgpack, no Parquet). ([[tech-stack-and-efficiency]]) |
 | 18 | Frontend | Reused option-chain/historical UI + a new **Capture Monitor** dashboard. ([[frontend]]) |
 | 19 | Knowledge base | `docs/` (domain folders) + `logs/` + `repo-map/` (Obsidian vault). |

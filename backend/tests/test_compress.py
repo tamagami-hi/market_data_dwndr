@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from app.bin_codec import compress, writer
 from app.bin_codec.reader import IndexBinReader, StockBinReader
@@ -110,3 +111,88 @@ def test_compress_directory_sweep(tmp_path):
     assert len(outputs) == 2
     assert all(o.suffix == ".zst" for o in outputs)
     assert not p1.exists() and not p2.exists()
+
+
+def test_compress_file_creates_archive_directories_and_atomically_publishes(tmp_path, monkeypatch):
+    path = tmp_path / "live" / "INDICES" / "NIFTY" / "2026-07-21.bin"
+    destination = tmp_path / "archive" / "INDICES" / "NIFTY" / "2026-07-21.bin.zst"
+    _write_index_file(path)
+    replacements = []
+    original_replace = compress.os.replace
+
+    def record_replace(source, target):
+        replacements.append((source, target))
+        original_replace(source, target)
+
+    monkeypatch.setattr(compress.os, "replace", record_replace)
+
+    output = compress.compress_file(path, destination, remove_src=True)
+
+    assert output == destination
+    assert replacements and replacements[0][1] == destination
+    assert replacements[0][0].parent == destination.parent
+    assert destination.exists()
+    assert not path.exists()
+
+
+def test_compressor_failure_leaves_raw_without_partial_archive(tmp_path, monkeypatch):
+    path = tmp_path / "live" / "2026-07-21.bin"
+    destination = tmp_path / "archive" / "2026-07-21.bin.zst"
+    _write_index_file(path)
+
+    class FailingCompressor:
+        def copy_stream(self, source, target):
+            target.write(b"partial")
+            raise OSError("simulated compressor failure")
+
+    monkeypatch.setattr(compress.zstd, "ZstdCompressor", lambda **_: FailingCompressor())
+
+    with pytest.raises(OSError, match="compressor failure"):
+        compress.compress_file(path, destination, remove_src=True)
+
+    assert path.exists()
+    assert not destination.exists()
+    assert list(destination.parent.glob("*.tmp")) == []
+
+
+def test_verification_streams_without_loading_entire_files(tmp_path, monkeypatch):
+    path = tmp_path / "2026-07-21.bin"
+    _write_index_file(path)
+    archive = compress.compress_file(path)
+    monkeypatch.setattr(
+        compress,
+        "decompress_to_bytes",
+        lambda *_: (_ for _ in ()).throw(AssertionError("must stream verification")),
+    )
+
+    assert compress.verify_roundtrip(path, archive) is True
+
+
+def test_existing_verified_archive_makes_retry_idempotent(tmp_path, monkeypatch):
+    path = tmp_path / "live" / "2026-07-21.bin"
+    archive = tmp_path / "archive" / "2026-07-21.bin.zst"
+    _write_index_file(path)
+    compress.compress_file(path, archive)
+    monkeypatch.setattr(
+        compress.zstd,
+        "ZstdCompressor",
+        lambda **_: (_ for _ in ()).throw(AssertionError("must not recompress")),
+    )
+
+    assert compress.compress_file(path, archive, remove_src=True) == archive
+    assert archive.exists()
+    assert not path.exists()
+
+
+def test_corrupt_existing_archive_is_atomically_replaced(tmp_path):
+    path = tmp_path / "live" / "2026-07-21.bin"
+    archive = tmp_path / "archive" / "2026-07-21.bin.zst"
+    _write_index_file(path)
+    expected_raw = path.read_bytes()
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(b"truncated zstd data")
+
+    assert compress.compress_file(path, archive, remove_src=True) == archive
+    assert archive.exists()
+    assert not path.exists()
+    assert compress.decompress_to_bytes(archive) == expected_raw

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import stat
 
 import pytest
 
@@ -42,6 +43,7 @@ def test_session_state_round_trip(tmp_path):
     )
     path = save_session(tmp_path, state)
     assert path.name == "session-2026-07-21.json"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
     loaded = load_session(tmp_path, "2026-07-21")
     assert loaded == state
     assert load_session(tmp_path, "2026-07-22") is None

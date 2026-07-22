@@ -25,13 +25,17 @@ class RetentionReport:
     compressed_bytes: int
 
 
-def scan_storage(market_data_path: str | os.PathLike[str]) -> RetentionReport:
-    """Summarize what is on disk under ``MARKET_DATA``."""
-    root = Path(market_data_path)
-    raw = [p for p in root.rglob("*.bin")]
-    zst = [p for p in root.rglob("*.bin.zst")]
-    inst_dir = root / "_instruments"
-    state_dir = root / "_state"
+def scan_storage(
+    market_data_path: str | os.PathLike[str],
+    archive_data_path: str | os.PathLike[str],
+) -> RetentionReport:
+    """Summarize transient SSD data and durable HDD archives."""
+    live_root = Path(market_data_path)
+    archive_root = Path(archive_data_path)
+    raw = [p for p in live_root.rglob("*.bin")]
+    zst = [p for p in archive_root.rglob("*.bin.zst")]
+    inst_dir = live_root / "_instruments"
+    state_dir = live_root / "_state"
     instruments = list(inst_dir.rglob("*.csv")) if inst_dir.exists() else []
     state = list(state_dir.rglob("*.json")) if state_dir.exists() else []
     return RetentionReport(

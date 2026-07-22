@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.capture import CaptureController, create_capture_router
+from app.api.capture import CaptureController, CaptureError, create_capture_router
 
 
 def _fake_context():
@@ -79,6 +80,39 @@ async def test_controller_start_requires_login():
 
     controller, _ = _make_controller(session=None)
     with pytest.raises(CaptureError, match="not logged in"):
+        await controller.start()
+
+
+async def test_controller_start_requires_fresh_risk_free_rate():
+    from app.api.capture import CaptureError
+
+    stale = SimpleNamespace(
+        access_token="ACCESS",
+        risk_free_rate=0.065,
+        capture_ready=False,
+        rate_update_required=True,
+    )
+    controller, _ = _make_controller(session=stale)
+
+    with pytest.raises(CaptureError, match="risk-free rate update is required"):
+        await controller.start()
+
+
+async def test_controller_redacts_capture_task_failures(caplog):
+    async def failing_run(_context, _stop_event):
+        raise RuntimeError("ACCESS_TOKEN_MUST_NOT_ESCAPE")
+
+    controller, _ = _make_controller()
+    controller._run_fn = failing_run
+
+    await controller.start()
+    await asyncio.sleep(0)
+
+    assert controller.status()["error"] == "capture task failed; inspect backend logs"
+    assert "ACCESS_TOKEN_MUST_NOT_ESCAPE" not in caplog.text
+    with pytest.raises(CaptureError, match="did not flush and stop safely"):
+        await controller.stop()
+    with pytest.raises(CaptureError, match="previous capture failed"):
         await controller.start()
 
 

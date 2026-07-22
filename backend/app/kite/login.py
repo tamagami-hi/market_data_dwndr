@@ -13,7 +13,7 @@ Here we automate the whole thing headlessly so a single ``md-login`` run gets a 
     4. POST api.kite.trade/session/token {checksum}      -> access_token
 
 Credentials are seeded from the environment (see ``config.Settings``); the TOTP is
-generated from ``KITE_TOTP_SECRET`` if set, otherwise prompted from the terminal.
+always entered by the user through the terminal or staged frontend flow.
 
 Static IP (Kite requires a whitelisted static IP for API calls from Apr 2026): the
 outbound HTTP client can bind a source address (``KITE_STATIC_IP``) and/or route
@@ -24,18 +24,25 @@ from that IP.
 from __future__ import annotations
 
 import argparse
+import logging
+import math
+import re
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import parse_qs, urljoin, urlparse
 
-from app.kite.auth import compute_checksum
+from app.kite.auth import auth_header, compute_checksum
+from app.kite.external_token import ExternalTokenError, fetch_external_access_token
 from app.session import SessionState, now_ms, save_session
 
 KITE_LOGIN_BASE = "https://kite.zerodha.com"
 KITE_API_BASE = "https://api.kite.trade"
 _USER_AGENT = "market_data_dwndr/0.1 (+automated-login)"
 _KITE_HOST = "kite.zerodha.com"
+_TOTP_PATTERN = re.compile(r"^[0-9]{6}$")
+logger = logging.getLogger(__name__)
 
 
 class KiteLoginError(Exception):
@@ -96,26 +103,12 @@ def build_kite_http_client(
 TotpProvider = Callable[[], str]
 
 
-def totp_from_secret(secret: str) -> str:
-    """Current 6-digit TOTP from a base32 secret (pyotp)."""
-    import pyotp
-
-    return pyotp.TOTP(secret).now()
-
-
 def prompt_totp() -> str:
     """Read the 6-digit TOTP interactively from the terminal."""
     code = input("Enter 6-digit Kite TOTP: ").strip()
     if not code:
         raise KiteLoginError("no TOTP entered")
     return code
-
-
-def make_totp_provider(totp_secret: str | None) -> TotpProvider:
-    """Auto-generate from a secret if provided, else prompt the terminal."""
-    if totp_secret:
-        return lambda: totp_from_secret(totp_secret)
-    return prompt_totp
 
 
 # --------------------------------------------------------------------------- #
@@ -147,17 +140,16 @@ def _extract_request_token(location: str | None) -> str | None:
 # --------------------------------------------------------------------------- #
 
 
-def fetch_request_token(
-    client: HttpClient,
-    api_key: str,
-    user_id: str,
-    password: str,
-    totp_provider: TotpProvider,
-    *,
-    max_redirects: int = 10,
-) -> str:
-    """Drive login -> twofa -> connect/login and return the ``request_token``."""
-    # 1. password login
+@dataclass(frozen=True)
+class PasswordChallenge:
+    """Opaque Kite password-login result needed for the TOTP step."""
+
+    request_id: str
+    twofa_type: str
+
+
+def begin_login(client: HttpClient, user_id: str, password: str) -> PasswordChallenge:
+    """Submit env-backed credentials and return the server's TOTP challenge."""
     login_data = _require_success(
         client.post(
             f"{KITE_LOGIN_BASE}/api/login",
@@ -168,24 +160,38 @@ def fetch_request_token(
     request_id = login_data.get("request_id")
     if not request_id:
         raise KiteLoginError("login succeeded but no request_id was returned")
-    twofa_type = login_data.get("twofa_type") or "totp"
+    return PasswordChallenge(
+        request_id=request_id,
+        twofa_type=login_data.get("twofa_type") or "totp",
+    )
 
-    # 2. two-factor (TOTP)
-    code = totp_provider()
+
+def complete_totp(
+    client: HttpClient,
+    api_key: str,
+    user_id: str,
+    challenge: PasswordChallenge,
+    totp: str,
+    *,
+    max_redirects: int = 10,
+) -> str:
+    """Submit a user-entered TOTP and return the resulting request token."""
+    if not _TOTP_PATTERN.fullmatch(totp):
+        raise KiteLoginError("TOTP must contain exactly 6 ASCII digits")
+
     _require_success(
         client.post(
             f"{KITE_LOGIN_BASE}/api/twofa",
             data={
                 "user_id": user_id,
-                "request_id": request_id,
-                "twofa_value": code,
-                "twofa_type": twofa_type,
+                "request_id": challenge.request_id,
+                "twofa_value": totp,
+                "twofa_type": challenge.twofa_type,
             },
         ),
         "twofa",
     )
 
-    # 3. connect/login -> follow the redirect chain until request_token appears
     url = f"{KITE_LOGIN_BASE}/connect/login?v=3&api_key={api_key}"
     for _ in range(max_redirects):
         resp = client.get(url)
@@ -197,8 +203,6 @@ def fetch_request_token(
             if not location:
                 raise KiteLoginError("redirect without a Location header during connect/login")
             next_url = urljoin(url, location)
-            # Follow redirects that stay on the Kite domain; an external redirect that
-            # carried no request_token means the flow did not complete.
             if urlparse(next_url).hostname != _KITE_HOST:
                 raise KiteLoginError(
                     "connect/login redirected off-site without a request_token "
@@ -206,13 +210,32 @@ def fetch_request_token(
                 )
             url = next_url
             continue
-        # A 200 here usually means an interstitial (e.g. authorize app) we can't
-        # complete headlessly, or invalid credentials.
         raise KiteLoginError(
             f"connect/login did not redirect (status {resp.status_code}); "
             "the app may need one-time authorization in a browser first"
         )
     raise KiteLoginError("exceeded redirect limit while resolving request_token")
+
+
+def fetch_request_token(
+    client: HttpClient,
+    api_key: str,
+    user_id: str,
+    password: str,
+    totp_provider: TotpProvider,
+    *,
+    max_redirects: int = 10,
+) -> str:
+    """Drive login -> twofa -> connect/login and return the ``request_token``."""
+    challenge = begin_login(client, user_id, password)
+    return complete_totp(
+        client,
+        api_key,
+        user_id,
+        challenge,
+        totp_provider(),
+        max_redirects=max_redirects,
+    )
 
 
 def exchange_request_token(
@@ -237,6 +260,53 @@ def exchange_request_token(
     return access_token
 
 
+def validate_access_token(
+    client: HttpClient,
+    api_key: str,
+    access_token: str,
+    *,
+    expected_user_id: str | None = None,
+) -> None:
+    """Verify that a broker token works with this API key and expected user."""
+    profile = _require_success(
+        client.get(
+            f"{KITE_API_BASE}/user/profile",
+            headers=auth_header(api_key, access_token),
+        ),
+        "external access token validation",
+    )
+    user_id = profile.get("user_id")
+    if not isinstance(user_id, str) or not user_id:
+        raise KiteLoginError("external access token profile has no user id")
+    if expected_user_id and user_id != expected_user_id:
+        raise KiteLoginError("external access token belongs to a different user")
+
+
+def validate_risk_free_rate(value: float) -> float:
+    """Return a plausible decimal yield or reject unsafe input."""
+    rate = float(value)
+    if not math.isfinite(rate) or not 0 <= rate <= 1:
+        raise KiteLoginError(
+            "risk_free_rate (10-year bond yield) must be a decimal between 0 and 1"
+        )
+    return rate
+
+
+def _persist_session(
+    settings, trading_date: str, access_token: str, risk_free_rate: float
+) -> SessionState:
+    timestamp = now_ms()
+    state = SessionState(
+        trading_date=trading_date,
+        access_token=access_token,
+        risk_free_rate=float(risk_free_rate),
+        access_token_at=timestamp,
+        started_at=timestamp,
+    )
+    save_session(settings.state_dir, state)
+    return state
+
+
 def run_login(
     settings,
     *,
@@ -255,8 +325,9 @@ def run_login(
         raise KiteLoginError(
             "risk_free_rate (10-yr bond yield) is required; set RISK_FREE_RATE or pass it in"
         )
+    rate = validate_risk_free_rate(rate)
 
-    provider = totp_provider or make_totp_provider(settings.kite_totp_secret)
+    provider = totp_provider or prompt_totp
     owns_client = client is None
     http = client or build_kite_http_client(settings.kite_static_ip, settings.kite_http_proxy)
     try:
@@ -270,16 +341,95 @@ def run_login(
         if owns_client:
             http.close()
 
-    ts = now_ms()
-    state = SessionState(
-        trading_date=trading_date,
-        access_token=access_token,
-        risk_free_rate=float(rate),
-        access_token_at=ts,
-        started_at=ts,
-    )
-    save_session(settings.state_dir, state)
-    return state
+    return _persist_session(settings, trading_date, access_token, rate)
+
+
+def run_interactive_login(
+    settings,
+    *,
+    trading_date: str,
+    risk_free_rate: float | None = None,
+    client: HttpClient | None = None,
+    external_token_fetcher: Callable[[], str | None] | None = None,
+    external_token_validator: Callable[[str], None] | None = None,
+) -> SessionState:
+    """Check the VPS token, then fall back to credentials, TOTP, and rate."""
+    if external_token_fetcher is None:
+
+        def configured_token_fetcher() -> str | None:
+            return fetch_external_access_token(settings)
+
+        token_fetcher = configured_token_fetcher
+    else:
+        token_fetcher = external_token_fetcher
+
+    try:
+        external_access_token = token_fetcher()
+    except ExternalTokenError as exc:
+        raise KiteLoginError(str(exc)) from exc
+
+    if external_access_token:
+        validation_client = None
+        try:
+            if external_token_validator is None:
+                validation_client = build_kite_http_client(
+                    settings.kite_static_ip,
+                    settings.kite_http_proxy,
+                )
+                validate_access_token(
+                    validation_client,
+                    settings.kite_api_key,
+                    external_access_token,
+                    expected_user_id=settings.kite_user_id,
+                )
+            else:
+                external_token_validator(external_access_token)
+        except Exception as exc:
+            raise KiteLoginError("external token service returned an unusable token") from exc
+        finally:
+            if validation_client is not None:
+                try:
+                    validation_client.close()
+                except Exception:  # noqa: BLE001
+                    logger.exception("failed to close external-token validation client")
+        rate = _resolve_interactive_rate(risk_free_rate)
+        return _persist_session(settings, trading_date, external_access_token, rate)
+
+    if not settings.kite_user_id or not settings.kite_password:
+        raise KiteLoginError(
+            "KITE_USER_ID and KITE_PASSWORD must be set in the environment to log in"
+        )
+
+    owns_client = client is None
+    http = client or build_kite_http_client(settings.kite_static_ip, settings.kite_http_proxy)
+    try:
+        challenge = begin_login(http, settings.kite_user_id, settings.kite_password)
+        request_token = complete_totp(
+            http,
+            settings.kite_api_key,
+            settings.kite_user_id,
+            challenge,
+            prompt_totp(),
+        )
+        rate = _resolve_interactive_rate(risk_free_rate)
+        access_token = exchange_request_token(
+            http, settings.kite_api_key, settings.kite_api_secret, request_token
+        )
+    finally:
+        if owns_client:
+            http.close()
+
+    return _persist_session(settings, trading_date, access_token, rate)
+
+
+def _resolve_interactive_rate(risk_free_rate: float | None) -> float:
+    rate = risk_free_rate
+    if rate is None:
+        try:
+            rate = float(input("Enter 10-yr bond yield (decimal, e.g. 0.0691): ").strip())
+        except (ValueError, EOFError) as exc:
+            raise KiteLoginError("invalid bond yield") from exc
+    return validate_risk_free_rate(rate)
 
 
 # --------------------------------------------------------------------------- #
@@ -319,24 +469,19 @@ def main(argv: list[str] | None = None) -> int:
 
     trading_date = args.date or _resolve_trading_date(settings)
 
-    rate = args.rate if args.rate is not None else settings.risk_free_rate
-    if rate is None:
-        try:
-            rate = float(input("Enter 10-yr bond yield (decimal, e.g. 0.0691): ").strip())
-        except (ValueError, EOFError):
-            print("invalid bond yield", file=sys.stderr)
-            return 2
-
     try:
-        state = run_login(settings, trading_date=trading_date, risk_free_rate=rate)
+        state = run_interactive_login(
+            settings,
+            trading_date=trading_date,
+            risk_free_rate=args.rate,
+        )
     except KiteLoginError as exc:
         print(f"login failed: {exc}", file=sys.stderr)
         return 1
 
-    masked = f"{state.access_token[:4]}…{state.access_token[-4:]}" if state.access_token else ""
     print(
-        f"login OK for {trading_date}: access_token={masked}, "
-        f"bond_yield={state.risk_free_rate}. Session saved under _state/."
+        f"login OK for {trading_date}: bond_yield={state.risk_free_rate}. "
+        "Session saved under _state/."
     )
     return 0
 

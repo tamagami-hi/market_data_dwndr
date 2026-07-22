@@ -4,20 +4,20 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pyotp
 import pytest
 
-from app.kite import login
 from app.kite.login import (
     KiteLoginError,
     _extract_request_token,
     _require_success,
+    begin_login,
     build_kite_http_client,
+    complete_totp,
     exchange_request_token,
     fetch_request_token,
-    make_totp_provider,
+    run_interactive_login,
     run_login,
-    totp_from_secret,
+    validate_access_token,
 )
 from app.session import load_session
 
@@ -62,23 +62,6 @@ class FakeClient:
         self.closed = True
 
 
-# --- TOTP --------------------------------------------------------------------
-
-
-def test_totp_from_secret_matches_pyotp():
-    secret = pyotp.random_base32()
-    code = totp_from_secret(secret)
-    assert len(code) == 6 and code.isdigit()
-    assert code == pyotp.TOTP(secret).now()
-
-
-def test_make_totp_provider_uses_secret_or_prompt():
-    secret = pyotp.random_base32()
-    provider = make_totp_provider(secret)
-    assert provider() == pyotp.TOTP(secret).now()
-    assert make_totp_provider(None) is login.prompt_totp
-
-
 # --- helpers -----------------------------------------------------------------
 
 
@@ -93,9 +76,7 @@ def test_require_success_raises_on_error():
     ok = _require_success(FakeResp(json_body={"status": "success", "data": {"x": 1}}), "s")
     assert ok == {"x": 1}
     with pytest.raises(KiteLoginError, match="bad creds"):
-        _require_success(
-            FakeResp(json_body={"status": "error", "message": "bad creds"}), "login"
-        )
+        _require_success(FakeResp(json_body={"status": "error", "message": "bad creds"}), "login")
 
 
 # --- request_token flow ------------------------------------------------------
@@ -136,6 +117,71 @@ def test_fetch_request_token_walks_redirects():
     twofa_post = next(p for p in client.posts if "/api/twofa" in p[0])
     assert twofa_post[1]["twofa_value"] == "654321"
     assert twofa_post[1]["request_id"] == "req123"
+
+
+def test_begin_login_posts_env_credentials_before_totp():
+    client = _login_client("https://unused.example/cb")
+    challenge = begin_login(client, "AB1234", "pass")
+
+    assert challenge.request_id == "req123"
+    assert challenge.twofa_type == "totp"
+    assert len(client.posts) == 1
+    assert client.posts[0][1] == {"user_id": "AB1234", "password": "pass"}
+
+
+def test_complete_totp_uses_existing_challenge():
+    client = _login_client("https://myapp.example/cb?request_token=RT_OK&status=success")
+    challenge = begin_login(client, "AB1234", "pass")
+
+    token = complete_totp(client, "apikey", "AB1234", challenge, "654321")
+
+    assert token == "RT_OK"
+    twofa_post = next(post for post in client.posts if "/api/twofa" in post[0])
+    assert twofa_post[1]["twofa_value"] == "654321"
+
+
+def test_validate_access_token_checks_profile_and_expected_user():
+    client = FakeClient(
+        get_queue=[
+            FakeResp(
+                json_body={
+                    "status": "success",
+                    "data": {"user_id": "AB1234"},
+                }
+            )
+        ]
+    )
+
+    validate_access_token(client, "apikey", "ACCESS", expected_user_id="AB1234")
+
+    assert client.gets == ["https://api.kite.trade/user/profile"]
+
+
+def test_validate_access_token_rejects_wrong_user():
+    client = FakeClient(
+        get_queue=[
+            FakeResp(
+                json_body={
+                    "status": "success",
+                    "data": {"user_id": "OTHER"},
+                }
+            )
+        ]
+    )
+
+    with pytest.raises(KiteLoginError, match="different user"):
+        validate_access_token(client, "apikey", "ACCESS", expected_user_id="AB1234")
+
+
+@pytest.mark.parametrize("totp", ["", " ", "12345", "1234567", "12ab56", "१२३४५६"])
+def test_complete_totp_rejects_invalid_user_input(totp):
+    client = _login_client("https://unused.example/cb")
+    challenge = begin_login(client, "AB1234", "pass")
+
+    with pytest.raises(KiteLoginError, match="6 ASCII digits"):
+        complete_totp(client, "apikey", "AB1234", challenge, totp)
+
+    assert not any("/api/twofa" in post[0] for post in client.posts)
 
 
 def test_fetch_request_token_offsite_without_token_errors():
@@ -181,7 +227,6 @@ def _settings(tmp_path, **overrides):
         kite_api_secret="secret",
         kite_user_id="AB1234",
         kite_password="pass",
-        kite_totp_secret=None,
         kite_static_ip=None,
         kite_http_proxy=None,
         risk_free_rate=None,
@@ -229,6 +274,60 @@ def test_run_login_requires_rate(tmp_path):
             trading_date="2026-07-21",
             totp_provider=lambda: "1",
             client=FakeClient(),
+        )
+
+
+def test_interactive_login_prompts_for_totp_then_rate(tmp_path, monkeypatch):
+    client = _login_client("https://myapp.example/cb?request_token=RT&status=success")
+    client.post_routes["/session/token"] = FakeResp(
+        json_body={"status": "success", "data": {"access_token": "ACCESS_1"}}
+    )
+    answers = iter(["222222", "0.0691"])
+    prompts = []
+
+    def fake_input(prompt):
+        prompts.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    state = run_interactive_login(_settings(tmp_path), trading_date="2026-07-21", client=client)
+
+    assert state.risk_free_rate == 0.0691
+    assert prompts[0].startswith("Enter 6-digit Kite TOTP")
+    assert prompts[1].startswith("Enter 10-yr bond yield")
+
+
+def test_interactive_login_uses_external_token_then_prompts_only_for_rate(tmp_path, monkeypatch):
+    prompts = []
+
+    def fake_input(prompt):
+        prompts.append(prompt)
+        return "0.0691"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    state = run_interactive_login(
+        _settings(tmp_path),
+        trading_date="2026-07-22",
+        external_token_fetcher=lambda: "VPS_ACCESS_TOKEN",
+        external_token_validator=lambda _: None,
+    )
+
+    assert state.access_token == "VPS_ACCESS_TOKEN"
+    assert state.risk_free_rate == 0.0691
+    assert len(prompts) == 1
+    assert prompts[0].startswith("Enter 10-yr bond yield")
+
+
+def test_interactive_login_wraps_external_token_validation_failure(tmp_path):
+    with pytest.raises(KiteLoginError, match="unusable token"):
+        run_interactive_login(
+            _settings(tmp_path),
+            trading_date="2026-07-22",
+            external_token_fetcher=lambda: "VPS_ACCESS_TOKEN",
+            external_token_validator=lambda _: (_ for _ in ()).throw(
+                RuntimeError("transport failed")
+            ),
         )
 
 
