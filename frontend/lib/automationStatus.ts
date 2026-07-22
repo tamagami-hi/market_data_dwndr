@@ -2,6 +2,7 @@ export interface AutomationStateView {
   phase?: string;
   last_action?: string | null;
   last_error?: string | null;
+  last_broker_poll_at?: number | null;
   eod_completed_date?: string | null;
   eod_in_progress_date?: string | null;
 }

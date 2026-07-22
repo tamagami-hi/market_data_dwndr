@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import NavBar from "@/components/NavBar";
-import OperatorGate from "@/components/OperatorGate";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -14,10 +13,8 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className="antialiased">
-        <OperatorGate>
-          <NavBar />
-          <main className="mx-auto max-w-[1600px] px-4 py-4">{children}</main>
-        </OperatorGate>
+        <NavBar />
+        <main className="mx-auto max-w-[1600px] px-4 py-4">{children}</main>
       </body>
     </html>
   );

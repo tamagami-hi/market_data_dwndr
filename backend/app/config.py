@@ -14,7 +14,7 @@ storage layout in docs/20-data-and-storage/storage-layout.md.
 
 from __future__ import annotations
 
-from datetime import time
+from datetime import date, time
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
@@ -92,24 +92,14 @@ class Settings(BaseSettings):
     # port, so it too is env-only (comma-separate for multiple origins).
     frontend_url: str = Field(..., description="Frontend origin(s) for CORS")
 
-    # --- browser operator authentication ---
-    # The long-lived token is exchanged for a short-lived opaque HttpOnly cookie.
-    operator_api_token: SecretStr = Field(
-        ...,
-        description="Backend-only operator unlock token (32-256 characters)",
-    )
-    operator_session_ttl_seconds: int = Field(default=3_600, ge=300, le=43_200)
-    operator_login_max_attempts: int = Field(default=5, ge=1, le=20)
-    operator_login_window_seconds: int = Field(default=60, ge=10, le=3_600)
-    operator_cookie_secure: bool = Field(
-        default=False,
-        description="Require HTTPS when sending the operator session cookie",
-    )
-
     # --- optional, with locked defaults ---
     # NoDecode: keep pydantic-settings from JSON-decoding this list field so the
     # comma-separated env value (``INDICES=NIFTY,BANKNIFTY,...``) reaches the validator.
     indices: Annotated[list[str], NoDecode] = Field(default_factory=lambda: list(DEFAULT_INDICES))
+    market_holidays: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description="Comma-separated ISO dates when the exchange is closed",
+    )
     stock_universe: str = Field(default="all", description="'all' or a comma allow-list")
     capture_hz: int = Field(default=1, ge=1, description="Snapshot cadence (Hz)")
     zstd_level: int = Field(default=17, ge=1, le=22, description="EOD compression level")
@@ -146,14 +136,6 @@ class Settings(BaseSettings):
             raise ValueError("RELEASE_MAINTENANCE_TOKEN must contain 32 to 256 characters")
         return value
 
-    @field_validator("operator_api_token")
-    @classmethod
-    def _operator_api_token_must_be_strong(cls, value: SecretStr) -> SecretStr:
-        token_length = len(value.get_secret_value().strip())
-        if not 32 <= token_length <= 256:
-            raise ValueError("OPERATOR_API_TOKEN must contain 32 to 256 characters")
-        return value
-
     @field_validator("indices", mode="before")
     @classmethod
     def _split_indices(cls, value: object) -> object:
@@ -161,6 +143,24 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [item.strip().upper() for item in value.split(",") if item.strip()]
         return value
+
+    @field_validator("market_holidays", mode="before")
+    @classmethod
+    def _parse_market_holidays(cls, value: object) -> object:
+        """Parse and normalize comma-separated ISO market-closure dates."""
+        items = value.split(",") if isinstance(value, str) else value
+        if not isinstance(items, (list, tuple, set)):
+            return items
+        normalized: set[str] = set()
+        for item in items:
+            text = str(item).strip()
+            if not text:
+                continue
+            try:
+                normalized.add(date.fromisoformat(text).isoformat())
+            except ValueError as exc:
+                raise ValueError("MARKET_HOLIDAYS must contain ISO dates (YYYY-MM-DD)") from exc
+        return sorted(normalized)
 
     @model_validator(mode="after")
     def _validate_token_broker(self) -> Settings:

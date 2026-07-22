@@ -29,9 +29,9 @@ work with minimal edits.
 | `historical-jobs` | Historical download progress | ✅ |
 | `backtest` / `execution` | replay / execution | ❌ (out of scope) |
 
-Auth: the backend-issued opaque operator cookie is sent by the browser during the
-WebSocket handshake. The backend validates both that HttpOnly cookie and the `Origin`
-header. Tokens are never placed in query strings.
+Access: WebSocket handshakes validate the browser `Origin` against `FRONTEND_URL`.
+There is no separate operator cookie or query-string token; deploy the services only on
+the trusted private VPS network.
 
 ## Message types
 

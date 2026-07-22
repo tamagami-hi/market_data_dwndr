@@ -5,70 +5,42 @@ type: reference
 status: living
 tags: [area/logs, type/reference, status/living]
 up: "[[Logs-MOC]]"
-related: ["[[build-guide]]", "[[bin-structure-spec]]", "[[decisions-and-open-questions]]", "[[Home]]"]
+related: ["[[daily-automation-architecture]]", "[[failure-modes]]", "[[vps-docker-deployment]]", "[[Home]]"]
 ---
 
 # Next-Session Handoff
 
-Paste the prompt below into a fresh session to resume. It points the agent at the
-vault and kicks off **Phase 1 (BIN codec)** per [[build-guide]].
+## Current state
 
-```text
-I'm continuing the `market_data_dwndr` project — a Python + Next.js market-data
-downloader for Zerodha Kite (capture only, no trading). The full design is already
-documented as an Obsidian vault in the repo. Work on branch `ai-dev/made` (never push
-to main).
+The private home-VPS workflow is implemented on `ai-dev/made`:
 
-FIRST, read the knowledge base before writing any code:
-- repo-map/Home.md            (start here — Map of Content)
-- docs/00-overview/overview-and-scope.md
-- docs/00-overview/build-guide.md          (the phase/batch plan with DoD gates)
-- docs/20-data-and-storage/bin-structure-spec.md   (authoritative byte format)
-- docs/90-decisions/decisions-and-open-questions.md (locked decisions)
-- docs/10-architecture/concurrency-and-gil.md and tech-stack-and-efficiency.md
+- The separate browser operator-auth layer and manual browser capture controls are gone.
+- `DailyAutomationService` owns broker polling, market-hours capture, stop/flush, and EOD.
+- Kite REST or ticker authentication failures are typed separately from writer/runtime
+  failures. Capture flushes, invalidates only the exact rejected session token, and
+  automatically returns to the existing HTTPS token-broker path. A validated replacement
+  restarts capture on the same daily files without restarting the backend.
+- `MARKET_HOLIDAYS` supplies exchange closure dates to all production calendars, in
+  addition to weekend and open/close checks.
+- `deploy/market-data-dwndr.service.example` starts existing Compose release images only
+  after Tailscale, Docker, network readiness, and required storage mounts pass preflight.
+- Release-maintenance authentication and WebSocket `FRONTEND_URL` Origin checks remain.
+- Dependency and runtime version files were not changed.
 
-LOCKED DESIGN (do not re-litigate):
-- Live capture over Kite WebSocket via KiteTicker, 1 Hz snapshots, push-based only.
-- Indices: NIFTY, BANKNIFTY, FINNIFTY, SENSEX; ATM±50 = 101 strikes; depth L1.
-- Stocks: full F&O board (spot + 3 nearest futures) as a matrix; depth L5.
-- Storage: our own integer-native BIN format (prices i64 paise, qty/OI u64, orders
-  u32), LE fixed-width bincode-style framing `[u32 len][payload]`, header-once then
-  1 Hz frames, whole-file zstd level 17 at end of day.
-- Greeks/IV are NOT stored — reconstructed on read from raw + the 10-yr bond yield
-  stored in each file header (bond yield entered manually at morning login).
-- Folders: MARKET_DATA/INDICES/<INDEX>/<date>.bin, MARKET_DATA/STOCKS/<date>.bin,
-  and INDICES_HIS/ , STOCKS_HIS/ for historical.
-- Config via .env (KITE_API_KEY, KITE_API_SECRET, MARKET_DATA_PATH); daily login
-  exchanges request_token -> access_token (see docs/60-operations/).
-- Tooling: FastAPI backend; struct + NumPy + zstandard for the codec (NO bincode lib,
-  NO msgpack, NO Parquet); Next.js frontend (reused option-chain UI + a Capture
-  Monitor dashboard).
+## Remaining external validation
 
-TASK THIS SESSION:
-1. Phase 0 scaffolding if not present: backend/ (pyproject.toml, app/main.py FastAPI
-   with /health, app/config.py pydantic-settings), .env.example. (frontend/ can wait.)
-2. Phase 1 — BIN codec, implemented EXACTLY per docs/20-data-and-storage/
-   bin-structure-spec.md:
-     backend/app/bin_codec/layout.py   (field order + dtypes, enum tags, primitives)
-     backend/app/bin_codec/writer.py   (framing, header-once, IndexFrame + StockFrame)
-     backend/app/bin_codec/reader.py   (scan -> ts->offset index, binary search, ranges)
-     backend/app/bin_codec/compress.py (whole-file zstd L17, transparent .zst read)
-3. Tests per docs/70-quality/testing-strategy.md — the Phase 1 Definition-of-Done
-   gates MUST pass: round-trip identical integer arrays, byte-level header check,
-   compress -> re-index -> identical.
+Live Kite REST/WebSocket validation still requires real credentials and a whitelisted
+static-egress path. The implementation is covered with injected clients/tickers and
+focused tests; do not place credentials or broker passcodes in tracked files.
 
-Update logs/progress-log.md (and logs/change-log.md if a decision changes) as you go.
-Stay on branch ai-dev/made. Follow the DoD gates in build-guide.md before advancing.
+## VPS activation
 
-WORKFLOW (git):
-- Work on `ai-dev/made`; never commit/push to `main` directly.
-- Commit in scoped batches as you complete build-guide tasks.
-- Push `ai-dev/made` to the remote (use the GitHub push tool, not raw `git push`).
-- When Phase 1's Definition-of-Done gates pass, open/update a Pull Request from
-  `ai-dev/made` into `main` for review.
-```
+Follow [[vps-docker-deployment]] to populate `MARKET_HOLIDAYS`, deploy immutable images,
+and install/enable the systemd unit. Continue using the release manager for updates and
+rollback; the boot unit deliberately uses `docker compose up -d --no-build`.
 
 ## Branch workflow
 
-- **`main`** = stable/default baseline. **`ai-dev/made`** = active development.
-- Each phase's work lands on `ai-dev/made` and is reviewed via a PR into `main`.
+- `main` is the stable/default branch.
+- `ai-dev/made` is the working branch; review it through a pull request.
+- Never commit `.env`, daily session files, captured data, or broker secrets.

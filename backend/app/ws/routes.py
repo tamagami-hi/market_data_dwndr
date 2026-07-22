@@ -1,9 +1,9 @@
 """WebSocket routes + broadcast hub.
 
-One endpoint per topic ``/ws/{topic}`` (docs/50-frontend/websocket-protocol.md). Every
-connection requires the short-lived HttpOnly operator cookie and an allowed browser
-origin. A ``ConnectionManager`` fans a message out to every client subscribed to a
-topic; dead sockets are pruned on send.
+One endpoint per topic ``/ws/{topic}`` (docs/50-frontend/websocket-protocol.md). Connections
+must present an allowed browser origin from ``FRONTEND_URL``; private VPS access control
+is handled by the host network rather than a second application authentication layer.
+A ``ConnectionManager`` fans messages out to clients subscribed to each topic.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from collections import defaultdict
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.security.operator_auth import OPERATOR_COOKIE_NAME
 from app.ws import protocol
 
 logger = logging.getLogger(__name__)
@@ -64,12 +63,9 @@ def create_ws_router(hub: ConnectionManager) -> APIRouter:
         if topic not in ALLOWED_TOPICS:
             await websocket.close(code=CLOSE_POLICY_VIOLATION)
             return
-        operator_auth = getattr(websocket.app.state, "operator_auth", None)
-        origin = websocket.headers.get("origin")
-        if operator_auth is None or origin not in operator_auth.allowed_origins:
-            await websocket.close(code=CLOSE_POLICY_VIOLATION)
-            return
-        if not operator_auth.is_authenticated(websocket.cookies.get(OPERATOR_COOKIE_NAME)):
+        settings = getattr(websocket.app.state, "settings", None)
+        allowed_origins = settings.cors_origins if settings is not None else []
+        if websocket.headers.get("origin") not in allowed_origins:
             await websocket.close(code=CLOSE_POLICY_VIOLATION)
             return
 

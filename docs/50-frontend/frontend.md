@@ -23,8 +23,10 @@ tied to execution, strategies, and risk is dropped.
 
 ## Pages
 
-- **`/monitor` — Capture Monitor (new, the "data saving" view).** Per-underlying status
-  cards + global panels (see below).
+- **`/monitor` — Capture Monitor (new, the "data saving" view).** Per-underlying status,
+  global panels, and continuously refreshed capture history across live + archive storage.
+- **`/login` — Downloader initialization.** Read-only token-broker fetch/validation and
+  automatic capture-readiness progress; the only input is a yield update when required.
 - `/option-chain` — live option-chain table + status panel (reused).
 - `/stocks` — live stock board (spot + 3 futures, live spread computed on read).
 - `/historical` — download form, progress, dataset catalog (reused).
@@ -38,6 +40,9 @@ Driven by a `capture-status` WS topic ([[websocket-protocol]]). Shows:
   written in the last ~2 s), unmatched-tick counter.
 - **Global panel:** total tokens subscribed, frames/sec, `MARKET_DATA` disk usage,
   today's file list with sizes, EOD-compression status.
+- **Download history:** cumulative sessions/files/bytes and per-trading-date raw versus
+  verified archive sizes, index sets, stock files, and current-session state. It polls
+  `/api/capture/history` while the service runs.
 - **Session/log stream:** connection events, reconnects, errors (from the `session`
   topic).
 

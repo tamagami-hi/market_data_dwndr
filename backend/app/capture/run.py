@@ -56,6 +56,7 @@ async def _run(context, settings, *, interval_s: float, gate_market_hours: bool,
             pass  # e.g. Windows / non-main thread
 
     calendar = TradingCalendar(
+        holidays=set(getattr(settings, "market_holidays", [])),
         timezone_name=settings.timezone,
         market_open=settings.market_open,
         market_close=settings.market_close,

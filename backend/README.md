@@ -13,17 +13,20 @@ uv sync --extra dev           # locked runtime + dev dependencies
 cp .env.example .env         # then fill in credentials and both data paths
 ```
 
-## Login (shared token first, automated fallback)
+## Login and daily initialization
 
-When `KITE_TOKEN_BROKER_URL` and `KITE_TOKEN_BROKER_PASSCODE` are configured, login first
-checks the backend-only VPS endpoint for an existing session. A valid token skips TOTP
-and asks only for the daily risk-free rate. An explicit unauthenticated response falls
-back to `.env` credentials (`KITE_USER_ID`, `KITE_PASSWORD`), then asks for TOTP and rate.
-Before proceeding, the backend validates the broker token against Kite using this API
-key and the configured user id.
+With `KITE_TOKEN_BROKER_URL` and `KITE_TOKEN_BROKER_PASSCODE` configured, the lifespan
+scheduler fetches and validates the daily token automatically during the configured
+trading-day window. The frontend `/login` page is a read-only initialization view: it
+shows broker configuration, fetch/validation state, capture readiness, and whether the
+downloader is running. It does not start login or capture.
+
+`md-login` remains an operational fallback for an explicit unauthenticated broker
+response. It uses `.env` credentials (`KITE_USER_ID`, `KITE_PASSWORD`) and prompts for
+TOTP/rate when needed. Broker tokens are validated against Kite before persistence.
 
 ```bash
-md-login                    # shared token → rate, or fallback TOTP → rate
+md-login                    # manual fallback only
 md-login --rate 0.0691      # or: python -m app.kite.login
 ```
 
@@ -48,21 +51,30 @@ Use TLS and API authentication before changing `HTTP_HOST` to a network-facing a
 
 ## Capture
 
-Two ways to run the 1 Hz capture (both: login → fetch instruments → seed ATM via LTP →
-discover F&O board + index chains → subscribe → snapshot to `.bin`):
+The FastAPI lifespan owns the production 1 Hz capture through `DailyAutomationService`:
+it acquires a validated session, starts capture inside the configured market window,
+stops and flushes at close, and runs EOD archiving. The HTTP surface is intentionally
+read-only for normal operation:
 
 ```bash
-# headless (writes .bin files; auto-stops + compresses at market close):
-md-capture                    # or: python -m app.capture.run
-md-capture --ignore-market-hours   # run off-hours (no auto-stop), Ctrl-C to end
-
-# in-process (so the frontend gets live WS broadcasts): from the running API,
-curl -X POST "http://<HTTP_HOST>:<HTTP_PORT>/api/capture/start"
-curl       "http://<HTTP_HOST>:<HTTP_PORT>/api/capture/status"
-curl -X POST "http://<HTTP_HOST>:<HTTP_PORT>/api/capture/stop"
+curl "http://<HTTP_HOST>:<HTTP_PORT>/api/capture/status"
+curl "http://<HTTP_HOST>:<HTTP_PORT>/api/capture/history"
 ```
 
-Both require a logged-in session (`md-login`) for the day.
+The history endpoint reports cumulative and per-session raw/archive bytes and captured
+index/stock file counts. Browser Start/Stop endpoints are not exposed; internal
+`CaptureController.start()` / `stop()` remain owned by the scheduler and release drain.
+
+`md-capture` remains available as a separate operational CLI when explicitly needed:
+
+```bash
+md-capture
+md-capture --ignore-market-hours
+```
+
+Production capture requires a validated daily session, normally acquired automatically
+from the configured token broker. Run `md-login` only when that automatic source remains
+unavailable and an explicit fallback is needed.
 
 At EOD, raw files remain under `MARKET_DATA_PATH` until a `.bin.zst` has been written,
 stream-verified, and atomically published under `ARCHIVE_DATA_PATH`. The archive keeps

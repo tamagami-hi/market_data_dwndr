@@ -14,6 +14,25 @@ Design decisions and notable changes. Newest first.
 
 ---
 
+## 2026-07-21 — Unattended token recovery and boot lifecycle completed
+- Kite REST/WebSocket authentication failures now stop and flush capture, invalidate
+  only the exact rejected daily session, and return automation to the existing secure
+  broker polling path; replacement tokens resume capture without a backend restart.
+- Added validated `MARKET_HOLIDAYS` configuration to every runtime trading calendar.
+- Added a Docker Compose systemd unit ordered after Tailscale, Docker, networking, and
+  required storage mounts; it starts existing release images after preflight checks.
+
+## 2026-07-21 — Operator-auth layer removed
+- Removed the separate operator token, unlock endpoint, HttpOnly browser session,
+  HTTP middleware, WebSocket cookie gate, and frontend unlock screen for the private
+  home-VPS deployment.
+- `FRONTEND_URL` remains the CORS/WebSocket Origin allow-list; host-level loopback or
+  Tailscale access is the deployment boundary. Kite login, shared-token polling,
+  scheduling, capture, and release-maintenance authentication are unchanged.
+- Removed browser Start/Stop capture endpoints and controls; the market-hours scheduler
+  exclusively owns normal capture lifecycle. Replaced Start login with automatic broker
+  fetch/validation progress, and added per-session live/archive download history.
+
 ## 2026-07-21 — Phases 2–7 implemented (full backend build)
 - Built the entire capture pipeline on `ai-dev/made` per the locked specs, batch-by-batch
   with tests + ruff after each: Kite auth/instruments/discovery, chain filter/assembler,

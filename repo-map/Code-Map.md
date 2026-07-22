@@ -60,13 +60,13 @@ backend/app/
 │   └── routes.py           ConnectionManager + /ws/{topic}
 ├── api/
 │   ├── auth.py             /api/auth/status · /login · /login-url
-│   └── capture.py          CaptureController + /api/capture/{status,start,stop}
+│   └── capture.py          CaptureController + status/history/maintenance APIs
 ├── ops/                    ← [[operations-runbook]]
 │   ├── calendar.py         IST trading date + session phase
 │   ├── scheduler.py        phase machine → start/stop/EOD events
 │   ├── eod.py              stop→verify→compress sweep, stale-raw prune
 │   ├── session_manager.py  resume-or-login orchestration
-│   └── retention.py        storage report + .zst integrity check
+│   └── retention.py        storage/history reports + .zst integrity check
 ├── historical/             ← [[historical-data]]
 │   ├── intervals.py windows.py request.py limiter.py client.py assembly.py jobs.py
 └── reconstruct/            ← [[reconstruction]]

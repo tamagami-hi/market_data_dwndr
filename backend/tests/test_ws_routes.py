@@ -7,7 +7,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from app.security.operator_auth import OPERATOR_COOKIE_NAME
 from app.ws.routes import ConnectionManager, create_ws_router
 
 
@@ -57,23 +56,19 @@ async def test_broadcast_prunes_dead_sockets():
 # --- route integration tests -------------------------------------------------
 
 
-class FakeOperatorAuth:
-    allowed_origins = frozenset({"http://frontend.test"})
-
-    def is_authenticated(self, cookie: str | None) -> bool:
-        return cookie == "valid-opaque-cookie"
+class FakeSettings:
+    cors_origins = ["http://frontend.test"]
 
 
 def _client() -> TestClient:
     app = FastAPI()
-    app.state.operator_auth = FakeOperatorAuth()
+    app.state.settings = FakeSettings()
     app.include_router(create_ws_router(ConnectionManager()))
     return TestClient(app)
 
 
-def test_connect_with_operator_cookie_receives_welcome():
+def test_connect_from_allowed_origin_receives_welcome():
     client = _client()
-    client.cookies.set(OPERATOR_COOKIE_NAME, "valid-opaque-cookie")
     with client.websocket_connect(
         "/ws/market-data", headers={"Origin": "http://frontend.test"}
     ) as ws:
@@ -83,28 +78,25 @@ def test_connect_with_operator_cookie_receives_welcome():
         assert msg["payload"]["diagnostics"]["topic"] == "market-data"
 
 
-def test_connect_without_operator_cookie_is_rejected():
+def test_connect_from_allowed_origin_needs_no_cookie():
     client = _client()
-    with pytest.raises(WebSocketDisconnect):
-        with client.websocket_connect(
-            "/ws/market-data", headers={"Origin": "http://frontend.test"}
-        ) as ws:
-            ws.receive_json()
+    with client.websocket_connect(
+        "/ws/market-data", headers={"Origin": "http://frontend.test"}
+    ) as ws:
+        assert ws.receive_json()["payload"]["phase"] == "connected"
 
 
-def test_query_string_token_cannot_bypass_cookie_authentication():
+def test_query_string_token_is_ignored():
     client = _client()
-    with pytest.raises(WebSocketDisconnect):
-        with client.websocket_connect(
-            "/ws/market-data?token=legacy-secret",
-            headers={"Origin": "http://frontend.test"},
-        ) as ws:
-            ws.receive_json()
+    with client.websocket_connect(
+        "/ws/market-data?token=legacy-secret",
+        headers={"Origin": "http://frontend.test"},
+    ) as ws:
+        assert ws.receive_json()["payload"]["phase"] == "connected"
 
 
 def test_untrusted_websocket_origin_is_rejected() -> None:
     client = _client()
-    client.cookies.set(OPERATOR_COOKIE_NAME, "valid-opaque-cookie")
     with pytest.raises(WebSocketDisconnect):
         with client.websocket_connect(
             "/ws/market-data", headers={"Origin": "http://malicious.test"}
@@ -114,7 +106,6 @@ def test_untrusted_websocket_origin_is_rejected() -> None:
 
 def test_unknown_topic_is_rejected():
     client = _client()
-    client.cookies.set(OPERATOR_COOKIE_NAME, "valid-opaque-cookie")
     with pytest.raises(WebSocketDisconnect):
         with client.websocket_connect(
             "/ws/execution", headers={"Origin": "http://frontend.test"}

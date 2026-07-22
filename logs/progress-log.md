@@ -14,6 +14,31 @@ Newest first. One entry per working session.
 
 ---
 
+## 2026-07-21 — Unattended VPS recovery workflow completed
+
+- Added typed Kite auth-failure propagation across REST bootstrap and ticker callbacks.
+  Capture now flushes safely, invalidates the exact rejected persisted token, and lets
+  the market-hours scheduler fetch, validate, and use a fresh broker token.
+- Non-auth capture/writer failures remain sticky and cannot be mistaken for expiry.
+- Added `MARKET_HOLIDAYS` env parsing and applied holidays to login/session,
+  automation, bootstrap, and CLI calendars.
+- Added `deploy/market-data-dwndr.service.example` for boot startup after Tailscale,
+  Docker, network readiness, and storage mounts.
+- Added focused regression coverage for callback threading, session invalidation,
+  holiday suppression, bootstrap auth failures, and recoverable controller restart.
+
+## 2026-07-21 — Operator-auth layer removed
+
+- Removed the backend operator middleware/routes/settings and frontend unlock gate.
+- HTTP console APIs now work directly on the private VPS network; WebSockets still
+  enforce the `FRONTEND_URL` Origin allow-list.
+- No Kite login, token-broker, daily automation, capture, or downloader behavior was
+  changed by removing operator auth.
+- Removed manual capture Start/Stop APIs and UI while retaining scheduler/maintenance
+  controller methods. `/login` now polls automatic token fetch/validation progress.
+- Added `/api/capture/history` and a monitor history table for cumulative and per-session
+  live/archive bytes, file counts, index sets, and stock captures.
+
 ## 2026-07-21 — Frontend port fully env-file-driven
 
 - Removed the last hardcoded port: the `dev`/`start` scripts now load `.env.local` via

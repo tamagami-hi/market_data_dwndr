@@ -8,7 +8,8 @@ backend's tagged-envelope WebSocket protocol (`app/ws/protocol.py`).
 
 | Route | Topic(s) | Shows |
 |-------|----------|-------|
-| `/monitor` | `capture-status`, `session` | Per-underlying WS health, frames written, file size, 1 Hz heartbeat, unmatched, plus global tokens / fps / disk usage and a session log. |
+| `/monitor` | `capture-status`, `session` + `/api/capture/history` | Per-underlying WS health, frames written, file size, 1 Hz heartbeat, unmatched, global telemetry, and cumulative per-session live/archive download history. |
+| `/login` | `/api/auth/status` | Automatic token-broker fetch/validation and downloader-initialization progress; yield update only when required. |
 | `/option-chain` | `market-data` | ATM ± 50 index chains with reconstructed IV & Greeks; spot / ATM / max-pain markers; keyframe + delta patching; index selector. |
 | `/stocks` | `stocks` | F&O board matrix: spot + up to 3 nearest futures with live & daily calendar spreads; symbol filter. |
 
@@ -40,10 +41,9 @@ Set `NEXT_PUBLIC_BACKEND_URL` to a browser-reachable backend host and the backen
 `npm run test:e2e` uses `E2E_FRONTEND_PORT` so its production server can run alongside
 the development server; that port is also read only from `.env.local`.
 
-The backend operator token is deliberately absent from frontend environment files.
-Enter it in the operator-unlock screen; it is exchanged for a short-lived HttpOnly
-cookie and is not saved in local/session storage. HTTP API requests use
-`credentials: include`, and WebSocket handshakes authenticate with the same cookie.
+The frontend does not implement a second operator-authentication layer. Keep both services
+bound to loopback, Tailscale, or another trusted private network; `FRONTEND_URL` remains
+the backend allow-list for browser HTTP and WebSocket origins.
 
 ## Build / lint
 
@@ -64,7 +64,6 @@ app/
 components/          NavBar, ConnectionDot, OptionChainTable
 lib/
   config.ts             backend URL / WS URL
-  operatorAuth.ts       operator gate state and validation
   wsTopicConnection.ts  ref-counted per-topic WebSocket (reconnect/backoff)
   wsTypes.ts            tagged-envelope message + payload types
   useTopic.ts           React hooks (useTopicEnvelopes, useConnectionState)

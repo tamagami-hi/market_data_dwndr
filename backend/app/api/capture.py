@@ -1,12 +1,8 @@
-"""Capture control API — start/stop the live 1 Hz engine from the frontend.
+"""Capture status, history, and internal release-maintenance API.
 
-Runs the capture **inside the FastAPI process** so it shares the WebSocket hub and the
-broadcaster can push MarketHeader/OptionGrid/StockBoard/CaptureStatus to connected
-clients. (For headless capture with no UI, use the ``md-capture`` CLI instead.)
-
-    GET  /api/capture/status   -> running? which indices/stocks/tokens
-    POST /api/capture/start    -> bootstrap + run (requires a logged-in session)
-    POST /api/capture/stop     -> stop the running session
+The live 1 Hz engine runs inside the FastAPI process so it shares the WebSocket hub.
+DailyAutomationService owns normal capture start/stop decisions; the browser receives
+read-only status/history and cannot manually override the market-hours scheduler.
 """
 
 from __future__ import annotations
@@ -26,6 +22,7 @@ from app.capture.maintenance import (
     MaintenanceLeaseNotFoundError,
     MaintenanceLeaseStore,
 )
+from app.kite.errors import KiteAuthenticationError
 
 logger = logging.getLogger(__name__)
 
@@ -120,9 +117,15 @@ class CaptureController:
             raise CaptureError("risk-free rate update is required before capture")
 
         bootstrap_fn, run_fn = self._resolve_fns()
-        context = bootstrap_fn(
-            self.settings, session.access_token, session.risk_free_rate, hub=self.hub
-        )
+        try:
+            context = bootstrap_fn(
+                self.settings, session.access_token, session.risk_free_rate, hub=self.hub
+            )
+        except KiteAuthenticationError as exc:
+            self._handle_authentication_failure(session.access_token)
+            raise CaptureError(
+                "broker session expired; waiting for automatic token refresh"
+            ) from exc
         self._context = context
         self._stop = asyncio.Event()
         self._error = None
@@ -131,6 +134,9 @@ class CaptureController:
         async def _runner() -> None:
             try:
                 await run_fn(context, self._stop)
+            except KiteAuthenticationError:
+                self._handle_authentication_failure(session.access_token)
+                logger.warning("capture stopped because the Kite session expired")
             except Exception as exc:  # noqa: BLE001 - record, don't crash the server
                 self._has_failed = True
                 self._error = "capture task failed; inspect backend logs"
@@ -182,6 +188,14 @@ class CaptureController:
             self._maintenance_store.release(lease_id)
             return True
 
+    def _handle_authentication_failure(self, expected_access_token: str) -> None:
+        invalidate = getattr(self.session_service, "invalidate_active_session", None)
+        invalidated = bool(invalidate and invalidate(expected_access_token))
+        self._has_failed = False
+        self._error = "broker session expired; waiting for automatic token refresh"
+        if not invalidated:
+            logger.warning("expired Kite session was already replaced or removed")
+
     def _authenticate_maintenance(self, provided_token: str | None) -> None:
         if self._maintenance_store is None or self._maintenance_token is None:
             raise MaintenanceUnavailableError("release maintenance is not configured")
@@ -229,22 +243,50 @@ def create_capture_router() -> APIRouter:
             return {"available": False, "running": False}
         return controller.status()
 
-    @router.post("/start")
-    async def start(request: Request) -> dict:
-        controller = _controller(request)
-        if controller is None:
-            raise HTTPException(status_code=503, detail="capture not available (unconfigured)")
-        try:
-            return await controller.start()
-        except CaptureError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    @router.get("/history")
+    async def history(request: Request) -> dict:
+        settings = getattr(request.app.state, "settings", None)
+        if settings is None:
+            return {
+                "available": False,
+                "generated_at": None,
+                "totals": {
+                    "sessions": 0,
+                    "total_bytes": 0,
+                    "raw_bytes": 0,
+                    "archived_bytes": 0,
+                    "data_files": 0,
+                },
+                "sessions": [],
+            }
+        from dataclasses import asdict
 
-    @router.post("/stop")
-    async def stop(request: Request) -> dict:
-        controller = _controller(request)
-        if controller is None:
-            raise HTTPException(status_code=503, detail="capture not available")
-        return await controller.stop()
+        from app.ops.retention import scan_capture_history
+        from app.session import now_ms
+
+        report = await asyncio.to_thread(
+            scan_capture_history,
+            settings.market_data_path,
+            settings.archive_data_path,
+        )
+        service = getattr(request.app.state, "session_service", None)
+        current_date = service.trading_date() if service is not None else None
+        sessions = [
+            {**asdict(session), "is_current": session.trading_date == current_date}
+            for session in report.sessions
+        ]
+        return {
+            "available": True,
+            "generated_at": now_ms(),
+            "totals": {
+                "sessions": len(sessions),
+                "total_bytes": report.total_bytes,
+                "raw_bytes": report.raw_bytes,
+                "archived_bytes": report.archived_bytes,
+                "data_files": report.data_files,
+            },
+            "sessions": sessions,
+        }
 
     @router.post("/maintenance", response_model=MaintenanceLeaseResponse)
     async def acquire_maintenance(

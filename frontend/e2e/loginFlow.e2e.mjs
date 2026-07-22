@@ -36,75 +36,17 @@ after(async () => {
   frontendProcess?.kill("SIGTERM");
 });
 
-test("unlocks the operations console without persisting the operator token", async () => {
+test("shows validated automatic initialization and running capture", async () => {
   const page = await browser.newPage();
-  const operatorToken = "operator-test-token-with-32-characters";
-  let isUnlocked = false;
-  let submittedToken = null;
-  await page.setRequestInterception(true);
-  page.on("request", (request) => {
-    const url = new URL(request.url());
-    if (url.origin !== BACKEND_ORIGIN) {
-      request.continue();
-      return;
-    }
-    if (request.method() === "OPTIONS") {
-      respondJson(request, {});
-      return;
-    }
-    if (url.pathname === "/api/operator/status") {
-      respondJson(request, { unlocked: isUnlocked });
-      return;
-    }
-    if (url.pathname === "/api/operator/unlock" && request.method() === "POST") {
-      submittedToken = JSON.parse(request.postData()).token;
-      isUnlocked = true;
-      respondJson(request, { unlocked: true, expires_at: Date.now() + 60_000 });
-      return;
-    }
-    request.abort();
-  });
-
-  await page.goto(FRONTEND_URL, { waitUntil: "networkidle0" });
-  await waitForText(page, "Operator unlock required");
-  await page.type('input[aria-label="Operator token"]', operatorToken);
-  await clickButton(page, "Unlock console");
-  await waitForText(page, "Zerodha Kite market-data downloader");
-
-  const persisted = await page.evaluate(() => ({
-    local: Object.values(localStorage),
-    session: Object.values(sessionStorage),
-    body: document.body.textContent,
-  }));
-  assert.equal(submittedToken, operatorToken);
-  assert.equal(persisted.local.includes(operatorToken), false);
-  assert.equal(persisted.session.includes(operatorToken), false);
-  assert.equal(persisted.body.includes(operatorToken), false);
-  await page.close();
-});
-
-test("completes shared-check fallback, TOTP, rate, and successful login messaging", async () => {
-  const page = await browser.newPage();
-  let isAuthenticated = false;
-  const seenRequests = await mockBackend(page, () => isAuthenticated, () => {
-    isAuthenticated = true;
-  });
+  const seenRequests = await mockBackend(page);
 
   await page.goto(`${FRONTEND_URL}/login`, { waitUntil: "networkidle0" });
-  await waitForText(page, "Shared token source", seenRequests);
-  await clickButton(page, "Start login");
-  await waitForText(page, "Environment credentials accepted. Enter your TOTP.", seenRequests);
+  await waitForText(page, "Initializing downloader", seenRequests);
+  await waitForText(page, "Downloader is running", seenRequests);
+  await waitForText(page, "Token fetch and validation", seenRequests);
+  await waitForText(page, "100%", seenRequests);
 
-  await page.type('input[placeholder="123456"]', "654321");
-  await clickButton(page, "Verify TOTP");
-  await waitForText(page, "TOTP verified and the access token was issued.");
-
-  await page.type('input[placeholder="0.0691"]', "0.0691");
-  await clickButton(page, "Complete login");
-  await waitForText(page, "Login cycle completed successfully.");
-  await waitForText(page, "Session 2026-07-22 · 10-year yield 0.0691");
-
-  assert.equal(isAuthenticated, true);
+  assert.ok(seenRequests.includes("GET /api/auth/status"));
   await page.close();
 });
 
@@ -117,7 +59,7 @@ test("explains a third-day yield block and enables capture after an update", asy
 
   await page.goto(`${FRONTEND_URL}/login`, { waitUntil: "networkidle0" });
   await waitForText(page, "10-year bond yield update required");
-  await waitForText(page, "no TOTP or new login is needed");
+  await waitForText(page, "validated broker token remains active");
   await page.type('input[placeholder="0.0691"]', "0.0665");
   await clickButton(page, "Update yield and enable capture");
   await waitForText(page, "Yield updated. Automatic capture is now ready.");
@@ -209,10 +151,6 @@ async function mockStockDepth(page) {
   await page.setRequestInterception(true);
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (url.origin === BACKEND_ORIGIN && url.pathname === "/api/operator/status") {
-      respondJson(request, { unlocked: true });
-      return;
-    }
     if (url.origin !== BACKEND_ORIGIN || url.pathname !== "/api/capture/stocks/RELIANCE/depth") {
       request.continue();
       return;
@@ -231,7 +169,7 @@ async function mockStockDepth(page) {
   });
 }
 
-async function mockBackend(page, getAuthenticated, setAuthenticated) {
+async function mockBackend(page) {
   const seenRequests = [];
   await page.setRequestInterception(true);
   page.on("request", (request) => {
@@ -242,46 +180,30 @@ async function mockBackend(page, getAuthenticated, setAuthenticated) {
     }
     seenRequests.push(`${request.method()} ${url.pathname}`);
 
-    if (url.pathname === "/api/operator/status") {
-      respondJson(request, { unlocked: true });
-      return;
-    }
-
-    const progress = {
-      attempt_id: "e2e-attempt",
-      trading_date: "2026-07-22",
-      expires_at: Date.now() + 180_000,
-      method: "local_credentials",
-    };
     if (url.pathname === "/api/auth/status") {
       respondJson(request, {
         configured: true,
-        authenticated: getAuthenticated(),
-        trading_date: "2026-07-22",
-        market_phase: "open",
-        credentials_present: true,
-        external_token_source_configured: true,
-      });
-      return;
-    }
-    if (url.pathname === "/api/auth/login-url") {
-      respondJson(request, { login_url: "https://kite.example/login" });
-      return;
-    }
-    if (url.pathname === "/api/auth/login/start") {
-      respondJson(request, { ...progress, step: "awaiting_totp" }, 202);
-      return;
-    }
-    if (url.pathname.endsWith("/totp")) {
-      respondJson(request, { ...progress, step: "awaiting_risk_free_rate" });
-      return;
-    }
-    if (url.pathname.endsWith("/complete")) {
-      setAuthenticated();
-      respondJson(request, {
         authenticated: true,
         trading_date: "2026-07-22",
+        market_phase: "OPEN",
+        credentials_present: true,
+        external_token_source_configured: true,
+        static_ip_configured: true,
         risk_free_rate: 0.0691,
+        risk_free_rate_as_of: "2026-07-22",
+        rate_update_required: false,
+        capture_ready: true,
+        automation: { phase: "capture_window", last_action: "START_CAPTURE" },
+        capture: {
+          available: true,
+          running: true,
+          trading_date: "2026-07-22",
+          indices: ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"],
+          stocks: 185,
+          tokens: 1548,
+          skipped_indices: [],
+          error: null,
+        },
       });
       return;
     }
@@ -296,10 +218,6 @@ async function mockYieldUpdate(page, getRequired, clearRequired) {
     const url = new URL(request.url());
     if (url.origin !== BACKEND_ORIGIN) {
       request.continue();
-      return;
-    }
-    if (url.pathname === "/api/operator/status") {
-      respondJson(request, { unlocked: true });
       return;
     }
     if (request.method() === "OPTIONS") {

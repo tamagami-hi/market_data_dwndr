@@ -119,23 +119,13 @@ async def test_controller_redacts_capture_task_failures(caplog):
 # --- routes ------------------------------------------------------------------
 
 
-def test_routes_status_start_stop():
+def test_status_route_is_read_only():
     controller, _ = _make_controller()
-    # context-manager form keeps a single event loop so the background capture task
-    # stays alive across requests.
-    with _client(controller) as client:
-        assert client.get("/api/capture/status").json()["running"] is False
+    client = _client(controller)
 
-        started = client.post("/api/capture/start")
-        assert started.status_code == 200
-        assert started.json()["running"] is True
-
-        # second start -> 400 (already running)
-        assert client.post("/api/capture/start").status_code == 400
-
-        stopped = client.post("/api/capture/stop")
-        assert stopped.status_code == 200
-        assert stopped.json()["running"] is False
+    assert client.get("/api/capture/status").json()["running"] is False
+    assert client.post("/api/capture/start").status_code == 404
+    assert client.post("/api/capture/stop").status_code == 404
 
 
 def test_routes_degrade_when_unavailable():
@@ -144,12 +134,53 @@ def test_routes_degrade_when_unavailable():
     app.include_router(create_capture_router())
     client = TestClient(app)
     assert client.get("/api/capture/status").json() == {"available": False, "running": False}
-    assert client.post("/api/capture/start").status_code == 503
 
 
-def test_route_start_not_logged_in_returns_400():
-    controller, _ = _make_controller(session=None)
-    client = _client(controller)
-    r = client.post("/api/capture/start")
-    assert r.status_code == 400
-    assert "not logged in" in r.json()["detail"]
+
+async def test_auth_failure_invalidates_session_and_allows_automatic_restart():
+    from app.kite.errors import KiteAuthenticationError
+
+    session = SimpleNamespace(access_token="EXPIRED", risk_free_rate=0.07)
+    holder = {"session": session}
+    invalidated: list[str] = []
+
+    class Sessions:
+        def active_session(self):
+            return holder["session"]
+
+        def invalidate_active_session(self, expected_access_token):
+            invalidated.append(expected_access_token)
+            if holder["session"].access_token != expected_access_token:
+                return False
+            holder["session"] = None
+            return True
+
+    runs = {"count": 0}
+
+    async def auth_then_wait(_context, stop_event):
+        runs["count"] += 1
+        if runs["count"] == 1:
+            raise KiteAuthenticationError("secret details")
+        await stop_event.wait()
+
+    controller = CaptureController(
+        SimpleNamespace(),
+        Sessions(),
+        hub=None,
+        bootstrap_fn=lambda *_args, **_kwargs: _fake_context(),
+        run_fn=auth_then_wait,
+    )
+
+    await controller.start()
+    await asyncio.sleep(0)
+
+    assert invalidated == ["EXPIRED"]
+    assert holder["session"] is None
+    assert controller.status()["error"] == (
+        "broker session expired; waiting for automatic token refresh"
+    )
+
+    holder["session"] = SimpleNamespace(access_token="FRESH", risk_free_rate=0.07)
+    await controller.start()
+    assert controller.running is True
+    await controller.stop()

@@ -66,6 +66,11 @@ HTTP_HOST=0.0.0.0
 HTTP_PORT=<backend-port>
 HOST_BIND_ADDRESS=<tailscale-ip>
 FRONTEND_URL=http://<tailscale-ip>:<frontend-port>
+AUTH_POLL_INTERVAL_SECONDS=60
+MARKET_OPEN=09:00
+MARKET_CLOSE=15:30
+# Populate with official exchange closure dates before each calendar year.
+MARKET_HOLIDAYS=2026-08-15,2026-10-02
 APP_UID=10001
 APP_GID=10001
 ```
@@ -90,10 +95,11 @@ to its Tailscale address (`<tailscale-ip>`) as shown above, then restrict those 
 the intended tailnet users/devices with Tailscale ACLs. The backend is not exposed on a
 public interface.
 
-Because Docker cannot publish to an address that is not present yet, ensure Tailscale is
-online before starting the stack after a reboot. A host service can order the release
-start after `tailscaled.service`; until that is added, verify with `tailscale status` and
-run `./release_manager/deploy.sh` after boot.
+Because Docker cannot publish to an address that is not present yet, the tracked
+`deploy/market-data-dwndr.service.example` orders stack startup after
+`tailscaled.service`, Docker, network readiness, and both storage mounts. Its preflight
+also confirms that the configured `HOST_BIND_ADDRESS` is currently assigned by
+Tailscale before Compose starts.
 
 If direct tailnet access is unavailable, bind both ports to `127.0.0.1`, rebuild the
 frontend with a localhost backend URL, and use an SSH tunnel:
@@ -162,7 +168,30 @@ sudo docker compose \
 Changing `NEXT_PUBLIC_BACKEND_URL` changes the release tag and rebuilds the frontend
 because Next.js embeds public variables during `next build`.
 
-## 5. Updates and rollback
+## 5. Enable automatic boot startup
+
+Install the unit after the release manager has built and selected immutable images:
+
+```bash
+sudo cp deploy/market-data-dwndr.service.example \
+  /etc/systemd/system/market-data-dwndr.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now market-data-dwndr.service
+sudo systemctl status market-data-dwndr.service
+```
+
+The unit runs `deploy/preflight.sh`, then starts the existing image tags with
+`docker compose up -d --no-build`. It does not pull source, build images, or replace the
+release manager. On shutdown it stops the containers so writer shutdown receives the
+normal Compose grace period. After changing env files or deploying new images, use the
+release manager as usual; use `sudo systemctl restart market-data-dwndr.service` only
+when explicitly restarting the already-selected images.
+
+If the checkout or mount locations differ from the documented VPS layout, copy the
+example and change `WorkingDirectory`, `Environment=PROJECT_DIR`,
+`ConditionPathExists`, and `RequiresMountsFor` before installation.
+
+## 6. Updates and rollback
 
 ```bash
 git pull --ff-only

@@ -441,6 +441,7 @@ def _resolve_trading_date(settings) -> str:
     from app.ops.calendar import TradingCalendar
 
     cal = TradingCalendar(
+        holidays=set(getattr(settings, "market_holidays", [])),
         timezone_name=settings.timezone,
         market_open=settings.market_open,
         market_close=settings.market_close,

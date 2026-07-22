@@ -35,6 +35,7 @@ def _settings(tmp_path, indices=("NIFTY",), stock_universe="all"):
         kite_http_proxy=None,
         indices=list(indices),
         stock_universe=stock_universe,
+        market_holidays=[],
         timezone="Asia/Kolkata",
         market_open="09:15",
         market_close="15:30",
@@ -126,5 +127,23 @@ def test_bootstrap_raises_when_nothing_discovered(tmp_path):
             risk_free_rate=0.0691,
             instrument_store=EmptyStore(),
             quote_fn=_quote_fn({}),
+            clock=lambda: 1_753_070_400_000,
+        )
+
+
+
+def test_bootstrap_propagates_rest_authentication_failure(tmp_path):
+    from app.kite.errors import KiteAuthenticationError
+
+    def rejected_quote(_symbols):
+        raise KiteAuthenticationError("expired")
+
+    with pytest.raises(KiteAuthenticationError):
+        bootstrap_capture(
+            _settings(tmp_path),
+            access_token="expired",
+            risk_free_rate=0.0691,
+            instrument_store=FakeStore(),
+            quote_fn=rejected_quote,
             clock=lambda: 1_753_070_400_000,
         )

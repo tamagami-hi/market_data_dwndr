@@ -16,7 +16,7 @@ corrupt an existing `.bin`; prefer pausing/retrying over crashing.**
 | Failure | Detection | Response |
 |---|---|---|
 | **WS disconnect / stall** | no message for ~30 s | reconnect with exp backoff (base 5 s → max 300 s), circuit breaker after ~20 attempts; re-subscribe the same tokens; tables/writers persist ([[live-data-pipeline]]) |
-| **Mid-day auth expiry** | Kite auth error on WS/REST | pause capture, surface re-login prompt; on re-auth update [[session-state]] and resume on the same files |
+| **Mid-day auth expiry** | Kite auth error on WS/REST | cancel the live engine, flush writers, invalidate only the exact rejected persisted token, and let daily automation poll the existing HTTPS broker at the bounded interval; a validated replacement restarts capture on the same files |
 | **Disk full / write error** | `write()`/`flush()` error | stop the affected writer, log + alert on Capture Monitor, keep other writers running; retry after space frees; the last good frame is already flushed |
 | **Truncated frame** (crash mid-write) | reader: declared `len` overruns EOF | reader stops at the last **complete** frame and ignores the trailing partial (matches `algo_engine` reader behavior) |
 | **Corrupt `.zst`** | zstd decode error | fall back to a raw `.bin` if present; otherwise flag the file; never delete raw until compression verified |
