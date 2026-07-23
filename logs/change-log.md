@@ -78,11 +78,11 @@ Design decisions and notable changes. Newest first.
   [[stocks-capture]].
 
 ## 2026-07-21 — Numeric types → integer-native (lossless)
-- Prices as `i64` paise, quantities/OI `u64`, orders `u32`; bond yield the only `f64`.
+- Prices as `i64` paise, quantities/OI `u64`, orders `u32`; risk-free rate the only `f64`.
 - Replaces the earlier `f64` plan. See [[lossless-and-precision]], [[bin-structure-spec]].
 
-## 2026-07-21 — Greeks/IV not stored; bond yield stored in header
-- Greeks reconstructed on read (Black-Scholes + stored 10-yr yield). Bond yield entered
+## 2026-07-21 — Greeks/IV not stored; risk-free rate stored in header
+- Greeks reconstructed on read (Black-Scholes + stored risk-free rate). Risk-free rate entered
   manually at login. Means files are **not** the byte-identical `algo_engine` structs.
   See [[bin-format]].
 
@@ -118,7 +118,7 @@ Design decisions and notable changes. Newest first.
 - Added a headless Kite login (`app/kite/login.py`, `md-login` entrypoint) that
   automates algo_engine's OAuth flow: `/api/login` → `/api/twofa` (TOTP) →
   `/connect/login` redirect → `request_token` → `/session/token` exchange, persisting
-  today's `access_token` + bond yield to session state.
+  today's `access_token` + risk-free rate to session state.
 - Credentials are **seeded from the environment** (`KITE_USER_ID`, `KITE_PASSWORD`,
   optional `KITE_TOTP_SECRET`, `RISK_FREE_RATE`) rather than a database (algo_engine
   keeps them encrypted in Postgres). The **TOTP is taken from the terminal** when no

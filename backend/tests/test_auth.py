@@ -49,7 +49,7 @@ def test_session_state_round_trip(tmp_path):
     assert load_session(tmp_path, "2026-07-22") is None
 
 
-def test_authenticate_persists_token_and_bond_yield(tmp_path):
+def test_authenticate_persists_token_and_risk_free_rate(tmp_path):
     calls = {}
 
     def fake_generate(request_token: str, api_secret: str) -> dict:
@@ -67,7 +67,7 @@ def test_authenticate_persists_token_and_bond_yield(tmp_path):
     state = auth.authenticate(
         request_token="reqtok", risk_free_rate=0.0691, trading_date="2026-07-21"
     )
-    # DoD: login yields a usable access_token; bond yield stored in session state.
+    # DoD: login yields a usable access_token; risk-free rate stored in session state.
     assert state.access_token == "ACCESS_TOKEN_XYZ"
     assert state.risk_free_rate == 0.0691
     assert calls == {"request_token": "reqtok", "api_secret": "secret"}

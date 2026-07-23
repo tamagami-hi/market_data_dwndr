@@ -59,7 +59,7 @@ market_data_dwndr/
 `.env` holds `KITE_API_KEY`, `KITE_API_SECRET`, `MARKET_DATA_PATH`. Kite issues a
 **daily `access_token`** (resets ~06:00). Morning start (~06:30): open the login link →
 authorize → the app exchanges the `request_token` for the day's `access_token` (using
-the secret) and caches it. The **same screen captures the 10-yr bond yield**, which is
+the secret) and caches it. The **same screen captures the risk-free rate**, which is
 written into every file header that day.
 
 ## Phases (BIN codec first — everything depends on it)
@@ -92,7 +92,7 @@ zstd L17 sweep at close; file rotation; instrument archive.
 REST historical, windowing, rate-limit, resume; same `.bin` format ([[historical-data]]).
 
 ### Phase 7 — Reconstruction + hardening
-Greeks-on-read (Black-Scholes + header bond yield), CalSpread metrics rebuild;
+Greeks-on-read (Black-Scholes + header risk-free rate), CalSpread metrics rebuild;
 logging, tests, docs finalize.
 
 ## Verification checkpoints

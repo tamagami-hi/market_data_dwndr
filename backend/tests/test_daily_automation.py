@@ -1,4 +1,4 @@
-"""Daily broker/capture/EOD policy and risk-free-rate freshness tests."""
+"""Daily broker/capture/EOD policy and risk-free-rate resolution tests."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from app.ops.automation import (
     decide_automation,
 )
 from app.ops.calendar import IST_FALLBACK, TradingCalendar
-from app.session import SessionState, load_session, resolve_risk_free_rate, save_session
+from app.session import SessionState, latest_stored_risk_free_rate, load_session, save_session
 from app.session_service import SessionService
 
 
@@ -104,7 +104,7 @@ def test_startup_after_close_repairs_eod_once_per_day():
     assert actions == ()
 
 
-def test_rate_is_reused_tomorrow_and_requires_update_on_third_trading_day(tmp_path):
+def test_latest_stored_rate_returns_newest_prior_rate_without_freshness(tmp_path):
     save_session(
         tmp_path,
         SessionState(
@@ -117,38 +117,14 @@ def test_rate_is_reused_tomorrow_and_requires_update_on_third_trading_day(tmp_pa
         ),
     )
 
-    tomorrow = resolve_risk_free_rate(tmp_path, "2026-07-21")
-    assert tomorrow.risk_free_rate == 0.065
-    assert tomorrow.risk_free_rate_as_of == "2026-07-20"
-    assert tomorrow.rate_update_required is False
-    assert tomorrow.can_capture is True
+    # No expiry/freshness rule: an old stored rate is still returned as the fallback,
+    # because the daily broker fetch is the primary source.
+    rate, as_of = latest_stored_risk_free_rate(tmp_path, "2026-07-30")
+    assert rate == 0.065
+    assert as_of == "2026-07-20"
 
-    third_day = resolve_risk_free_rate(tmp_path, "2026-07-22")
-    assert third_day.risk_free_rate == 0.065
-    assert third_day.rate_update_required is True
-    assert third_day.can_capture is False
-
-
-def test_yield_freshness_counts_trading_days_and_skips_weekends(tmp_path):
-    save_session(
-        tmp_path,
-        SessionState(
-            "2026-07-24",
-            "FRIDAY_TOKEN",
-            0.065,
-            1,
-            1,
-            risk_free_rate_as_of="2026-07-24",
-        ),
-    )
-
-    monday = resolve_risk_free_rate(tmp_path, "2026-07-27")
-    tuesday = resolve_risk_free_rate(tmp_path, "2026-07-28")
-
-    assert monday.rate_update_required is False
-    assert monday.can_capture is True
-    assert tuesday.rate_update_required is True
-    assert tuesday.can_capture is False
+    # Nothing stored on/before the target -> no fallback.
+    assert latest_stored_risk_free_rate(tmp_path, "2026-07-19") == (None, None)
 
 
 def test_weekends_never_poll_token_start_capture_or_run_eod():
@@ -171,13 +147,12 @@ def test_legacy_session_defaults_rate_provenance_to_its_trading_date():
     )
 
     assert state.risk_free_rate_as_of == "2026-07-20"
-    assert state.rate_update_required is False
     assert state.capture_ready is True
 
 
 @pytest.mark.parametrize("risk_free_rate", [float("nan"), float("inf"), -0.01])
-def test_session_state_rejects_invalid_persisted_yield(risk_free_rate):
-    with pytest.raises(ValueError, match="yield"):
+def test_session_state_rejects_invalid_persisted_rate(risk_free_rate):
+    with pytest.raises(ValueError, match="risk-free rate"):
         SessionState.from_dict(
             {
                 "trading_date": "2026-07-20",
@@ -206,6 +181,49 @@ def _settings(tmp_path):
         kite_token_broker_passcode=object(),
         risk_free_rate=None,
     )
+
+
+def test_acquire_session_uses_fetched_calspread_rate(tmp_path):
+    # A stale prior rate exists, but the daily fetch supplies today's value.
+    save_session(
+        tmp_path,
+        SessionState("2026-07-20", "OLD", 0.065, 1, 1, risk_free_rate_as_of="2026-07-20"),
+    )
+    service = SessionService(
+        _settings(tmp_path),
+        clock=lambda: _ms(21, 8, 30),
+        broker_fetcher=lambda: "NEW_TOKEN",
+        broker_validator=lambda t: (_ for _ in ()).throw(ValueError("expired")) if t == "OLD" else None,
+        rate_resolver=lambda: 0.053324,
+    )
+
+    state = service.acquire_broker_session()
+
+    assert state is not None
+    assert state.access_token == "NEW_TOKEN"
+    assert state.risk_free_rate == 0.053324
+    assert state.risk_free_rate_as_of == "2026-07-21"  # fetched today, not the stale date
+    assert state.capture_ready is True
+
+
+def test_acquire_session_falls_back_to_prior_rate_when_fetch_unavailable(tmp_path):
+    save_session(
+        tmp_path,
+        SessionState("2026-07-20", "OLD", 0.065, 1, 1, risk_free_rate_as_of="2026-07-20"),
+    )
+    service = SessionService(
+        _settings(tmp_path),
+        clock=lambda: _ms(21, 8, 30),
+        broker_fetcher=lambda: "NEW_TOKEN",
+        broker_validator=lambda _t: None,
+        rate_resolver=lambda: None,  # neither broker nor env available
+    )
+
+    state = service.acquire_broker_session()
+
+    assert state is not None
+    assert state.risk_free_rate == 0.065  # reused from the prior session
+    assert state.risk_free_rate_as_of == "2026-07-20"
 
 
 def test_rejected_previous_token_falls_back_to_broker_and_reuses_rate(tmp_path):
@@ -306,32 +324,6 @@ def test_invalid_broker_token_is_never_persisted(tmp_path):
     with pytest.raises(ValueError, match="invalid token"):
         service.acquire_broker_session()
     assert load_session(tmp_path, "2026-07-21") is None
-
-
-def test_third_day_rate_update_makes_pending_broker_session_capture_ready(tmp_path):
-    save_session(
-        tmp_path,
-        SessionState(
-            "2026-07-20", "OLD", 0.065, 1, 1, risk_free_rate_as_of="2026-07-20"
-        ),
-    )
-    service = SessionService(
-        _settings(tmp_path),
-        clock=lambda: _ms(22, 8, 30),
-        broker_fetcher=lambda: "NEW_TOKEN",
-        broker_validator=lambda _token: None,
-    )
-    pending = service.acquire_broker_session()
-    assert pending is not None
-    assert pending.rate_update_required is True
-    assert pending.capture_ready is False
-
-    updated = service.update_risk_free_rate(0.066)
-
-    assert updated.risk_free_rate == 0.066
-    assert updated.risk_free_rate_as_of == "2026-07-22"
-    assert updated.rate_update_required is False
-    assert updated.capture_ready is True
 
 
 async def test_automation_dispatches_broker_start_stop_then_eod_in_order(tmp_path):
@@ -662,6 +654,6 @@ def test_invalidating_current_session_preserves_rate_and_rejects_stale_token(tmp
     assert service.invalidate_active_session("EXPIRED") is True
     assert load_session(tmp_path, "2026-07-21") is None
 
-    rate = resolve_risk_free_rate(tmp_path, "2026-07-21")
-    assert rate.risk_free_rate == 0.065
-    assert rate.risk_free_rate_as_of == "2026-07-20"
+    rate, as_of = latest_stored_risk_free_rate(tmp_path, "2026-07-21")
+    assert rate == 0.065
+    assert as_of == "2026-07-20"

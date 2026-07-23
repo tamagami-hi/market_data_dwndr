@@ -21,7 +21,6 @@ SESSION = SimpleNamespace(
     access_token="ACCESS",
     risk_free_rate=0.07,
     capture_ready=True,
-    rate_update_required=False,
 )
 
 

@@ -61,7 +61,7 @@ def test_midday_restart_appends_without_duplicate_header(tmp_path):
     n = strikes.shape[0]
 
     def header() -> IndexHeader:
-        # bond yield stamped from session state
+        # risk-free rate stamped from session state
         return IndexHeader("2026-07-21", "NIFTY", "2026-07-24", session.risk_free_rate, strikes)
 
     def frame(seq: int) -> IndexFrame:

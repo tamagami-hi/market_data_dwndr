@@ -15,11 +15,12 @@ from app.kite.login import (
     complete_totp,
     exchange_request_token,
     fetch_request_token,
+    run_credentials_login,
     run_interactive_login,
     run_login,
     validate_access_token,
 )
-from app.session import load_session
+from app.session import SessionState, load_session, save_session
 
 # --- fakes -------------------------------------------------------------------
 
@@ -294,7 +295,7 @@ def test_interactive_login_prompts_for_totp_then_rate(tmp_path, monkeypatch):
 
     assert state.risk_free_rate == 0.0691
     assert prompts[0].startswith("Enter 6-digit Kite TOTP")
-    assert prompts[1].startswith("Enter 10-yr bond yield")
+    assert prompts[1].startswith("Enter risk-free rate")
 
 
 def test_interactive_login_uses_external_token_then_prompts_only_for_rate(tmp_path, monkeypatch):
@@ -316,7 +317,7 @@ def test_interactive_login_uses_external_token_then_prompts_only_for_rate(tmp_pa
     assert state.access_token == "VPS_ACCESS_TOKEN"
     assert state.risk_free_rate == 0.0691
     assert len(prompts) == 1
-    assert prompts[0].startswith("Enter 10-yr bond yield")
+    assert prompts[0].startswith("Enter risk-free rate")
 
 
 def test_interactive_login_wraps_external_token_validation_failure(tmp_path):
@@ -341,3 +342,109 @@ def test_build_kite_http_client_variants():
     bound.close()
     proxied = build_kite_http_client(proxy="http://127.0.0.1:9")
     proxied.close()
+
+
+# --- CLI credentials login (md-login) ----------------------------------------
+
+
+def _creds_client():
+    client = _login_client("https://myapp.example/cb?request_token=RT&status=success")
+    client.post_routes["/session/token"] = FakeResp(
+        json_body={"status": "success", "data": {"access_token": "ACC"}}
+    )
+    return client
+
+
+def test_run_credentials_login_persists_with_fetched_rate(tmp_path):
+    state = run_credentials_login(
+        _settings(tmp_path),
+        trading_date="2026-07-22",
+        user_id="AB1234",
+        password="pass",
+        api_key="apikey",
+        api_secret="secret",
+        totp_provider=lambda: "222222",
+        client=_creds_client(),
+        rate_resolver=lambda: 0.053324,
+    )
+    assert state.access_token == "ACC"
+    assert state.risk_free_rate == 0.053324
+    assert state.risk_free_rate_as_of == "2026-07-22"
+    assert load_session(tmp_path, "2026-07-22").access_token == "ACC"
+
+
+def test_run_credentials_login_without_rate_persists_none(tmp_path):
+    state = run_credentials_login(
+        _settings(tmp_path),
+        trading_date="2026-07-22",
+        user_id="AB1234",
+        password="pass",
+        api_key="apikey",
+        api_secret="secret",
+        totp_provider=lambda: "222222",
+        client=_creds_client(),
+        rate_resolver=lambda: None,
+    )
+    assert state.risk_free_rate is None
+
+
+def test_main_hard_blocks_when_valid_session_exists(tmp_path, monkeypatch, capsys):
+    save_session(
+        tmp_path,
+        SessionState("2026-07-22", "TOK", 0.05, 1, 1, risk_free_rate_as_of="2026-07-22"),
+    )
+    monkeypatch.setattr("app.config.get_settings", lambda: _settings(tmp_path))
+    from app.kite import login as loginmod
+
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        loginmod, "run_credentials_login", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1)
+    )
+
+    rc = loginmod.main(["--date", "2026-07-22"])
+
+    assert rc == 0
+    assert calls["n"] == 0  # no login attempted while a valid session exists
+    assert "already authenticated" in capsys.readouterr().out
+
+
+def test_main_seeded_missing_credentials_returns_2(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.config.get_settings", lambda: _settings(tmp_path, kite_user_id=None))
+    from app.kite import login as loginmod
+
+    assert loginmod.main(["--date", "2026-07-22"]) == 2
+
+
+def test_main_manual_collects_all_four_credentials_and_totp(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.config.get_settings", lambda: _settings(tmp_path))
+    from app.kite import login as loginmod
+
+    visible = {"Kite user id: ": "U", "Kite API key: ": "K"}
+    hidden = {"Kite password: ": "P", "Kite API secret: ": "S", "Kite TOTP (6 digits): ": "123456"}
+    monkeypatch.setattr("builtins.input", lambda prompt: visible[prompt])
+    monkeypatch.setattr(loginmod.getpass, "getpass", lambda prompt: hidden[prompt])
+
+    captured: dict = {}
+
+    def fake_login(settings, *, trading_date, user_id, password, api_key, api_secret, totp_provider):
+        captured.update(
+            user_id=user_id,
+            password=password,
+            api_key=api_key,
+            api_secret=api_secret,
+            totp=totp_provider(),
+        )
+        return SessionState(trading_date, "ACC", 0.05, 1, 1, risk_free_rate_as_of=trading_date)
+
+    monkeypatch.setattr(loginmod, "run_credentials_login", fake_login)
+
+    rc = loginmod.main(["--date", "2026-07-22", "--manual"])
+
+    assert rc == 0
+    assert captured == {
+        "user_id": "U",
+        "password": "P",
+        "api_key": "K",
+        "api_secret": "S",
+        "totp": "123456",
+    }

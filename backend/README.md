@@ -22,13 +22,27 @@ shows broker configuration, fetch/validation state, capture readiness, and wheth
 downloader is running. It does not start login or capture.
 
 `md-login` remains an operational fallback for an explicit unauthenticated broker
-response. It uses `.env` credentials (`KITE_USER_ID`, `KITE_PASSWORD`) and prompts for
-TOTP/rate when needed. Broker tokens are validated against Kite before persistence.
+response. It performs a Kite credentials login plus the mandatory TOTP (entered on the
+terminal, no echo). The risk-free rate is fetched from the calspread broker (env
+fallback) — it is never prompted. A valid session for today hard-blocks the login
+(mirroring the automated fetcher) until it becomes invalid.
+
+Run it interactively inside the backend container (needs a TTY for the hidden prompts):
 
 ```bash
-md-login                    # manual fallback only
-md-login --rate 0.0691      # or: python -m app.kite.login
+docker exec -it <backend-container> md-login            # seeded creds + TOTP
+docker exec -it <backend-container> md-login --manual   # enter all 4 creds + TOTP
 ```
+
+- default (seeded): uses the `.env` credentials (`KITE_USER_ID`, `KITE_PASSWORD`,
+  `KITE_API_KEY`, `KITE_API_SECRET`) and prompts only for the TOTP.
+- `--manual`: prompts for all four credentials on the terminal (nothing is written back
+  to the env), then the TOTP.
+- `--force`: log in even if a valid session for today already exists.
+
+Broker tokens are validated by the exchange step before persistence. Credentials are
+read via `getpass` (no echo, never in shell history or argv).
+
 
 Outbound Kite calls bind `KITE_STATIC_IP` / use `KITE_HTTP_PROXY` when set, to satisfy
 Kite's static-IP whitelist (Apr 2026). See `docs/60-operations/config-and-env.md`.
@@ -95,7 +109,7 @@ pytest
 app/
   main.py          FastAPI app + /health + /monitor + WS hub
   config.py        pydantic-settings (.env)
-  session.py       daily session-state (access_token + bond yield)
+  session.py       daily session-state (access_token + risk-free rate)
   logging_config.py
   bin_codec/       BIN layout/writer/reader/compress (Phase 1)  <- foundation
   kite/            auth, instruments, ticks, ticker bridge (Phase 2/3)

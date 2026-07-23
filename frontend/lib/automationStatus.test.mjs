@@ -13,18 +13,11 @@ const { automationMessage } = await import(moduleUrl);
 
 test("describes the morning broker retry and ready states", () => {
   assert.equal(
-    automationMessage({ phase: "auth_window", last_error: "shared token is not ready" }, false, false),
+    automationMessage({ phase: "auth_window", last_error: "shared token is not ready" }, false),
     "Shared token is not ready yet. The server will retry during the 08:30–09:00 IST window.",
   );
   assert.equal(
-    automationMessage({ phase: "capture_window" }, true, false),
+    automationMessage({ phase: "capture_window" }, true),
     "Daily authentication is ready. Capture runs automatically from 09:00 to 15:30 IST.",
-  );
-});
-
-test("makes a stale yield an explicit operator action", () => {
-  assert.equal(
-    automationMessage({ phase: "capture_window" }, false, true),
-    "Update the 10-year bond yield before capture can start.",
   );
 });

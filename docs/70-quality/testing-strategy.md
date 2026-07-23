@@ -27,7 +27,7 @@ capture).
   strike list → error.
 - **Board discovery** ([[stocks-capture]]): NFO FUT names matched to NSE EQ; indices
   excluded; 3-nearest-futures ordering.
-- **Reconstruction** ([[reconstruction]]): Greeks from a known frame + bond yield match
+- **Reconstruction** ([[reconstruction]]): Greeks from a known frame + risk-free rate match
   a reference within tolerance; spread = `mid.ltp − current.ltp`.
 
 ## Integration tests
@@ -42,7 +42,7 @@ capture).
 - **Historical resume** (Phase 6): interrupt a job mid-run → resume from `_state`
   checkpoint → **no duplicate rows**, contiguous timestamps.
 - **Restart mid-day** (Phase 5): kill + restart → appends to today's files, reuses
-  token + bond yield ([[session-state]]).
+  token + risk-free rate ([[session-state]]).
 
 ## Acceptance / smoke
 

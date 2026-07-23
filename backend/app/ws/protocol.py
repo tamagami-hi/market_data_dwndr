@@ -28,6 +28,7 @@ TYPE_HEARTBEAT = "Heartbeat"
 TYPE_SESSION_STATUS = "SessionStatus"
 TYPE_LOG = "Log"
 TYPE_HISTORICAL_JOB_UPDATE = "HistoricalJobUpdate"
+TYPE_COMPRESSION_PROGRESS = "CompressionProgress"
 
 # Full keyframe cadence (algo_engine parity): a full OptionGrid every N frames.
 KEYFRAME_INTERVAL = 30
@@ -167,3 +168,13 @@ def log_line(message: str) -> dict:
 
 def historical_job_update(state: dict) -> dict:
     return envelope(TYPE_HISTORICAL_JOB_UPDATE, state)
+
+
+def compression_progress(state: dict) -> dict:
+    """EOD zstd compression telemetry for the monitor's progress bar.
+
+    ``state`` carries: ``phase`` (running|done|failed|idle), ``files_done``,
+    ``files_total``, ``bytes_done``, ``bytes_total``, ``zst_bytes``, ``ratio``,
+    ``current_file``, ``threads``, ``started_at``, ``updated_at``.
+    """
+    return envelope(TYPE_COMPRESSION_PROGRESS, state)

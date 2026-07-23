@@ -19,7 +19,7 @@ related: ["[[Live-Capture-MOC]]", "[[Historical-MOC]]", "[[Code-Map]]"]
 | [[bin-format]] | format rationale & overview | locked |
 | [[storage-layout]] | `MARKET_DATA/` directory tree + instrument archive | done |
 | [[lossless-and-precision]] | integer-native storage, the two lossless axes | locked |
-| [[reconstruction]] | Greeks/metrics recomputed on read from raw + bond yield | done |
+| [[reconstruction]] | Greeks/metrics recomputed on read from raw + risk-free rate | done |
 
 ## Implemented in
 - `backend/app/bin_codec/{layout,writer,reader,compress}.py` — the codec

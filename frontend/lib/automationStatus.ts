@@ -10,11 +10,7 @@ export interface AutomationStateView {
 export function automationMessage(
   automation: AutomationStateView | undefined,
   isCaptureReady: boolean,
-  isRateUpdateRequired: boolean,
 ): string {
-  if (isRateUpdateRequired) {
-    return "Update the 10-year bond yield before capture can start.";
-  }
   if (automation?.phase === "auth_window") {
     if (automation.last_error) {
       return "Shared token is not ready yet. The server will retry during the 08:30–09:00 IST window.";

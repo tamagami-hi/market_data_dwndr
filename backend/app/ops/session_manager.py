@@ -2,7 +2,7 @@
 
 Ties the trading calendar (today's IST date) to the authenticator + session-state
 store (docs/60-operations/session-state.md). On the first start of the day the user
-logs in (request_token + bond yield); on a mid-day restart the same session is resumed
+logs in (request_token + risk-free rate); on a mid-day restart the same session is resumed
 with no re-prompt, and capture appends to today's files (headers are written only when
 a file is empty, so no duplicate header).
 """

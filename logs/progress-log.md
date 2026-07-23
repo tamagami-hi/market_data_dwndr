@@ -106,7 +106,7 @@ market-data}` connect + receive the welcome. 185 backend tests green, ruff clean
 - **Startup resume** — `main.py` lifespan builds the session service and logs whether
   today's Kite session already exists (no forced re-login on mid-day restart).
 - **Frontend login UX** — `lib/api.ts`, `SessionBadge` in the nav, and an `/login` page
-  (TOTP + bond-yield form with a browser-OAuth fallback).
+  (TOTP + risk-free-rate form with a browser-OAuth fallback).
 - **Vault** — rewrote `repo-map/` to professional standard: dashboard [[Home]], new
   [[Code-Map]] (docs ↔ source) and [[Build-Status]] dashboard, enriched every area MOC
   with status + "implemented in" code pointers, refreshed [[vault-guide]] and [[Tags]].
@@ -151,7 +151,7 @@ market-data}` connect + receive the welcome. 185 backend tests green, ruff clean
   implied vol (Newton + bisection). Matches textbook reference within 1e-3; IV
   round-trips within 1e-4.
 - `reconstruct/greeks.py` — per-strike IV+Greeks for an `IndexFrame` from stored raw +
-  header bond yield; time-to-expiry from `expiry_date`; `change = ltp − ohlc_close`.
+  header risk-free rate; time-to-expiry from `expiry_date`; `change = ltp − ohlc_close`.
 - `reconstruct/metrics.py` — ATM (round to step), max-pain, PCR (OI/volume).
 - `reconstruct/spreads.py` — CalSpread live/daily spread + summary (mean, min/max,
   mean-deviation, std-dev, p95, mean-reversion probability).
@@ -267,7 +267,7 @@ credentials); they are covered by mocks/fixtures + a synthetic tick stream.
 **Done** (all on `ai-dev/made`, pushed batch-by-batch)
 - `app/session.py` + `kite/auth.py` — login URL, SHA-256 checksum, injectable token
   exchange, and daily session-state persistence/resume (`_state/session-<date>.json`)
-  holding `access_token` + bond yield.
+  holding `access_token` + risk-free rate.
 - `kite/instruments.py` — instrument-dump parse (typed `Instrument`), injectable HTTP
   fetcher, and daily archive to `_instruments/<date>/<EXCH>.csv` with cache/refresh.
 - `chain/config.py`, `chain/filter.py`, `chain/assembler.py` — per-index config
@@ -344,7 +344,7 @@ credentials); they are covered by mocks/fixtures + a synthetic tick stream.
   historical `bin_export`, frontend) and CalSpread (stock board discovery, price
   sources, metrics). See [[algo-engine-findings]], [[stocks-capture]].
 - Locked the full design: integer-native BIN format ([[bin-structure-spec]]), 1 Hz
-  cadence, indices L1 / stocks L5, bond yield in header, Greeks reconstructed on read.
+  cadence, indices L1 / stocks L5, risk-free rate in header, Greeks reconstructed on read.
 - Authored the knowledge base (17 domain notes) and reorganized it into an Obsidian
   vault: `docs/` (domain folders) + `logs/` + `repo-map/` (MOCs).
 

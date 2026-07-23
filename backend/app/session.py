@@ -1,8 +1,8 @@
-"""Daily session state (access_token + bond yield) persistence and resume.
+"""Daily session state (access_token + risk-free rate) persistence and resume.
 
-The two values that are *not* in ``.env`` -- the Kite ``access_token`` and the 10-yr
-bond yield entered at login -- are held in a small JSON file so a mid-day restart can
-reuse them without re-prompting (docs/60-operations/session-state.md).
+The two values that are *not* in ``.env`` -- the Kite ``access_token`` and the daily
+risk-free rate -- are held in a small JSON file so a mid-day restart can reuse them
+without re-fetching (docs/60-operations/session-state.md).
 
     MARKET_DATA/_state/session-<YYYY-MM-DD>.json
 """
@@ -17,7 +17,7 @@ import secrets
 import tempfile
 import time
 from dataclasses import asdict, dataclass
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,6 @@ def is_session_capture_ready(state: object) -> bool:
     return bool(
         getattr(state, "access_token", None)
         and getattr(state, "risk_free_rate", None) is not None
-        and not getattr(state, "rate_update_required", False)
     )
 
 
@@ -46,28 +45,23 @@ class SessionState:
 
     trading_date: str  # IST trading date, "YYYY-MM-DD"
     access_token: str
-    risk_free_rate: float | None  # 10-yr bond yield entered at login (decimal)
+    risk_free_rate: float | None  # daily risk-free rate (decimal), fetched from calspread
     access_token_at: int  # ms
     started_at: int  # ms
     risk_free_rate_as_of: str | None = None
-    rate_update_required: bool = False
 
     def __post_init__(self) -> None:
         if self.risk_free_rate is not None and (
             not math.isfinite(float(self.risk_free_rate))
             or not 0 <= self.risk_free_rate <= 1
         ):
-            raise ValueError("10-year bond yield must be a decimal between 0 and 1")
+            raise ValueError("risk-free rate must be a decimal between 0 and 1")
         if self.risk_free_rate_as_of is None and self.risk_free_rate is not None:
             object.__setattr__(self, "risk_free_rate_as_of", self.trading_date)
 
     @property
     def capture_ready(self) -> bool:
-        return bool(
-            self.access_token
-            and self.risk_free_rate is not None
-            and not self.rate_update_required
-        )
+        return bool(self.access_token and self.risk_free_rate is not None)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -87,16 +81,7 @@ class SessionState:
             risk_free_rate_as_of=(
                 data.get("risk_free_rate_as_of") or data.get("trading_date")
             ),
-            rate_update_required=bool(data.get("rate_update_required", False)),
         )
-
-
-@dataclass(frozen=True)
-class RateDecision:
-    risk_free_rate: float | None
-    risk_free_rate_as_of: str | None
-    rate_update_required: bool
-    can_capture: bool
 
 
 def session_path(state_dir: str | os.PathLike[str], trading_date: str) -> Path:
@@ -151,10 +136,10 @@ def invalidate_session(
     trading_date: str,
     expected_access_token: str,
 ) -> bool:
-    """Quarantine today's exact token while retaining its yield provenance.
+    """Quarantine today's exact token while retaining its risk-free-rate provenance.
 
     The active filename is removed atomically so the next automation tick sees no
-    session. The invalidated record remains available to ``resolve_risk_free_rate``
+    session. The invalidated record remains available to ``latest_stored_risk_free_rate``
     but is excluded from token reuse.
     """
     path = session_path(state_dir, trading_date)
@@ -202,10 +187,14 @@ def load_latest_session_before(
     return max(candidates, key=lambda item: item.trading_date)
 
 
-def resolve_risk_free_rate(
+def latest_stored_risk_free_rate(
     state_dir: str | os.PathLike[str], trading_date: str
-) -> RateDecision:
-    """Resolve the newest yield and enforce a third-Mon–Fri-market-day refresh."""
+) -> tuple[float | None, str | None]:
+    """Return the newest prior stored ``(risk_free_rate, as_of)`` on/before ``trading_date``.
+
+    Used only as a fallback when the daily broker fetch and the env value are both
+    unavailable. There is no freshness/expiry rule — the rate is fetched fresh each day.
+    """
     target_date = date.fromisoformat(trading_date)
     candidates: list[SessionState] = []
     for path in sorted(Path(state_dir).glob("session-*.json"), reverse=True):
@@ -219,29 +208,9 @@ def resolve_risk_free_rate(
         candidates = [*candidates, state]
 
     if not candidates:
-        return RateDecision(None, None, True, False)
-
+        return None, None
     latest = max(
         candidates,
         key=lambda item: date.fromisoformat(item.risk_free_rate_as_of or item.trading_date),
     )
-    as_of_text = latest.risk_free_rate_as_of or latest.trading_date
-    age_days = _weekdays_elapsed(date.fromisoformat(as_of_text), target_date)
-    is_update_required = age_days >= 2
-    return RateDecision(
-        risk_free_rate=latest.risk_free_rate,
-        risk_free_rate_as_of=as_of_text,
-        rate_update_required=is_update_required,
-        can_capture=not is_update_required,
-    )
-
-
-def _weekdays_elapsed(start_date: date, target_date: date) -> int:
-    """Count Monday–Friday dates after ``start_date`` through ``target_date``."""
-    current_date = start_date
-    elapsed = 0
-    while current_date < target_date:
-        current_date += timedelta(days=1)
-        if current_date.weekday() < 5:
-            elapsed += 1
-    return elapsed
+    return latest.risk_free_rate, (latest.risk_free_rate_as_of or latest.trading_date)

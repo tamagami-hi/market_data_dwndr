@@ -61,7 +61,7 @@ interface GridBlock {
   oi_day_high: number[];
   oi_day_low: number[];
   // change, change_in_oi, iv, delta, gamma, theta, vega, rho: NOT in the feed —
-  // computed on read for display if needed (raw + bond yield).
+  // computed on read for display if needed (raw + risk-free rate).
 }
 ```
 

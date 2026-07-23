@@ -21,13 +21,13 @@ computable is left out and recreated on read.
 
 ## Why it's our own schema (not byte-identical to algo_engine)
 
-1. We store the **10-yr bond yield** in the header so Greeks are reconstructable.
+1. We store the **risk-free rate** in the header so Greeks are reconstructable.
 2. We **do not store Greeks/IV at all** (not even `0.0`).
 3. We store **native integers** (paise for prices, counts for qty/OI) rather than `f64`.
 
 Consequently these files are **not readable by the unmodified `algo_engine` reader**.
 We ship a small dedicated reader (Python; optional Rust variant later). This is the
-deliberate trade for lossless integers + stored bond yield + zero redundant columns.
+deliberate trade for lossless integers + stored risk-free rate + zero redundant columns.
 
 ## Data types (lossless, integer-native)
 
@@ -38,7 +38,7 @@ deliberate trade for lossless integers + stored bond yield + zero redundant colu
 | order counts (L5 depth) | `u32` | per level |
 | open interest: oi, oi_day_high/low | `u64` | native counts |
 | timestamp, sequence, tokens | `u64` | — |
-| risk_free_rate (bond yield) | `f64` | the only float; single scalar in the header |
+| risk_free_rate (risk-free rate) | `f64` | the only float; single scalar in the header |
 
 Bit-exact to the wire (no float rounding). See [[lossless-and-precision]].
 
@@ -55,7 +55,7 @@ Bit-exact to the wire (no float rounding). See [[lossless-and-precision]].
   is empty, then data frames (tag `1`) appended once per second (1 Hz, [[live-capture-performance]]).
 - **Index file:** `IndexHeader` + `IndexFrame`s; `strikes` (paise) live once in the
   header (fixed ATM ± 50 window for the day) — lossless and avoids repetition.
-- **Stocks file:** `StockHeader` (board + bond yield) + `StockFrame`s (a matrix of raw
+- **Stocks file:** `StockHeader` (board + risk-free rate) + `StockFrame`s (a matrix of raw
   columns across all stocks). One file/day for all stocks ([[storage-layout]], [[stocks-capture]]).
 
 ## Dropped (computable, reconstructed on read)
@@ -73,4 +73,4 @@ level affects only ratio, not fidelity.
 
 Dedicated reader: (decompress if `.zst`) → scan once building `timestamp → (offset,
 size)` index → binary search / random access. Divides paise→rupees and computes Greeks
-lazily from the stored bond yield. Full byte layout: [[bin-structure-spec]].
+lazily from the stored risk-free rate. Full byte layout: [[bin-structure-spec]].

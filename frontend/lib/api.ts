@@ -16,19 +16,9 @@ export interface AuthStatus {
   risk_free_rate?: number | null;
   access_token_at?: number | null;
   risk_free_rate_as_of?: string | null;
-  rate_update_required?: boolean;
   capture_ready?: boolean;
   capture?: CaptureStatus;
   automation?: AutomationStateView;
-}
-
-export interface LoginResult {
-  authenticated: boolean;
-  trading_date: string;
-  risk_free_rate: number | null;
-  risk_free_rate_as_of?: string | null;
-  rate_update_required?: boolean;
-  capture_ready?: boolean;
 }
 
 export class ApiError extends Error {
@@ -62,15 +52,6 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
 export async function getAuthStatus(): Promise<AuthStatus> {
   const res = await apiFetch("/api/auth/status", { cache: "no-store" });
   return jsonOrThrow<AuthStatus>(res);
-}
-
-export async function updateRiskFreeRate(riskFreeRate: number): Promise<LoginResult> {
-  const res = await apiFetch("/api/auth/risk-free-rate", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ risk_free_rate: riskFreeRate }),
-  });
-  return jsonOrThrow<LoginResult>(res);
 }
 
 // --- capture status ----------------------------------------------------------

@@ -1,0 +1,101 @@
+name: data-downloader
+
+# Self-contained DEPLOY compose (image-based; NO build). Shipped inside the
+# DATA_DOWNLOADER bundle as docker-compose.yml and run on the VPS by
+# DATA_DOWNLOADER/deploy.sh. All interpolation + backend config come from the
+# sibling `.env` (the VPS operator fills it once; it is preserved across updates).
+# The frontend image already has NEXT_PUBLIC_* baked in at build time, so it only
+# needs PORT at runtime and never receives backend secrets.
+
+x-service-security: &service-security
+  init: true
+  restart: unless-stopped
+  read_only: true
+  user: "${APP_UID:-10001}:${APP_GID:-10001}"
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  backend:
+    container_name: market-data-dwndr-backend
+    <<: *service-security
+    stop_grace_period: 30s
+    image: market-data-dwndr-backend:${APP_VERSION:?Set APP_VERSION (managed by deploy.sh)}
+    env_file:
+      - ./.env
+    environment:
+      HTTP_HOST: 0.0.0.0
+    ports:
+      - name: backend-http
+        target: ${HTTP_PORT:?Set HTTP_PORT in .env}
+        published: ${HTTP_PORT:?Set HTTP_PORT in .env}
+        host_ip: ${HOST_BIND_ADDRESS:?Set HOST_BIND_ADDRESS in .env}
+        protocol: tcp
+    volumes:
+      - type: bind
+        source: ${MARKET_DATA_PATH:?Set MARKET_DATA_PATH in .env}
+        target: ${MARKET_DATA_PATH:?Set MARKET_DATA_PATH in .env}
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ARCHIVE_DATA_PATH:?Set ARCHIVE_DATA_PATH in .env}
+        target: ${ARCHIVE_DATA_PATH:?Set ARCHIVE_DATA_PATH in .env}
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import os, urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:' + os.environ['HTTP_PORT'] + '/health', timeout=3)
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  frontend:
+    container_name: market-data-dwndr-frontend
+    <<: *service-security
+    image: market-data-dwndr-frontend:${APP_VERSION:?Set APP_VERSION (managed by deploy.sh)}
+    # No env_file: the browser URL + product name are baked at build; only PORT is
+    # needed at runtime, so backend secrets never enter the frontend container.
+    environment:
+      PORT: ${PORT:?Set PORT in .env}
+      HOSTNAME: 0.0.0.0
+      NODE_ENV: production
+    ports:
+      - name: frontend-http
+        target: ${PORT:?Set PORT in .env}
+        published: ${PORT:?Set PORT in .env}
+        host_ip: ${HOST_BIND_ADDRESS:?Set HOST_BIND_ADDRESS in .env}
+        protocol: tcp
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+      - /app/.next/cache:rw,noexec,nosuid,size=64m,uid=${APP_UID:-10001},gid=${APP_GID:-10001}
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:' + process.env.PORT + '/login').then(response => {
+            if (!response.ok) process.exit(1)
+          }).catch(() => process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

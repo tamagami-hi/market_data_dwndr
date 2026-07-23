@@ -50,24 +50,6 @@ test("shows validated automatic initialization and running capture", async () =>
   await page.close();
 });
 
-test("explains a third-day yield block and enables capture after an update", async () => {
-  const page = await browser.newPage();
-  let isRateUpdateRequired = true;
-  await mockYieldUpdate(page, () => isRateUpdateRequired, () => {
-    isRateUpdateRequired = false;
-  });
-
-  await page.goto(`${FRONTEND_URL}/login`, { waitUntil: "networkidle0" });
-  await waitForText(page, "10-year bond yield update required");
-  await waitForText(page, "validated broker token remains active");
-  await page.type('input[placeholder="0.0691"]', "0.0665");
-  await clickButton(page, "Update yield and enable capture");
-  await waitForText(page, "Yield updated. Automatic capture is now ready.");
-
-  assert.equal(isRateUpdateRequired, false);
-  await page.close();
-});
-
 test("expands a stock row to show all five market-depth levels", async () => {
   const page = await browser.newPage();
   await installMockWebSocket(page);
@@ -191,7 +173,6 @@ async function mockBackend(page) {
         static_ip_configured: true,
         risk_free_rate: 0.0691,
         risk_free_rate_as_of: "2026-07-22",
-        rate_update_required: false,
         capture_ready: true,
         automation: { phase: "capture_window", last_action: "START_CAPTURE" },
         capture: {
@@ -212,54 +193,6 @@ async function mockBackend(page) {
   return seenRequests;
 }
 
-async function mockYieldUpdate(page, getRequired, clearRequired) {
-  await page.setRequestInterception(true);
-  page.on("request", (request) => {
-    const url = new URL(request.url());
-    if (url.origin !== BACKEND_ORIGIN) {
-      request.continue();
-      return;
-    }
-    if (request.method() === "OPTIONS") {
-      respondJson(request, {});
-      return;
-    }
-    if (url.pathname === "/api/auth/status") {
-      respondJson(request, {
-        configured: true,
-        authenticated: true,
-        trading_date: "2026-07-22",
-        market_phase: "PRE_OPEN",
-        credentials_present: true,
-        external_token_source_configured: true,
-        risk_free_rate: 0.065,
-        risk_free_rate_as_of: "2026-07-20",
-        rate_update_required: getRequired(),
-        capture_ready: !getRequired(),
-        automation: { phase: "capture_window" },
-      });
-      return;
-    }
-    if (url.pathname === "/api/auth/login-url") {
-      respondJson(request, { login_url: "https://kite.example/login" });
-      return;
-    }
-    if (url.pathname === "/api/auth/risk-free-rate" && request.method() === "PUT") {
-      clearRequired();
-      respondJson(request, {
-        authenticated: true,
-        trading_date: "2026-07-22",
-        risk_free_rate: 0.0665,
-        risk_free_rate_as_of: "2026-07-22",
-        rate_update_required: false,
-        capture_ready: true,
-      });
-      return;
-    }
-    request.abort();
-  });
-}
-
 function respondJson(request, body, status = 200) {
   request.respond({
     status,
@@ -272,18 +205,6 @@ function respondJson(request, body, status = 200) {
     },
     body: JSON.stringify(body),
   });
-}
-
-async function clickButton(page, label) {
-  const buttons = await page.$$("button");
-  for (const button of buttons) {
-    const text = await button.evaluate((element) => element.textContent?.trim());
-    if (text === label) {
-      await button.click();
-      return;
-    }
-  }
-  throw new Error(`Button not found: ${label}`);
 }
 
 async function waitForText(page, expected, seenRequests = []) {

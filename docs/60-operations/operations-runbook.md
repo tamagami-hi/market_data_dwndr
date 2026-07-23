@@ -36,10 +36,9 @@ The daily lifecycle of the capture service.
    service.
 2. From 08:30 until 09:00 it polls the configured `calspread.online` HTTPS endpoint at
    the env-seeded interval. A returned token is validated with Kite before persistence.
-3. At 09:00 capture starts automatically if today's token and an allowed 10-year
-   government bond yield are available. The latest yield is reused the following
-   Monday–Friday market day; weekends do not count, and on the third market day it must
-   be updated before capture can start.
+3. At 09:00 capture starts automatically once today's token and risk-free rate are
+   available. The risk-free rate is fetched daily from the calspread broker (env
+   `RISK_FREE_RATE` is the fallback).
 4. If the shared token remains unavailable, use the terminal `md-login` TOTP flow as
    an explicit operational fallback. The frontend only reports initialization state.
 5. For a late market-day start, the backend validates the newest saved token first. If
@@ -66,7 +65,7 @@ The daily lifecycle of the capture service.
 ## Restart mid-day
 
 - On restart, the service loads session state ([[session-state]]): reuses the day's
-  `access_token` + bond yield and **appends** to today's already-open files (header is
+  `access_token` + risk-free rate and **appends** to today's already-open files (header is
   written only when a file is empty). No re-prompt, no duplicate headers.
 
 ## Shutdown

@@ -83,18 +83,17 @@ async def test_controller_start_requires_login():
         await controller.start()
 
 
-async def test_controller_start_requires_fresh_risk_free_rate():
+async def test_controller_start_requires_risk_free_rate():
     from app.api.capture import CaptureError
 
     stale = SimpleNamespace(
         access_token="ACCESS",
-        risk_free_rate=0.065,
+        risk_free_rate=None,
         capture_ready=False,
-        rate_update_required=True,
     )
     controller, _ = _make_controller(session=stale)
 
-    with pytest.raises(CaptureError, match="risk-free rate update is required"):
+    with pytest.raises(CaptureError, match="risk-free rate is unavailable"):
         await controller.start()
 
 

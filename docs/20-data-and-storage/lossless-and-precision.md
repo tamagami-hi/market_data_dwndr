@@ -37,7 +37,7 @@ float.**
 | quantities, bid/ask qty, orders | `u64` / `u32` | ✅ |
 | open interest (+ day hi/lo), volume | `u64` | ✅ |
 | timestamp (ms), sequence, tokens | `u64` | ✅ |
-| risk_free_rate (bond yield) | `f64` | manual scalar; exact enough |
+| risk_free_rate (risk-free rate) | `f64` | manual scalar; exact enough |
 
 Benefits beyond exactness: **smaller** and **better compression** (slowly-changing
 integer columns).
@@ -46,7 +46,7 @@ integer columns).
 
 - **All raw fields stored; only computable fields dropped.** Greeks/IV, net `change`,
   `change_in_oi`, and CalSpread spreads/stats are reproducible from stored raw + the
-  header bond yield — excluding them loses no information ([[bin-format]], [[stocks-capture]]).
+  header risk-free rate — excluding them loses no information ([[bin-format]], [[stocks-capture]]).
 - **zstd is lossless compression.** Level 17 affects only ratio/speed, never data.
 - **Optional max-fidelity extra:** we can also store the exchange-provided timestamp
   per snapshot (Kite full mode carries `exchange_timestamp`) alongside our receive time.

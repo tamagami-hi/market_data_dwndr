@@ -10,7 +10,7 @@ TradingCalendar
       ▼
 DailyAutomationService ── broker client ── validated daily session
       │                         │
-      ├── CaptureController ◀── capture-ready token + yield
+      ├── CaptureController ◀── capture-ready token + risk-free rate
       │
       └── stop/flush ── EOD compressor ── verified HDD archive
 ```

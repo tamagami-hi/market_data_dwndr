@@ -26,7 +26,7 @@ tied to execution, strategies, and risk is dropped.
 - **`/monitor` — Capture Monitor (new, the "data saving" view).** Per-underlying status,
   global panels, and continuously refreshed capture history across live + archive storage.
 - **`/login` — Downloader initialization.** Read-only token-broker fetch/validation and
-  automatic capture-readiness progress; the only input is a yield update when required.
+  automatic capture-readiness progress; no manual input (the risk-free rate is fetched daily).
 - `/option-chain` — live option-chain table + status panel (reused).
 - `/stocks` — live stock board (spot + 3 futures, live spread computed on read).
 - `/historical` — download form, progress, dataset catalog (reused).
@@ -63,7 +63,7 @@ Driven by a `capture-status` WS topic ([[websocket-protocol]]). Shows:
 
 CALLS and PUTS show **OI, Chg OI, Volume, Bid, Ask, LTP, Chg**. Greeks/IV are **not in
 the feed**; if displayed they are computed client- or server-side from raw + the day's
-bond yield ([[bin-format]]). ATM / spot-ATM row highlighting stays.
+risk-free rate ([[bin-format]]). ATM / spot-ATM row highlighting stays.
 
 ## Data flow
 
