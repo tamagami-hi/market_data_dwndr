@@ -151,6 +151,7 @@ function HeaderRibbon({
       <Stat label="Spot" value={formatIndianNumber(header.spot, 2)} />
       <Stat label="ATM" value={formatIndianNumber(header.atm, 0)} />
       <Stat label="VIX" value={formatIndianNumber(header.vix, 2)} />
+      <Stat label="Risk-Free" value={`${formatIndianNumber(header.risk_free_rate * 100, 2)}%`} />
       {data && <Stat label="Max Pain" value={formatIndianNumber(data.maxPain, 0)} />}
       <Stat label="Seq" value={formatIndianNumber(header.sequence, 0)} />
     </div>

@@ -3,7 +3,12 @@
 import { getBackendUrl } from "@/lib/config";
 import { normalizeStockDepth } from "@/lib/stockDepth";
 import type { AutomationStateView } from "@/lib/automationStatus";
-import type { StockDepthSnapshot } from "@/lib/wsTypes";
+import type {
+  CompressionProgressPayload,
+  GlobalStatus,
+  PerUnderlyingStatus,
+  StockDepthSnapshot,
+} from "@/lib/wsTypes";
 
 export interface AuthStatus {
   configured: boolean;
@@ -102,6 +107,50 @@ export interface CaptureHistory {
 export async function getCaptureHistory(): Promise<CaptureHistory> {
   const res = await apiFetch("/api/capture/history", { cache: "no-store" });
   return jsonOrThrow<CaptureHistory>(res);
+}
+
+// --- dashboard stats ---------------------------------------------------------
+
+export interface CompressionRecord {
+  trading_date: string;
+  files: number;
+  raw_bytes: number;
+  zst_bytes: number;
+  ratio: number;
+  total_elapsed_ms: number;
+  avg_file_ms: number;
+  throughput_mbps: number;
+  threads: number | null;
+}
+
+export interface CompressionHistory {
+  samples: number;
+  avg_ratio: number;
+  avg_total_elapsed_ms: number;
+  avg_file_ms: number;
+  avg_throughput_mbps: number;
+  last: CompressionRecord | null;
+}
+
+export interface MonitorPayload {
+  per_underlying: PerUnderlyingStatus[];
+  global: GlobalStatus;
+}
+
+export interface DashboardStats {
+  generated_at: number;
+  capture_running: boolean;
+  trading_date: string | null;
+  expected_frames_per_session: number;
+  monitor: MonitorPayload | null;
+  monitor_persisted: boolean;
+  compression: CompressionProgressPayload | null;
+  compression_history: CompressionHistory;
+}
+
+export async function getStats(): Promise<DashboardStats> {
+  const res = await apiFetch("/api/stats", { cache: "no-store" });
+  return jsonOrThrow<DashboardStats>(res);
 }
 
 export async function getStockDepth(symbol: string): Promise<StockDepthSnapshot> {

@@ -167,7 +167,11 @@ ship_bundle() {
     "${ssh_cmd[@]}" "$remote" "mkdir -p $(printf '%q' "$deploy_dir")"
 
     printf 'Syncing bundle to %s:%s (preserving remote .env and MARKET_DATA)...\n' "$remote" "$deploy_dir"
-    rsync -az --delete --exclude='.env' --exclude='MARKET_DATA' --exclude='ROLLBACKS' --exclude='ARCHIVE' \
+    # -v lists each file as it is sent (current + already-synced); --info=progress2
+    # shows a single overall progress bar with percent, rate and ETA; --partial keeps
+    # partial files so a dropped transfer of the large image tarballs resumes.
+    rsync -azh --delete --partial --info=progress2 -v \
+        --exclude='.env' --exclude='MARKET_DATA' --exclude='ROLLBACKS' --exclude='ARCHIVE' \
         -e "ssh -i $(printf '%q' "$SHIP_KEY") -o IdentitiesOnly=yes" \
         "$bundle_dir/" "$remote:$deploy_dir/"
 

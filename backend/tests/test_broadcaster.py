@@ -34,6 +34,56 @@ def _empty_snapshot(timestamp: int) -> CaptureSnapshot:
     return CaptureSnapshot(timestamp, (), None)
 
 
+class _FakeMonitor:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def snapshot(self):
+        return {"type": "CaptureStatus", "payload": self._payload}
+
+
+def test_broadcaster_persists_capture_snapshot(tmp_path):
+    from app.ops import stats_store
+
+    payload = {"per_underlying": [], "global": {"fps": 1.0}}
+    bc = Broadcaster(
+        {},
+        None,
+        FakeHub(),
+        monitor=_FakeMonitor(payload),
+        stats_state_dir=tmp_path,
+        trading_date="2026-07-21",
+    )
+    bc.persist_snapshot_now()
+    saved = stats_store.load_capture_snapshot(tmp_path, "2026-07-21")
+    assert saved is not None
+    assert saved["global"]["fps"] == 1.0
+    assert "persisted_at" in saved
+
+
+def test_broadcaster_snapshot_write_is_throttled(tmp_path):
+    payload = {"per_underlying": [], "global": {}}
+    clock = {"t": 1_000_000}
+    bc = Broadcaster(
+        {},
+        None,
+        FakeHub(),
+        monitor=_FakeMonitor(payload),
+        clock=lambda: clock["t"],
+        stats_state_dir=tmp_path,
+        trading_date="2026-07-21",
+        snapshot_interval_ms=60_000,
+    )
+    bc._maybe_persist_snapshot(payload)  # first write
+    first = bc._last_snapshot_write_ms
+    clock["t"] += 1_000  # only 1s later -> throttled, no write
+    bc._maybe_persist_snapshot(payload)
+    assert bc._last_snapshot_write_ms == first
+    clock["t"] += 60_000  # past the interval -> writes again
+    bc._maybe_persist_snapshot(payload)
+    assert bc._last_snapshot_write_ms == first + 61_000
+
+
 def _nifty_table():
     options = _make_options("NIFTY", "2026-07-31", list(range(24000, 25001, 50)))
     chain = build_option_chain(
@@ -60,6 +110,7 @@ def test_index_messages_include_greeks_and_metrics():
     assert header["underlying"] == "NIFTY"
     assert header["spot"] == 24500.0
     assert abs(header["vix"] - 13.5) < 1e-9
+    assert header["risk_free_rate"] == table.risk_free_rate
 
     grid = msgs[1]["payload"]
     assert len(grid["strikes"]) == table.chain.n_strikes

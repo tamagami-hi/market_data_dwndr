@@ -36,12 +36,13 @@ def test_grid_block_subset_indices():
 
 
 def test_market_header_rupees():
-    msg = protocol.market_header("NIFTY", "2026-07-31", 2456700, 2455000, 1234, 111, 7)
+    msg = protocol.market_header("NIFTY", "2026-07-31", 2456700, 2455000, 1234, 0.0691, 111, 7)
     p = msg["payload"]
     assert msg["type"] == protocol.TYPE_MARKET_HEADER
     assert p["spot"] == 24567.0
     assert p["atm"] == 24550.0
     assert p["vix"] == 12.34
+    assert p["risk_free_rate"] == 0.0691
     assert p["sequence"] == 7
 
 

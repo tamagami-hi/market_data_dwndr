@@ -193,7 +193,7 @@ class DailyAutomationService:
                             )
                         )
 
-                await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     self._eod_fn,
                     self.settings.market_data_path,
                     self.settings.archive_data_path,
@@ -202,6 +202,21 @@ class DailyAutomationService:
                     progress_cb=_on_progress,
                 )
                 completed_date = self._state.eod_in_progress_date
+                # Persist a cross-day compression summary for the dashboard.
+                if result is not None:
+                    try:
+                        from app.ops import stats_store
+
+                        stats_root = getattr(self.settings, "stats_dir", None)
+                        if stats_root is not None:
+                            stats_store.record_compression(
+                                stats_root,
+                                result,
+                                trading_date=completed_date or "unknown",
+                                threads=getattr(self.settings, "zstd_threads", None),
+                            )
+                    except Exception:  # noqa: BLE001 - persistence must not fail EOD
+                        logger.debug("failed to persist compression stats", exc_info=True)
                 self._state = replace(
                     self._state,
                     eod_completed_date=completed_date,

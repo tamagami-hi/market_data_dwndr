@@ -92,12 +92,19 @@ class Broadcaster:
         monitor=None,
         *,
         clock=now_ms,
+        stats_state_dir=None,
+        trading_date: str | None = None,
+        snapshot_interval_ms: int = 60_000,
     ) -> None:
         self.index_tables = index_tables
         self.stock_matrix = stock_matrix
         self.hub = hub
         self.monitor = monitor
         self._clock = clock
+        self._stats_state_dir = stats_state_dir
+        self._trading_date = trading_date
+        self._snapshot_interval_ms = snapshot_interval_ms
+        self._last_snapshot_write_ms: int | None = None
         self._prev_oi: dict[str, tuple[list[int], list[int]]] = {}
         self._index_headers = {
             name: _copy_header(table.header()) for name, table in index_tables.items()
@@ -146,6 +153,7 @@ class Broadcaster:
             spot_paise=frame.spot_price,
             atm_paise=int(round(metrics.atm * 100)),
             vix_paise=frame.vix,
+            risk_free_rate=header.risk_free_rate,
             timestamp_unix_ms=frame.timestamp_unix_ms,
             sequence=frame.sequence,
         )
@@ -279,9 +287,46 @@ class Broadcaster:
         if snapshot.stock_frame is not None:
             messages.append(("stocks", self._stock_frame_message(snapshot.stock_frame)))
         if self.monitor is not None:
-            messages.append(("capture-status", self.monitor.snapshot()))
+            status = self.monitor.snapshot()
+            messages.append(("capture-status", status))
+            self._maybe_persist_snapshot(status.get("payload"))
         messages.append(("session", protocol.heartbeat(snapshot.timestamp_unix_ms)))
         return tuple(messages)
+
+    def _maybe_persist_snapshot(self, payload: dict | None, *, force: bool = False) -> None:
+        """Throttled write of the enriched monitor payload to ``_state/stats/``.
+
+        Runs on the display thread (already off the capture path). Persistence is
+        best-effort: any failure is logged at debug and never disrupts broadcasting.
+        """
+        if payload is None or self._stats_state_dir is None or self._trading_date is None:
+            return
+        now = self._clock()
+        if (
+            not force
+            and self._last_snapshot_write_ms is not None
+            and (now - self._last_snapshot_write_ms) < self._snapshot_interval_ms
+        ):
+            return
+        self._last_snapshot_write_ms = now
+        try:
+            from app.ops import stats_store
+
+            stats_store.write_capture_snapshot(
+                self._stats_state_dir, self._trading_date, {**payload, "persisted_at": now}
+            )
+        except Exception:  # noqa: BLE001 - persistence must never break the UI path
+            logger.debug("failed to persist capture snapshot", exc_info=True)
+
+    def persist_snapshot_now(self) -> None:
+        """Force an immediate capture-snapshot write (e.g. on capture stop)."""
+        if self.monitor is None:
+            return
+        try:
+            payload = self.monitor.snapshot().get("payload")
+        except Exception:  # noqa: BLE001
+            return
+        self._maybe_persist_snapshot(payload, force=True)
 
     async def wait_until_idle(self) -> None:
         """Wait until the current and coalesced display updates are complete."""

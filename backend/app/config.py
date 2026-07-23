@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     kite_api_secret: str = Field(..., description="Kite Connect app secret")
     market_data_path: Path = Field(..., description="SSD root for live captured data")
     archive_data_path: Path = Field(..., description="HDD root for verified zstd archives")
+    stats_data_path: Path | None = Field(
+        default=None,
+        description=(
+            "Directory for persisted monitor statistics JSON (compression history + "
+            "daily capture snapshots). Defaults to MARKET_DATA_PATH/_state/stats when unset."
+        ),
+    )
 
     # --- automated-login credentials (seeded from env; needed only to log in) ---
     # algo_engine stores these encrypted in Postgres; here they come from the env so a
@@ -131,12 +138,28 @@ class Settings(BaseSettings):
     market_open: str = Field(default="09:00", description="Capture start (IST, HH:MM)")
     market_close: str = Field(default="15:30", description="Session close (IST, HH:MM)")
     timezone: str = Field(default="Asia/Kolkata", description="Exchange timezone")
+    expected_frames_per_session: int = Field(
+        default=23_400,
+        ge=1,
+        description=(
+            "Frames expected in a full 1 Hz session (09:00-15:30 = 6h30m = 23,400s). "
+            "Baseline for the monitor's frame-loss/completeness metric."
+        ),
+    )
     log_level: str = Field(default="INFO")
 
     @field_validator("risk_free_rate", mode="before")
     @classmethod
     def _blank_optional_float_is_none(cls, value: object) -> object:
         """Treat an empty optional env value as unset instead of an invalid float."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("stats_data_path", mode="before")
+    @classmethod
+    def _blank_optional_path_is_none(cls, value: object) -> object:
+        """Treat an empty STATS_DATA_PATH env value as unset (use the default)."""
         if isinstance(value, str) and not value.strip():
             return None
         return value
@@ -265,6 +288,17 @@ class Settings(BaseSettings):
     @property
     def state_dir(self) -> Path:
         return self.market_data_path / "_state"
+
+    @property
+    def stats_dir(self) -> Path:
+        """Directory for persisted monitor statistics JSON.
+
+        Uses ``STATS_DATA_PATH`` when set; otherwise defaults to the live
+        ``_state/stats`` folder so existing deployments keep working unchanged.
+        """
+        if self.stats_data_path is not None:
+            return self.stats_data_path
+        return self.state_dir / "stats"
 
     @property
     def meta_dir(self) -> Path:

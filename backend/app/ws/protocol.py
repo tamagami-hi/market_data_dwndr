@@ -82,6 +82,7 @@ def market_header(
     spot_paise: int,
     atm_paise: int,
     vix_paise: int,
+    risk_free_rate: float,
     timestamp_unix_ms: int,
     sequence: int,
 ) -> dict:
@@ -93,6 +94,7 @@ def market_header(
             "spot": paise_to_rupees(spot_paise),
             "atm": paise_to_rupees(atm_paise),
             "vix": paise_to_rupees(vix_paise),
+            "risk_free_rate": risk_free_rate,  # decimal (e.g. 0.0691)
             "timestamp": timestamp_unix_ms,
             "sequence": sequence,
         },

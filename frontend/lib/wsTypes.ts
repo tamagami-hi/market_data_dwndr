@@ -15,6 +15,7 @@ export const MSG = {
   SESSION_STATUS: "SessionStatus",
   LOG: "Log",
   HISTORICAL_JOB_UPDATE: "HistoricalJobUpdate",
+  COMPRESSION_PROGRESS: "CompressionProgress",
 } as const;
 
 export interface MarketHeaderPayload {
@@ -23,6 +24,7 @@ export interface MarketHeaderPayload {
   spot: number;
   atm: number;
   vix: number;
+  risk_free_rate: number;
   timestamp: number;
   sequence: number;
 }
@@ -105,8 +107,13 @@ export interface PerUnderlyingStatus {
   connected: boolean;
   last_tick_ms: number | null;
   frames_written: number;
+  frames_expected: number;
+  frame_loss_pct: number;
   file_bytes: number;
+  avg_bytes_per_frame: number;
+  projected_eod_bytes: number;
   heartbeat_ok: boolean;
+  heartbeat_age_ms: number | null;
   unmatched: number;
 }
 
@@ -114,7 +121,35 @@ export interface GlobalStatus {
   tokens: number;
   fps: number;
   disk_bytes: number;
+  disk_free_bytes: number;
+  disk_total_bytes: number;
   captures: number;
+  dropped_batches: number;
+  drop_rate_pct: number;
+  ingestion_degraded: boolean;
+  uptime_ms: number;
+  frames_written: number;
+  frames_expected: number;
+  frame_loss_pct: number;
+}
+
+/** EOD zstd compression telemetry (CompressionProgress + persisted history). */
+export interface CompressionProgressPayload {
+  phase: string; // running | done | failed | idle
+  files_done: number;
+  files_total: number;
+  bytes_done: number;
+  bytes_total: number;
+  zst_bytes: number;
+  ratio: number;
+  current_file: string | null;
+  threads: number;
+  started_at: number;
+  updated_at: number;
+  elapsed_ms: number;
+  file_elapsed_ms: number;
+  avg_file_ms: number;
+  throughput_mbps: number;
 }
 
 export interface CaptureStatusPayload {

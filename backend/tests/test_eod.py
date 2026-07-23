@@ -57,6 +57,31 @@ def test_compress_raw_files_verifies_and_removes(tmp_path):
         assert len(r) == 5
 
 
+def test_compression_timing_and_throughput(tmp_path):
+    _make_market_data(tmp_path)
+    progress: list[dict] = []
+    result = compress_raw_files(tmp_path, tmp_path / "archive", progress_cb=progress.append)
+
+    # EODResult timing fields.
+    assert result.elapsed_ms >= 0
+    assert len(result.file_times_ms) == 2  # two .bin files
+    assert result.avg_file_ms >= 0
+    # Throughput math: raw MB / seconds.
+    if result.elapsed_ms > 0:
+        expected = (result.total_raw_bytes / 1e6) / (result.elapsed_ms / 1000.0)
+        assert abs(result.throughput_mbps - expected) < 1e-6
+
+    # Progress dicts carry the new timing keys.
+    done = [p for p in progress if p["phase"] == "done"]
+    assert done, "expected a 'done' progress event"
+    final = done[-1]
+    for key in ("elapsed_ms", "file_elapsed_ms", "avg_file_ms", "throughput_mbps"):
+        assert key in final
+    # A per-file 'running' event should report a positive per-file elapsed time.
+    running_with_file = [p for p in progress if p["phase"] == "running" and p["file_elapsed_ms"] > 0]
+    assert running_with_file, "expected per-file timing in running events"
+
+
 def test_run_eod_stops_capture_then_compresses(tmp_path):
     idx, *_ = _make_market_data(tmp_path)
     stopped = {"called": False}

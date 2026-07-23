@@ -34,6 +34,8 @@ def _set(monkeypatch, **env):
         "AUTH_POLL_INTERVAL_SECONDS",
         "MARKET_OPEN",
         "MARKET_CLOSE",
+        "STATS_DATA_PATH",
+        "EXPECTED_FRAMES_PER_SESSION",
         "RELEASE_MAINTENANCE_TOKEN",
         "RELEASE_MAINTENANCE_TTL_SECONDS",
     ]:
@@ -68,6 +70,32 @@ def test_blank_optional_risk_free_rate_is_unset(monkeypatch, value):
 def test_http_port_from_env_no_default(monkeypatch):
     _set(monkeypatch, HTTP_PORT="9000")
     assert _settings().http_port == 9000
+
+
+def test_stats_dir_defaults_under_state_dir(monkeypatch):
+    _set(monkeypatch)  # no STATS_DATA_PATH
+    s = _settings()
+    assert s.stats_data_path is None
+    assert s.stats_dir == s.state_dir / "stats"
+
+
+def test_stats_dir_uses_env_path_when_set(monkeypatch):
+    _set(monkeypatch, STATS_DATA_PATH="/var/lib/md-stats")
+    s = _settings()
+    assert str(s.stats_dir) == "/var/lib/md-stats"
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_blank_stats_data_path_falls_back_to_default(monkeypatch, value):
+    _set(monkeypatch, STATS_DATA_PATH=value)
+    s = _settings()
+    assert s.stats_data_path is None
+    assert s.stats_dir == s.state_dir / "stats"
+
+
+def test_expected_frames_default(monkeypatch):
+    _set(monkeypatch)
+    assert _settings().expected_frames_per_session == 23_400
 
 
 def test_http_port_is_required(monkeypatch):

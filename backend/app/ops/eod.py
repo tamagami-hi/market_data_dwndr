@@ -15,7 +15,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.bin_codec import compress
@@ -36,12 +36,27 @@ class EODResult:
     compressed: list[Path]
     total_raw_bytes: int
     total_zst_bytes: int
+    elapsed_ms: int = 0
+    file_times_ms: list[float] = field(default_factory=list)
 
     @property
     def ratio(self) -> float:
         if self.total_zst_bytes == 0:
             return 0.0
         return self.total_raw_bytes / self.total_zst_bytes
+
+    @property
+    def avg_file_ms(self) -> float:
+        if not self.file_times_ms:
+            return 0.0
+        return sum(self.file_times_ms) / len(self.file_times_ms)
+
+    @property
+    def throughput_mbps(self) -> float:
+        """Raw MB compressed per second over the whole sweep."""
+        if self.elapsed_ms <= 0:
+            return 0.0
+        return (self.total_raw_bytes / 1e6) / (self.elapsed_ms / 1000.0)
 
 
 def compress_raw_files(
@@ -66,11 +81,18 @@ def compress_raw_files(
     files_total = len(raw_files)
     used_threads = compress._clamp_threads(threads)
     started_at_ms = int(time.time() * 1000)
+    sweep_start = time.perf_counter()
+    file_times_ms: list[float] = []
 
     def _emit(phase: str, *, files_done: int, bytes_done: int, current: str | None,
-              zst_done: int) -> None:
+              zst_done: int, file_elapsed_ms: float = 0.0) -> None:
         if progress_cb is None:
             return
+        elapsed_ms = (time.perf_counter() - sweep_start) * 1000.0
+        avg_file_ms = (sum(file_times_ms) / len(file_times_ms)) if file_times_ms else 0.0
+        throughput_mbps = (
+            (bytes_done / 1e6) / (elapsed_ms / 1000.0) if elapsed_ms > 0 and bytes_done else 0.0
+        )
         try:
             progress_cb(
                 {
@@ -85,6 +107,10 @@ def compress_raw_files(
                     "threads": used_threads or 1,
                     "started_at": started_at_ms,
                     "updated_at": int(time.time() * 1000),
+                    "elapsed_ms": int(round(elapsed_ms)),
+                    "file_elapsed_ms": int(round(file_elapsed_ms)),
+                    "avg_file_ms": round(avg_file_ms, 1),
+                    "throughput_mbps": round(throughput_mbps, 2),
                 }
             )
         except Exception:  # noqa: BLE001 - progress reporting must never break the sweep
@@ -104,6 +130,7 @@ def compress_raw_files(
               current=bin_path.name, zst_done=zst_done)
         try:
             relative_archive = bin_path.relative_to(root).with_name(f"{bin_path.name}.zst")
+            file_start = time.perf_counter()
             dst = compress.compress_file(
                 bin_path,
                 archive_root / relative_archive,
@@ -111,14 +138,17 @@ def compress_raw_files(
                 threads=threads,
                 remove_src=remove_src,
             )
+            file_elapsed_ms = (time.perf_counter() - file_start) * 1000.0
+            file_times_ms.append(file_elapsed_ms)
             compressed = [*compressed, dst]
             bytes_done += raw_size
             zst_done += dst.stat().st_size if dst.exists() else 0
             _emit("running", files_done=len(compressed), bytes_done=bytes_done,
-                  current=bin_path.name, zst_done=zst_done)
+                  current=bin_path.name, zst_done=zst_done, file_elapsed_ms=file_elapsed_ms)
         except Exception:  # noqa: BLE001 - one bad file must not abort the sweep
             logger.exception("failed to compress %s (keeping raw)", bin_path)
     total_zst = sum(p.stat().st_size for p in compressed if p.exists())
+    total_elapsed_ms = int(round((time.perf_counter() - sweep_start) * 1000.0))
     logger.info(
         "EOD compressed %d files (%d threads): %.1f MB -> %.1f MB",
         len(compressed),
@@ -128,7 +158,13 @@ def compress_raw_files(
     )
     _emit("done", files_done=len(compressed), bytes_done=bytes_done,
           current=None, zst_done=total_zst)
-    return EODResult(compressed=compressed, total_raw_bytes=total_raw, total_zst_bytes=total_zst)
+    return EODResult(
+        compressed=compressed,
+        total_raw_bytes=total_raw,
+        total_zst_bytes=total_zst,
+        elapsed_ms=total_elapsed_ms,
+        file_times_ms=file_times_ms,
+    )
 
 
 def run_eod(

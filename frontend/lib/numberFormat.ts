@@ -55,3 +55,43 @@ export function formatClockTime(ms: number | null | undefined): string {
   if (!ms) return "--";
   return new Date(ms).toLocaleTimeString();
 }
+
+/** Percentage with a trailing "%". ``value`` is already in percent (0..100). */
+export function formatPercent(value: number | null | undefined, decimals = 1): string {
+  if (value == null || Number.isNaN(value)) return "--";
+  return `${formatIndianNumber(value, decimals)}%`;
+}
+
+/** MB/s throughput (input is already MB/s). */
+export function formatThroughput(mbps: number | null | undefined, decimals = 1): string {
+  if (mbps == null || Number.isNaN(mbps)) return "--";
+  return `${formatIndianNumber(mbps, decimals)} MB/s`;
+}
+
+/**
+ * Human-readable duration from milliseconds.
+ * < 1s -> "850 ms"; < 60s -> "12.3 s"; < 60m -> "3m 05s"; else "1h 02m".
+ */
+export function formatDuration(ms: number | null | undefined): string {
+  if (ms == null || Number.isNaN(ms) || ms < 0) return "--";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)} s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  if (minutes < 60) return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return `${hours}h ${mins.toString().padStart(2, "0")}m`;
+}
+
+/** Compact uptime clock from ms: "HH:MM:SS" (hours can exceed 24). */
+export function formatUptime(ms: number | null | undefined): string {
+  if (ms == null || Number.isNaN(ms) || ms < 0) return "--:--:--";
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+}

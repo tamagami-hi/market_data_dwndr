@@ -143,12 +143,22 @@ def bootstrap_capture(
         engine=engine,
         market_data_path=settings.market_data_path,
         clock=clock,
+        expected_frames=getattr(settings, "expected_frames_per_session", 23_400),
+        capture_start_ms=clock(),
     )
     broadcaster = None
     if hub is not None:
         from app.capture.broadcaster import Broadcaster
 
-        broadcaster = Broadcaster(index_tables, stock_matrix, hub, monitor=monitor, clock=clock)
+        broadcaster = Broadcaster(
+            index_tables,
+            stock_matrix,
+            hub,
+            monitor=monitor,
+            clock=clock,
+            stats_state_dir=getattr(settings, "stats_dir", None),
+            trading_date=trading_date,
+        )
 
     tokens = sorted(
         {t for table in index_tables.values() for t in table.tokens}
