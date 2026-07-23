@@ -35,10 +35,11 @@ in `.env` and live **outside** this folder (this folder is replaced on updates):
 | --- | --- | --- |
 | SSD live capture | `MARKET_DATA_PATH` | `/srv/dev_stack/data/MARKET_DATA` |
 | Compressed archive | `ARCHIVE_DATA_PATH` | `/srv/backup/DATA_DOWNLOADER_ARCHIVE` |
+| Incoming images (deploy) | `RELEASE_IMAGE_PATH` | `/srv/dev_stack/DATA_DOWNLOADER/images` |
 | Previous images (rollback) | `ROLLBACK_IMAGE_PATH` | `/srv/backup/DATA_DOWNLOADER_ROLLBACKS` |
 
 The running images themselves live in Docker's store (`/var/lib/docker`), loaded
-from `images/*.tar.gz` by `deploy.sh`.
+from `RELEASE_IMAGE_PATH/*.tar.gz` by `deploy.sh`.
 
 ---
 
@@ -54,7 +55,7 @@ ${EDITOR:-nano} .env
 #    fill: KITE_API_KEY/SECRET, KITE_USER_ID/PASSWORD, KITE_TOKEN_BROKER_PASSCODE,
 #          KITE_RATE_BROKER_URL, RISK_FREE_RATE (fallback),
 #          RELEASE_MAINTENANCE_TOKEN  (generate: openssl rand -hex 32)
-#    set the env-driven paths (MARKET_DATA_PATH, ARCHIVE_DATA_PATH, ROLLBACK_IMAGE_PATH)
+#    set the env-driven paths (MARKET_DATA_PATH, ARCHIVE_DATA_PATH, RELEASE_IMAGE_PATH, ROLLBACK_IMAGE_PATH)
 #    leave networking as localhost unless you have a static IP/domain
 
 # 2) create the data + rollback directories and give them the container's UID:GID

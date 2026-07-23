@@ -4,6 +4,7 @@ x-service-security: &service-security
   init: true
   restart: unless-stopped
   read_only: true
+  user: "${APP_UID:-10001}:${APP_GID:-10001}"
   cap_drop:
     - ALL
   security_opt:
@@ -16,6 +17,7 @@ x-service-security: &service-security
 
 services:
   backend:
+    container_name: market-data-dwndr-backend
     <<: *service-security
     stop_grace_period: 30s
     image: market-data-dwndr-backend:${APP_VERSION:-local}
@@ -26,6 +28,8 @@ services:
         APP_GID: ${APP_GID:-10001}
     env_file:
       - ./backend/.env
+    environment:
+      HTTP_HOST: 0.0.0.0
     ports:
       - name: backend-http
         target: ${HTTP_PORT:?Set HTTP_PORT in backend/.env}
@@ -59,6 +63,7 @@ services:
       start_period: 15s
 
   frontend:
+    container_name: market-data-dwndr-frontend
     <<: *service-security
     image: market-data-dwndr-frontend:${APP_VERSION:-local}
     build:

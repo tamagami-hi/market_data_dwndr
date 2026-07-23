@@ -22,7 +22,7 @@ DOCKER=()
 
 # Script-driven, version-controlled local stack paths (used only for local up).
 LOCAL_STACK_ROOT="$ROOT_DIR/.local_stack"
-LOCAL_MARKET_DATA="$LOCAL_STACK_ROOT/MARKET_DATA"
+LOCAL_MARKET_DATA="$RELEASE_DIR/DATA_DOWNLOADER/MARKET_DATA"
 LOCAL_ARCHIVE_DATA="$LOCAL_STACK_ROOT/z_market_data"
 
 # shellcheck source=lib/common.sh
@@ -61,31 +61,85 @@ release_config() {
     printf '%s' "$value"
 }
 
+copy_active_bundle_to_rollback() {
+    local active_dir="$RELEASE_DIR/DATA_DOWNLOADER"
+    [[ -f "$active_dir/version.json" ]] || { printf 'No active release yet — nothing to snapshot.\n'; return 0; }
+    [[ -f "$active_dir/images/backend.tar.gz" ]] || { printf 'Active release has no images — nothing to snapshot.\n'; return 0; }
+
+    local version stamp snapshot_dir
+    version="$(jq -r '.version' "$active_dir/version.json" 2>/dev/null || echo unknown)"
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    snapshot_dir="$RELEASE_DIR/rollback/${version:-unknown}-${stamp}"
+    mkdir -p "$snapshot_dir"
+
+    for file in docker-compose.yml .env version.json manifest.json README.md deploy.sh rollback.sh; do
+        [[ -f "$active_dir/$file" ]] && cp "$active_dir/$file" "$snapshot_dir/$file"
+    done
+    [[ -f "$active_dir/images/backend.tar.gz" ]] && cp "$active_dir/images/backend.tar.gz" "$snapshot_dir/backend.tar.gz"
+    [[ -f "$active_dir/images/frontend.tar.gz" ]] && cp "$active_dir/images/frontend.tar.gz" "$snapshot_dir/frontend.tar.gz"
+    
+    printf 'Snapshotted active release %s -> rollback/%s\n' "${version:-unknown}" "$(basename "$snapshot_dir")"
+}
+
 deploy_local() {
-    require_file "$BACKEND_ENV"; require_file "$FRONTEND_ENV"
     command -v git >/dev/null || { echo "git is required." >&2; exit 1; }
+    command -v jq >/dev/null || { echo "jq is required." >&2; exit 1; }
     mapfile -d '' -t DOCKER < <(docker_engine_command)
     "${DOCKER[@]}" compose version >/dev/null
 
+    resolve_bundle
+    local active_dir="$RELEASE_DIR/DATA_DOWNLOADER"
+    local active_env="$active_dir/.env"
+
+    if [[ ! -f "$active_env" ]]; then
+        if [[ -f "$BUNDLE_DIR/.env" ]]; then
+            cp "$BUNDLE_DIR/.env" "$active_env"
+        elif [[ -f "$active_dir/.env.example" ]]; then
+            cp "$active_dir/.env.example" "$active_env"
+        else
+            echo "No .env found in DATA_DOWNLOADER to use." >&2
+            exit 1
+        fi
+        set_env_value "$active_env" MARKET_DATA_PATH "$LOCAL_MARKET_DATA"
+        set_env_value "$active_env" ARCHIVE_DATA_PATH "$LOCAL_ARCHIVE_DATA"
+        set_env_value "$active_env" RELEASE_IMAGE_PATH "$active_dir/images"
+    fi
+
     # Never disrupt a running local capture.
     local market_open market_close tz
-    market_open="$(env_value "$BACKEND_ENV" MARKET_OPEN)"; [[ -n "$market_open" ]] || market_open=09:00
-    market_close="$(env_value "$BACKEND_ENV" MARKET_CLOSE)"; [[ -n "$market_close" ]] || market_close=15:30
-    tz="$(env_value "$BACKEND_ENV" TIMEZONE)"; [[ -n "$tz" ]] || tz=Asia/Kolkata
+    market_open="$(env_value "$active_env" MARKET_OPEN)"; [[ -n "$market_open" ]] || market_open=09:00
+    market_close="$(env_value "$active_env" MARKET_CLOSE)"; [[ -n "$market_close" ]] || market_close=15:30
+    tz="$(env_value "$active_env" TIMEZONE)"; [[ -n "$tz" ]] || tz=Asia/Kolkata
     assert_outside_capture_window "$market_open" "$market_close" "$tz"
-    assert_capture_stopped "$BACKEND_ENV" false
+    assert_capture_stopped "$active_env" false
 
-    # Script-driven local data roots (created here; version-controlled defaults).
-    mkdir -p "$LOCAL_MARKET_DATA" "$LOCAL_ARCHIVE_DATA"
-    printf 'Local stack data roots:\n  MARKET_DATA_PATH=%s\n  ARCHIVE_DATA_PATH=%s\n' \
-        "$LOCAL_MARKET_DATA" "$LOCAL_ARCHIVE_DATA"
+    mkdir -p "$(env_value "$active_env" MARKET_DATA_PATH)" "$(env_value "$active_env" ARCHIVE_DATA_PATH)"
 
-    printf 'Composing up the local stack (build)...\n'
-    MARKET_DATA_PATH="$LOCAL_MARKET_DATA" ARCHIVE_DATA_PATH="$LOCAL_ARCHIVE_DATA" \
-    APP_VERSION="$(env_value "$BACKEND_ENV" APP_VERSION)" \
-        "${DOCKER[@]}" compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" \
-        --env-file "$BACKEND_ENV" --env-file "$FRONTEND_ENV" up -d --build
-    health_check_stack "$BACKEND_ENV" "$FRONTEND_ENV" || {
+    copy_active_bundle_to_rollback
+
+    printf 'Staging bundle into DATA_DOWNLOADER...\n'
+    if [[ -f "$active_dir/docker-compose.yml" ]]; then
+        printf 'Stopping existing local stack...\n'
+        (cd "$active_dir" && "${DOCKER[@]}" compose down)
+    fi
+
+    mkdir -p "$active_dir/images"
+    cp "$BUNDLE_DIR/docker-compose.yml" "$active_dir/docker-compose.yml"
+    cp "$BUNDLE_DIR/version.json" "$active_dir/version.json"
+    cp "$BUNDLE_DIR/manifest.json" "$active_dir/manifest.json"
+    cp "$BUNDLE_DIR/images/backend.tar.gz" "$active_dir/images/backend.tar.gz"
+    cp "$BUNDLE_DIR/images/frontend.tar.gz" "$active_dir/images/frontend.tar.gz"
+
+    set_env_value "$active_env" APP_VERSION "$(jq -r '.version' "$BUNDLE_DIR/version.json")"
+
+    printf 'Loading images...\n'
+    "${DOCKER[@]}" load -i "$active_dir/images/backend.tar.gz"
+    "${DOCKER[@]}" load -i "$active_dir/images/frontend.tar.gz"
+
+    printf 'Composing up the local stack in DATA_DOWNLOADER...\n'
+    (cd "$active_dir" && "${DOCKER[@]}" compose up -d)
+
+    health_check_stack "$active_env" "$active_env" || {
         echo "Local stack failed health checks." >&2; exit 1;
     }
     printf 'Local stack is up and healthy.\n'
@@ -112,8 +166,8 @@ ship_bundle() {
     printf 'Ensuring remote deploy dir %s...\n' "$deploy_dir"
     "${ssh_cmd[@]}" "$remote" "mkdir -p $(printf '%q' "$deploy_dir")"
 
-    printf 'Syncing bundle to %s:%s (preserving remote .env)...\n' "$remote" "$deploy_dir"
-    rsync -az --delete --exclude='.env' \
+    printf 'Syncing bundle to %s:%s (preserving remote .env and MARKET_DATA)...\n' "$remote" "$deploy_dir"
+    rsync -az --delete --exclude='.env' --exclude='MARKET_DATA' --exclude='ROLLBACKS' --exclude='ARCHIVE' \
         -e "ssh -i $(printf '%q' "$SHIP_KEY") -o IdentitiesOnly=yes" \
         "$bundle_dir/" "$remote:$deploy_dir/"
 
@@ -125,8 +179,9 @@ ship_bundle() {
 
 acquire_release_lock "$(global_release_lock_file)"
 if [[ -n "$SHIP_KEY" ]]; then
-    resolve_bundle
-    ship_bundle "$BUNDLE_DIR"
+    active_dir="$RELEASE_DIR/DATA_DOWNLOADER"
+    [[ -f "$active_dir/manifest.json" ]] || { echo "Nothing staged in DATA_DOWNLOADER to ship. Run local deploy first." >&2; exit 1; }
+    ship_bundle "$active_dir"
 else
     deploy_local
 fi

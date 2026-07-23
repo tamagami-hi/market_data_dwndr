@@ -20,9 +20,9 @@ IP/domain later with an env change + one rebuild).
 
 ```text
 release_manager/
-├── export.sh              build images + assemble the self-contained bundle
-├── deploy.sh              local: compose up HERE   |   --ship KEY: rsync + deploy on VPS
-├── rollback.sh            --ship KEY: trigger the VPS rollback
+├── export.sh              build images + assemble bundle in recent_builds/
+├── deploy.sh              local: stage recent_builds to DATA_DOWNLOADER + local snapshot | --ship KEY: rsync DATA_DOWNLOADER to VPS
+├── rollback.sh            local: restore from rollback/ to DATA_DOWNLOADER               | --ship KEY: trigger VPS rollback
 ├── status.sh              local + (--remote KEY) VPS status
 ├── compose.deploy.yaml    image-based deploy compose (shipped as docker-compose.yml)
 ├── .env.example           build-machine ship config (VPS_SSH_* + VPS_DEPLOY_DIR)
@@ -63,24 +63,24 @@ and writes one bundle to `release_manager/recent_builds/<release_id>-<stamp>/`
 (images, `docker-compose.yml`, `.env.example`, `deploy.sh`, `rollback.sh`,
 `manifest.json`, `version.json`, `README.txt`).
 
-## Run locally (compose up here)
+## Run locally (stage + compose up)
 
 ```bash
 ./release_manager/deploy.sh
 ```
-Composes the stack up on this machine (build) using **script-driven, version-
-controlled** local data roots under `./.local_stack/` — no env editing needed.
-Refuses to run during the capture window and won't disrupt a running capture.
+Extracts the newest bundle from `recent_builds/` into `DATA_DOWNLOADER/`. If a stack is already deployed locally, it first snapshots the active `DATA_DOWNLOADER` folder into `release_manager/rollback/`. Then it brings the stack up locally using script-driven data roots (`./.local_stack/`). No manual env editing needed for local execution. Refuses to run during the capture window.
 
 ## Ship to the VPS
 
-The VPS holds only `DATA_DOWNLOADER/`. Rsync excludes `.env`, so your production
-secrets are preserved on every update.
+The VPS holds only `DATA_DOWNLOADER/`. Rsync excludes `.env`, so your production secrets are preserved on every update. By shipping `DATA_DOWNLOADER`, you are shipping exactly what you staged and tested locally.
 
 ### First deploy
 ```bash
-# 1) push the bundle (this also runs the remote deploy, which will stop at the
-#    missing .env on the very first run):
+# 0) Stage the bundle locally first so DATA_DOWNLOADER is populated:
+./release_manager/deploy.sh
+
+# 1) Push the tested DATA_DOWNLOADER directory to the VPS:
+#    (This rsyncs the directory and runs the remote deploy script)
 ./release_manager/deploy.sh --ship ~/.ssh/beonedge_vps
 
 # 2) on the VPS, fill the env once and create the data + rollback dirs:
@@ -88,7 +88,7 @@ ssh -i ~/.ssh/beonedge_vps beonedge@100.122.85.101
 cd /srv/dev_stack/DATA_DOWNLOADER
 cp .env.example .env && chmod 600 .env && ${EDITOR:-nano} .env
 #   set KITE_* secrets, RELEASE_MAINTENANCE_TOKEN (openssl rand -hex 32), and the
-#   env-driven paths: MARKET_DATA_PATH, ARCHIVE_DATA_PATH, ROLLBACK_IMAGE_PATH
+#   env-driven paths: MARKET_DATA_PATH, ARCHIVE_DATA_PATH, ROLLBACK_IMAGE_PATH, RELEASE_IMAGE_PATH
 sudo mkdir -p <MARKET_DATA_PATH> <ARCHIVE_DATA_PATH> /srv/backup/DATA_DOWNLOADER_ROLLBACKS
 sudo chown -R 10001:10001 <MARKET_DATA_PATH> <ARCHIVE_DATA_PATH>
 ./deploy.sh            # first bring-up
@@ -100,7 +100,11 @@ ssh -i ~/.ssh/beonedge_vps -L 3789:localhost:3789 -L 9000:localhost:9000 beonedg
 
 ### Update (subsequent releases)
 ```bash
+# 1. Build a new bundle
 ./release_manager/export.sh
+# 2. Stage locally, test it out (automatically snapshots your old local stack)
+./release_manager/deploy.sh
+# 3. Ship exactly that staged folder to the VPS
 ./release_manager/deploy.sh --ship ~/.ssh/beonedge_vps
 ```
 The VPS runner: verifies checksums, blocks during the capture window, drains
@@ -112,7 +116,11 @@ data bind-mounts, and volumes are never touched.
 ## Rollback
 
 ```bash
-# from the build machine:
+# from the build machine (local rollback):
+./release_manager/rollback.sh                                       # Interactive local restore
+./release_manager/rollback.sh <release_id>
+
+# from the build machine (VPS rollback):
 ./release_manager/rollback.sh --ship ~/.ssh/beonedge_vps            # newest saved previous release
 ./release_manager/rollback.sh --ship ~/.ssh/beonedge_vps <release_id>
 

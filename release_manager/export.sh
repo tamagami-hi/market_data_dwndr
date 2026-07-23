@@ -76,7 +76,7 @@ COMPOSE=("${DOCKER[@]}" compose)
 "${COMPOSE[@]}" version >/dev/null
 
 build_hash="$(image_build_config_hash "$BACKEND_ENV" "$FRONTEND_ENV")"
-release_id="${git_sha:0:12}-${build_hash}"
+release_id="v${new_version}"
 backend_image="market-data-dwndr-backend:${release_id}"
 frontend_image="market-data-dwndr-frontend:${release_id}"
 

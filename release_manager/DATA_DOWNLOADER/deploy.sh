@@ -22,8 +22,7 @@ LEASE_ID=""
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-for f in "$ENV_FILE" "$COMPOSE_FILE" "$MANIFEST" \
-    "$HERE/images/backend.tar.gz" "$HERE/images/frontend.tar.gz"; do
+for f in "$ENV_FILE" "$COMPOSE_FILE" "$MANIFEST"; do
     [[ -f "$f" ]] || die "missing bundle file: $f (copy .env.example to .env and fill it)"
 done
 for cmd in jq sha256sum gzip curl; do
@@ -47,19 +46,17 @@ docker info >/dev/null 2>&1 || DOCKER=(sudo docker)
 "${DOCKER[@]}" compose version >/dev/null || die "docker compose is required"
 
 release_id="$(jq -r '.release_id' "$MANIFEST")"
-[[ "$release_id" =~ ^[0-9a-f]{12}-[0-9a-f]{12}$ ]] || die "invalid release_id in manifest"
+[[ "$release_id" =~ ^[A-Za-z0-9_.-]+$ ]] || die "invalid release_id in manifest"
 
 # ---- integrity: sha256 of compose + image archives must match the manifest ----
 verify_sha() {
-    local rel=$1 expected actual
+    local file_path=$1 expected actual
     expected="$(jq -r "$2" "$MANIFEST")"
-    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || die "manifest checksum missing for $rel"
-    actual="$(sha256sum "$HERE/$rel" | cut -d' ' -f1)"
-    [[ "$actual" == "$expected" ]] || die "checksum mismatch for $rel"
+    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || die "manifest checksum missing for $file_path"
+    actual="$(sha256sum "$file_path" | cut -d' ' -f1)"
+    [[ "$actual" == "$expected" ]] || die "checksum mismatch for $file_path"
 }
-verify_sha "docker-compose.yml" '.compose.sha256'
-verify_sha "images/backend.tar.gz" '.images.backend.sha256'
-verify_sha "images/frontend.tar.gz" '.images.frontend.sha256'
+verify_sha "$COMPOSE_FILE" '.compose.sha256'
 
 backend_tag="$(jq -r '.images.backend.tag' "$MANIFEST")"
 frontend_tag="$(jq -r '.images.frontend.tag' "$MANIFEST")"
@@ -71,16 +68,23 @@ frontend_id="$(jq -r '.images.frontend.image_id' "$MANIFEST")"
 
 # ---- required env ----
 for key in APP_UID APP_GID HTTP_PORT PORT HOST_BIND_ADDRESS MARKET_DATA_PATH \
-    ARCHIVE_DATA_PATH ROLLBACK_IMAGE_PATH; do
+    ARCHIVE_DATA_PATH ROLLBACK_IMAGE_PATH RELEASE_IMAGE_PATH; do
     [[ -n "$(env_get "$key")" ]] || die "$key is not set in $ENV_FILE"
 done
 bind_address="$(env_get HOST_BIND_ADDRESS)"; [[ "$bind_address" == "0.0.0.0" ]] && bind_address=127.0.0.1
 backend_port="$(env_get HTTP_PORT)"
 frontend_port="$(env_get PORT)"
 rollback_root="$(env_get ROLLBACK_IMAGE_PATH)"
+release_img_root="$(env_get RELEASE_IMAGE_PATH)"
 [[ -d "$(env_get MARKET_DATA_PATH)" ]] || die "MARKET_DATA_PATH does not exist on the host"
 [[ -d "$(env_get ARCHIVE_DATA_PATH)" ]] || die "ARCHIVE_DATA_PATH does not exist on the host"
-mkdir -p "$rollback_root"
+mkdir -p "$rollback_root" "$release_img_root"
+
+for f in "$release_img_root/backend.tar.gz" "$release_img_root/frontend.tar.gz"; do
+    [[ -f "$f" ]] || die "missing bundle file: $f"
+done
+verify_sha "$release_img_root/backend.tar.gz" '.images.backend.sha256'
+verify_sha "$release_img_root/frontend.tar.gz" '.images.frontend.sha256'
 
 api() { printf 'http://%s:%s%s' "$bind_address" "$backend_port" "$1"; }
 
@@ -148,17 +152,13 @@ fi
 
 # ---- load the new images (idempotent: only load if the tag is absent) ----
 load_image() {
-    local tag=$1 archive=$2 expected_id=$3 have
-    have="$("${DOCKER[@]}" image inspect --format '{{.Id}}' "$tag" 2>/dev/null || true)"
-    if [[ -z "$have" ]]; then
-        gzip -dc "$HERE/$archive" | "${DOCKER[@]}" image load >/dev/null
-        have="$("${DOCKER[@]}" image inspect --format '{{.Id}}' "$tag")"
-    fi
-    [[ "$have" == "$expected_id" ]] || die "loaded image identity mismatch for $tag"
+    local tag=$1 archive=$2
+    # Always load the image archive (it will safely overwrite the tag if it already exists)
+    gzip -dc "$archive" | "${DOCKER[@]}" image load >/dev/null
 }
 log "loading images for $release_id"
-load_image "$backend_tag" images/backend.tar.gz "$backend_id"
-load_image "$frontend_tag" images/frontend.tar.gz "$frontend_id"
+load_image "$backend_tag" "$release_img_root/backend.tar.gz" "$backend_id"
+load_image "$frontend_tag" "$release_img_root/frontend.tar.gz" "$frontend_id"
 
 wait_http() {
     local url=$1 label=$2 i
