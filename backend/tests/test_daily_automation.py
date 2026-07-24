@@ -193,7 +193,9 @@ def test_acquire_session_uses_fetched_calspread_rate(tmp_path):
         _settings(tmp_path),
         clock=lambda: _ms(21, 8, 30),
         broker_fetcher=lambda: "NEW_TOKEN",
-        broker_validator=lambda t: (_ for _ in ()).throw(ValueError("expired")) if t == "OLD" else None,
+        broker_validator=lambda t: (
+            (_ for _ in ()).throw(ValueError("expired")) if t == "OLD" else None
+        ),
         rate_resolver=lambda: 0.053324,
     )
 
@@ -453,6 +455,7 @@ async def test_real_capture_task_failure_blocks_automated_eod(tmp_path):
         hub=None,
         bootstrap_fn=lambda *_args, **_kwargs: context,
         run_fn=failing_run,
+        fatal_handler=lambda: None,
     )
     await controller.start()
     await asyncio.sleep(0)

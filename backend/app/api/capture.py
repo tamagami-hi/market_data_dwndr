@@ -48,6 +48,27 @@ class MaintenanceReleaseResponse(BaseModel):
     released: bool
 
 
+def _default_fatal_handler() -> None:
+    """Terminate the process so Docker's ``restart: unless-stopped`` recovers.
+
+    A crashed capture task is, by design, unrecoverable in-process (``_start_unlocked``
+    refuses to resume once ``_has_failed`` is set). A Docker healthcheck marking the
+    container *unhealthy* does NOT restart it — the restart policy only fires when PID 1
+    exits — so the app itself must exit to trigger recovery. We raise ``SIGTERM`` (rather
+    than ``os._exit``) so uvicorn runs its graceful lifespan shutdown; by the time this
+    fires the engine's ``finally`` has already drained+fsynced the writer queues, so no
+    captured data is lost. ``unless-stopped`` restarts on any exit except an explicit
+    ``docker stop``, giving a fresh process a clean ``_has_failed=False`` slate.
+    """
+    import os
+    import signal
+
+    logger.critical("capture task crashed unrecoverably; exiting for container restart")
+    signal.raise_signal(signal.SIGTERM)
+    # Fallback for platforms/contexts where SIGTERM does not unwind the server.
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
 class CaptureController:
     """Owns the single in-process capture task and its lifecycle."""
 
@@ -60,6 +81,7 @@ class CaptureController:
         bootstrap_fn=None,
         run_fn=None,
         maintenance_store: MaintenanceLeaseStore | None = None,
+        fatal_handler=None,
     ) -> None:
         self.settings = settings
         self.session_service = session_service
@@ -71,6 +93,7 @@ class CaptureController:
         self._stop: asyncio.Event | None = None
         self._error: str | None = None
         self._has_failed = False
+        self._fatal_handler = fatal_handler or _default_fatal_handler
         self._lifecycle_lock = asyncio.Lock()
         self._maintenance_token = _secret_value(
             getattr(settings, "release_maintenance_token", None)
@@ -86,6 +109,16 @@ class CaptureController:
     @property
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
+
+    @property
+    def has_failed(self) -> bool:
+        """True when the capture task crashed and needs a fresh process to resume.
+
+        This is the sole *dead* signal for the ``/health`` liveness view: it is set only
+        by an unexpected exception in the run loop, never by a normal market-close stop,
+        an auth-expiry (handled separately), or a graceful maintenance stop.
+        """
+        return self._has_failed
 
     def _resolve_fns(self):
         bootstrap_fn = self._bootstrap_fn
@@ -137,10 +170,18 @@ class CaptureController:
             except KiteAuthenticationError:
                 self._handle_authentication_failure(session.access_token)
                 logger.warning("capture stopped because the Kite session expired")
-            except Exception as exc:  # noqa: BLE001 - record, don't crash the server
+            except Exception as exc:  # noqa: BLE001 - record, then self-exit for restart
                 self._has_failed = True
                 self._error = "capture task failed; inspect backend logs"
                 logger.error("capture task failed (%s)", type(exc).__name__)
+                # Unrecoverable in-process: trigger a process exit so Docker's
+                # restart policy recovers with a clean slate (see _default_fatal_handler).
+                # Fires only on a genuine crash — never on normal stop/auth-expiry — so an
+                # idle / off-hours process is never treated as a recovery case.
+                try:
+                    self._fatal_handler()
+                except Exception:  # noqa: BLE001 - a self-exit failure must not mask the crash
+                    logger.exception("fatal handler failed after capture crash")
 
         self._task = asyncio.create_task(_runner())
         logger.info("capture started for %s (%d tokens)", context.trading_date, len(context.tokens))

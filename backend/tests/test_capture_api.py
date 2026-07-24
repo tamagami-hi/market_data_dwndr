@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.capture import CaptureController, CaptureError, create_capture_router
+from app.kite.errors import KiteAuthenticationError
 
 
 def _fake_context():
@@ -36,8 +37,19 @@ def _make_controller(session=_DEFAULT_SESSION):
         await stop_event.wait()  # stay "running" until stopped
 
     service = SimpleNamespace(active_session=lambda: session, trading_date=lambda: "2026-07-21")
+    # Record fatal-handler invocations instead of raising SIGTERM (the production default).
+    started["fatal"] = 0
+
+    def _record_fatal() -> None:
+        started["fatal"] += 1
+
     controller = CaptureController(
-        SimpleNamespace(), service, hub=None, bootstrap_fn=fake_bootstrap, run_fn=fake_run
+        SimpleNamespace(),
+        service,
+        hub=None,
+        bootstrap_fn=fake_bootstrap,
+        run_fn=fake_run,
+        fatal_handler=_record_fatal,
     )
     return controller, started
 
@@ -113,6 +125,46 @@ async def test_controller_redacts_capture_task_failures(caplog):
         await controller.stop()
     with pytest.raises(CaptureError, match="previous capture failed"):
         await controller.start()
+
+
+async def test_fatal_handler_fires_on_capture_crash():
+    async def failing_run(_context, _stop_event):
+        raise RuntimeError("unexpected boom")
+
+    controller, started = _make_controller()
+    controller._run_fn = failing_run
+
+    await controller.start()
+    await asyncio.sleep(0)
+
+    assert controller.has_failed is True
+    assert started["fatal"] == 1  # self-exit requested exactly once
+
+
+async def test_fatal_handler_not_fired_on_normal_stop():
+    controller, started = _make_controller()  # default run waits for stop_event
+
+    await controller.start()
+    await controller.stop()
+
+    assert controller.has_failed is False
+    assert started["fatal"] == 0  # a clean stop must never trigger a restart
+
+
+async def test_fatal_handler_not_fired_on_auth_expiry():
+    async def expiring_run(_context, _stop_event):
+        raise KiteAuthenticationError("token expired")
+
+    controller, started = _make_controller()
+    controller._run_fn = expiring_run
+
+    await controller.start()
+    await asyncio.sleep(0)
+
+    # Auth-expiry is handled (waits for token refresh), not a crash: no exit, not "failed".
+    assert controller.has_failed is False
+    assert started["fatal"] == 0
+    assert "broker session expired" in controller.status()["error"]
 
 
 # --- routes ------------------------------------------------------------------

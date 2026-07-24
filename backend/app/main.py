@@ -1,9 +1,10 @@
 """FastAPI application entrypoint.
 
-Serves ``/health``, the self-contained ``/monitor`` dashboard, the ``/api/auth`` routes
-(session status + automated login), and the ``/ws/{topic}`` WebSocket topics. At startup
-it builds the session service and reports whether today's Kite session already exists
-(resume) so a mid-day restart doesn't force a re-login.
+Serves a consolidated ``/health`` probe (per-component ok/degraded/dead status; 503 only
+when a component is dead), the self-contained ``/monitor`` dashboard, the ``/api/auth``
+routes (session status + automated login), and the ``/ws/{topic}`` WebSocket topics. At
+startup it builds the session service and reports whether today's Kite session already
+exists (resume) so a mid-day restart doesn't force a re-login.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from fastapi.responses import HTMLResponse
 from app import __version__
 from app.api.auth import create_auth_router
 from app.api.capture import create_capture_router
+from app.api.health import create_health_router
 from app.api.stats import create_stats_router
 from app.api.status import create_status_router
 from app.logging_config import configure_logging
@@ -136,12 +138,7 @@ app.include_router(create_auth_router())
 app.include_router(create_capture_router())
 app.include_router(create_status_router())
 app.include_router(create_stats_router())
-
-
-@app.get("/health", tags=["ops"])
-async def health() -> dict[str, str]:
-    """Liveness probe."""
-    return {"status": "ok", "version": __version__}
+app.include_router(create_health_router())
 
 
 @app.get("/monitor", response_class=HTMLResponse, tags=["ui"])

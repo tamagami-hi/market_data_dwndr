@@ -59,7 +59,7 @@ services:
         - >-
           import os, urllib.request;
           urllib.request.urlopen('http://127.0.0.1:' + os.environ['HTTP_PORT'] + '/health', timeout=3)
-      interval: 15s
+      interval: 20s
       timeout: 5s
       retries: 5
       start_period: 15s
