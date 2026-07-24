@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from app.capture.engine import CaptureEngine, build_index_writer, build_stock_writer
 from app.capture.monitor import (
     CaptureMonitor,
@@ -77,6 +79,53 @@ def test_avg_bytes_per_frame_and_projection():
     assert projected_eod_bytes(0, 0, 23_400) == 0
     # 100 B/frame * 23,400 expected = 2,340,000
     assert projected_eod_bytes(1000, 10, 23_400) == 2_340_000
+
+
+def _fps_monitor():
+    """A CaptureMonitor wired to a fake clock + engine for isolated fps tests."""
+    clock = {"t": 0}
+    engine = SimpleNamespace(captures=0)
+    monitor = CaptureMonitor(
+        {}, None, {}, None, engine=engine, clock=lambda: clock["t"], fps_window_ms=5_000
+    )
+    return monitor, engine, clock
+
+
+def test_fps_is_steady_at_1hz():
+    monitor, engine, clock = _fps_monitor()
+    fps = 0.0
+    for second in range(1, 8):  # 1 capture per second
+        clock["t"] = second * 1000
+        engine.captures = second
+        fps = monitor._fps()
+    assert abs(fps - 1.0) < 0.15  # steady ~1 Hz
+
+
+def test_fps_does_not_spike_on_rapid_extra_snapshot_calls():
+    # Reproduces the bug: a capture lands, then a second (REST-poll) snapshot fires
+    # a few ms later. The OLD per-call delta/elapsed math returned ~1/0.01 = 100.
+    monitor, engine, clock = _fps_monitor()
+    for second in range(1, 7):  # warm up the window at 1 Hz
+        clock["t"] = second * 1000
+        engine.captures = second
+        monitor._fps()
+    clock["t"] = 6010  # a capture lands 10 ms after the last sample
+    engine.captures = 7
+    clock["t"] = 6020  # a rapid extra caller (e.g. /api/stats poll) 10 ms later
+    spike = monitor._fps()
+    assert spike < 2.0, f"fps spiked to {spike} on a rapid extra call"
+
+
+def test_fps_reflects_a_real_stall():
+    # If captures stop, the windowed rate decays toward 0 (real signal, not noise).
+    monitor, engine, clock = _fps_monitor()
+    for second in range(1, 7):
+        clock["t"] = second * 1000
+        engine.captures = second
+        monitor._fps()
+    # 6s later with no new captures, the window sees 0 new frames.
+    clock["t"] = 12_000
+    assert monitor._fps() == 0.0
 
 
 def test_monitor_snapshot_end_to_end(tmp_path):

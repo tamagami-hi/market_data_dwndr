@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections import deque
 from pathlib import Path
 
 from app.capture.writer_thread import FileWriterThread
@@ -22,6 +23,12 @@ from app.stocks.matrix import StockMatrix
 from app.ws import protocol
 
 HEARTBEAT_WINDOW_MS = 2_000
+
+# Frames/sec is measured over this trailing window so the value is a stable rate
+# regardless of how often (or from how many callers) ``snapshot()`` is invoked.
+FPS_WINDOW_MS = 5_000
+# Minimum spanned time before a rate is reported (avoids startup / tiny-interval spikes).
+FPS_MIN_SPAN_MS = 900
 
 # Full-session frame baseline (09:00-15:30 @ 1 Hz). Overridable via Settings.
 DEFAULT_EXPECTED_FRAMES = 23_400
@@ -103,6 +110,7 @@ class CaptureMonitor:
         heartbeat_window_ms: int = HEARTBEAT_WINDOW_MS,
         expected_frames: int = DEFAULT_EXPECTED_FRAMES,
         capture_start_ms: int | None = None,
+        fps_window_ms: int = FPS_WINDOW_MS,
     ) -> None:
         self.index_tables = index_tables
         self.stock_matrix = stock_matrix
@@ -116,9 +124,12 @@ class CaptureMonitor:
         self.expected_frames = expected_frames if expected_frames > 0 else DEFAULT_EXPECTED_FRAMES
         # Capture start timestamp for uptime; defaults to first construction time.
         self.capture_start_ms = capture_start_ms if capture_start_ms is not None else clock()
-        # fps rate tracking
-        self._last_fps_time: int | None = None
-        self._last_capture_count = 0
+        # fps rate tracking: a trailing window of (timestamp_ms, total_captures)
+        # samples. Measuring against the OLDEST sample in the window makes the rate
+        # independent of how often snapshot() is called (broadcaster + REST polls +
+        # persistence all share this monitor), so extra calls can't create spikes.
+        self.fps_window_ms = fps_window_ms if fps_window_ms > 0 else FPS_WINDOW_MS
+        self._fps_samples: deque[tuple[int, int]] = deque()
 
     def _entry(self, underlying: str, unmatched: int, writer: FileWriterThread | None) -> dict:
         now = self._clock()
@@ -164,22 +175,28 @@ class CaptureMonitor:
         return len(tokens)
 
     def _fps(self) -> float:
-        """Frames-per-second since the previous call (0 on the first call)."""
+        """Capture rate over a trailing window (stable regardless of call cadence).
+
+        Records the current ``(now, total_captures)`` sample, drops samples older
+        than ``fps_window_ms``, and measures the rate against the OLDEST sample
+        still in the window. Because the window endpoints stay ~``fps_window_ms``
+        apart no matter how many extra callers hit ``snapshot()``, the value can't
+        spike from a short interval between two nearby calls.
+        """
         if self.engine is None:
             return 0.0
         now = self._clock()
         captures = self.engine.captures
-        if self._last_fps_time is None:
-            self._last_fps_time = now
-            self._last_capture_count = captures
-            return 0.0
-        elapsed_ms = now - self._last_fps_time
-        delta = captures - self._last_capture_count
-        self._last_fps_time = now
-        self._last_capture_count = captures
-        if elapsed_ms <= 0:
-            return 0.0
-        return delta / (elapsed_ms / 1000.0)
+        samples = self._fps_samples
+        samples.append((now, captures))
+        # Trim to the trailing window, always keeping at least two samples to measure.
+        while len(samples) > 2 and (now - samples[0][0]) > self.fps_window_ms:
+            samples.popleft()
+        oldest_ts, oldest_captures = samples[0]
+        elapsed_ms = now - oldest_ts
+        if elapsed_ms < FPS_MIN_SPAN_MS:
+            return 0.0  # not enough spanned time yet (startup / rapid successive calls)
+        return (captures - oldest_captures) / (elapsed_ms / 1000.0)
 
     def global_metrics(self) -> dict:
         dropped_batches = self.bridge.dropped_batches if self.bridge is not None else 0

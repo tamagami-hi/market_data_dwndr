@@ -45,7 +45,7 @@ export default function MonitorPage() {
   const [compression, setCompression] = useState<CompressionProgressPayload | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [overlay, setOverlay] = useState<null | "logs" | "compression">(null);
+  const [overlay, setOverlay] = useState<null | "logs">(null);
   const [fpsHistory, setFpsHistory] = useState<number[]>([]);
 
   const onCaptureStatus = useCallback((env: WsEnvelope) => {
@@ -114,7 +114,6 @@ export default function MonitorPage() {
         globals={globals}
         tradingDate={tradingDate}
         persisted={persisted}
-        onOpenCompression={() => setOverlay("compression")}
       />
 
       <KpiStrip globals={globals} fpsHistory={fpsHistory} />
@@ -124,23 +123,17 @@ export default function MonitorPage() {
           <FrameIntegrityPanel rows={rows} globals={globals} expectedFrames={expectedFrames} />
           <HistoryPanel />
         </div>
-        <PerUnderlyingPanel rows={rows} />
+        <div className="flex min-h-0 flex-col gap-2">
+          <PerUnderlyingPanel rows={rows} />
+          <CompressionPanel current={compression} history={history} />
+        </div>
       </div>
 
       <LogStrip logs={logs} onExpand={() => setOverlay("logs")} />
 
-      {overlay && (
-        <Overlay
-          title={overlay === "logs" ? "Session / logs" : "Compression (EOD zstd)"}
-          onClose={() => setOverlay(null)}
-        >
-          {overlay === "logs" ? (
-            <FullLogs logs={logs} />
-          ) : (
-            <div className="h-full overflow-auto">
-              <CompressionPanel current={compression} history={history} />
-            </div>
-          )}
+      {overlay === "logs" && (
+        <Overlay title="Session / logs" onClose={() => setOverlay(null)}>
+          <FullLogs logs={logs} />
         </Overlay>
       )}
     </div>
@@ -155,12 +148,10 @@ function TopBar({
   globals,
   tradingDate,
   persisted,
-  onOpenCompression,
 }: {
   globals: GlobalStatus | null;
   tradingDate: string | null;
   persisted: boolean;
-  onOpenCompression: () => void;
 }) {
   return (
     <header className="flex flex-shrink-0 items-center gap-4 rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-2">
@@ -182,12 +173,6 @@ function TopBar({
         </span>
       )}
       <div className="ml-auto flex items-center gap-4">
-        <button
-          onClick={onOpenCompression}
-          className="rounded border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
-        >
-          Compression ▸
-        </button>
         <ConnectionDot connection={captureStatusConnection} label="capture" />
         <ConnectionDot connection={sessionConnection} label="session" />
       </div>
