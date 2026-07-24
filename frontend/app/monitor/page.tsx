@@ -236,12 +236,12 @@ function KpiStrip({ globals, fpsHistory }: { globals: GlobalStatus | null; fpsHi
       <Kpi label="Tokens" value={globals ? formatIndianNumber(globals.tokens, 0) : "–"} />
       <Kpi
         label="Frames / sec"
-        value={globals ? globals.fps.toFixed(2) : "–"}
+        value={globals ? (globals.fps ?? 0).toFixed(2) : "–"}
         accent={fpsAccent(globals?.fps)}
         spark={fpsHistory}
         sub={
           globals
-            ? `writer lag ${globals.writer_lag_max} · build ${globals.snapshot_ms.toFixed(1)}ms`
+            ? `writer lag ${globals.writer_lag_max ?? 0} · build ${(globals.snapshot_ms ?? 0).toFixed(1)}ms`
             : undefined
         }
       />
