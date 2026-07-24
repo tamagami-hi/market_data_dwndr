@@ -4,6 +4,17 @@
 #   ./release_manager/deploy.sh --ship KEY   -> rsync the staged bundle to the VPS
 #                                               (preserving the VPS .env) and run
 #                                               the shipped DATA_DOWNLOADER/deploy.sh
+#   ./release_manager/deploy.sh --force --ship KEY
+#                                            -> FORCE UPDATE: force-deploy the local
+#                                               stack, then ship + force-deploy on the
+#                                               VPS. Bypasses the market-window and
+#                                               "capture must be stopped" guards and
+#                                               recreates containers even if the version
+#                                               is unchanged. Writers are still drained
+#                                               via the maintenance lease before the
+#                                               swap, and health-check + auto-rollback
+#                                               still apply. Use when the running stack
+#                                               is stuck/frozen and must be replaced now.
 #
 # Local paths are script-driven and version-controlled (see LOCAL_* below). The
 # VPS is fully env-driven via its own DATA_DOWNLOADER/.env.
@@ -18,6 +29,7 @@ BACKEND_ENV="$ROOT_DIR/backend/.env"
 FRONTEND_ENV="$ROOT_DIR/frontend/.env.local"
 BUNDLE_DIR=""
 SHIP_KEY=""
+FORCE=false
 DOCKER=()
 
 # Script-driven, version-controlled local stack paths (used only for local up).
@@ -32,6 +44,11 @@ usage() {
     cat <<'USAGE'
 Usage: ./release_manager/deploy.sh [--bundle DIR]
        ./release_manager/deploy.sh --ship SSH_KEY [--bundle DIR]
+       ./release_manager/deploy.sh --force [--ship SSH_KEY] [--bundle DIR]
+
+  --force   Force update: bypass the market-window and capture-stopped guards and
+            recreate containers even if the version is unchanged. With --ship it
+            force-deploys locally first, then ships and force-deploys on the VPS.
 USAGE
 }
 
@@ -39,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --bundle) BUNDLE_DIR="${2:?--bundle requires a directory}"; shift 2 ;;
         --ship) SHIP_KEY="${2:?--ship requires an SSH key}"; shift 2 ;;
+        --force) FORCE=true; shift ;;
         --help|-h) usage; exit 0 ;;
         *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 1 ;;
     esac
@@ -105,13 +123,17 @@ deploy_local() {
         set_env_value "$active_env" RELEASE_IMAGE_PATH "$active_dir/images"
     fi
 
-    # Never disrupt a running local capture.
+    # Never disrupt a running local capture — unless forced.
     local market_open market_close tz
     market_open="$(env_value "$active_env" MARKET_OPEN)"; [[ -n "$market_open" ]] || market_open=09:00
     market_close="$(env_value "$active_env" MARKET_CLOSE)"; [[ -n "$market_close" ]] || market_close=15:30
     tz="$(env_value "$active_env" TIMEZONE)"; [[ -n "$tz" ]] || tz=Asia/Kolkata
-    assert_outside_capture_window "$market_open" "$market_close" "$tz"
-    assert_capture_stopped "$active_env" false
+    if [[ "$FORCE" == true ]]; then
+        printf 'FORCE: bypassing market-window and capture-stopped guards (local).\n' >&2
+    else
+        assert_outside_capture_window "$market_open" "$market_close" "$tz"
+        assert_capture_stopped "$active_env" false
+    fi
 
     mkdir -p "$(env_value "$active_env" MARKET_DATA_PATH)" "$(env_value "$active_env" ARCHIVE_DATA_PATH)"
 
@@ -137,7 +159,9 @@ deploy_local() {
     "${DOCKER[@]}" load -i "$active_dir/images/frontend.tar.gz"
 
     printf 'Composing up the local stack in DATA_DOWNLOADER...\n'
-    (cd "$active_dir" && "${DOCKER[@]}" compose up -d)
+    local -a up_args=(up -d)
+    [[ "$FORCE" == true ]] && up_args+=(--force-recreate --remove-orphans)
+    (cd "$active_dir" && "${DOCKER[@]}" compose "${up_args[@]}")
 
     health_check_stack "$active_env" "$active_env" || {
         echo "Local stack failed health checks." >&2; exit 1;
@@ -176,13 +200,21 @@ ship_bundle() {
         "$bundle_dir/" "$remote:$deploy_dir/"
 
     printf 'Running the remote deploy...\n'
+    local remote_flags=""
+    [[ "$FORCE" == true ]] && remote_flags=" --force"
     "${ssh_cmd[@]}" "$remote" \
-        "cd $(printf '%q' "$deploy_dir") && chmod +x deploy.sh rollback.sh && ./deploy.sh"
+        "cd $(printf '%q' "$deploy_dir") && chmod +x deploy.sh rollback.sh && ./deploy.sh${remote_flags}"
     printf 'Shipped and deployed %s on %s.\n' "$(release_bundle_version "$bundle_dir")" "$remote"
 }
 
 acquire_release_lock "$(global_release_lock_file)"
-if [[ -n "$SHIP_KEY" ]]; then
+if [[ "$FORCE" == true && -n "$SHIP_KEY" ]]; then
+    # Force update: force-deploy locally first, then ship + force-deploy on the VPS.
+    deploy_local
+    active_dir="$RELEASE_DIR/DATA_DOWNLOADER"
+    [[ -f "$active_dir/manifest.json" ]] || { echo "Nothing staged in DATA_DOWNLOADER to ship. Run export first." >&2; exit 1; }
+    ship_bundle "$active_dir"
+elif [[ -n "$SHIP_KEY" ]]; then
     active_dir="$RELEASE_DIR/DATA_DOWNLOADER"
     [[ -f "$active_dir/manifest.json" ]] || { echo "Nothing staged in DATA_DOWNLOADER to ship. Run local deploy first." >&2; exit 1; }
     ship_bundle "$active_dir"

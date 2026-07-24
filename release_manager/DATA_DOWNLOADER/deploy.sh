@@ -8,7 +8,14 @@
 # health-checks it — rolling back automatically on failure. Your `.env` and the
 # data bind-mounts are never touched.
 #
-# Usage:  ./deploy.sh          (invoked automatically by the build machine's ship)
+# Usage:  ./deploy.sh            (invoked automatically by the build machine's ship)
+#         ./deploy.sh --force    Force update: bypass the market-window gate and the
+#                                "capture is running" guard, and recreate containers
+#                                even if the release is already active. Capture writers
+#                                are STILL drained via the maintenance lease before the
+#                                container swap, and health-check + auto-rollback still
+#                                apply. Use when the live stack is stuck and must be
+#                                replaced immediately.
 
 set -euo pipefail
 
@@ -18,6 +25,15 @@ ENV_FILE="$HERE/.env"
 COMPOSE_FILE="$HERE/docker-compose.yml"
 MANIFEST="$HERE/manifest.json"
 LEASE_ID=""
+FORCE=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --force) FORCE=true; shift ;;
+        --help|-h) echo "Usage: ./deploy.sh [--force]"; exit 0 ;;
+        *) printf 'Unknown argument: %s\n' "$1" >&2; echo "Usage: ./deploy.sh [--force]" >&2; exit 1 ;;
+    esac
+done
 
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -88,7 +104,7 @@ verify_sha "$release_img_root/frontend.tar.gz" '.images.frontend.sha256'
 
 api() { printf 'http://%s:%s%s' "$bind_address" "$backend_port" "$1"; }
 
-# ---- market-window gate: never deploy during capture ----
+# ---- market-window gate: never deploy during capture (unless forced) ----
 market_open="$(env_get MARKET_OPEN)"; [[ -n "$market_open" ]] || market_open=09:00
 market_close="$(env_get MARKET_CLOSE)"; [[ -n "$market_close" ]] || market_close=15:30
 tz="$(env_get TIMEZONE)"; [[ -n "$tz" ]] || tz=Asia/Kolkata
@@ -96,7 +112,11 @@ now_min=$((10#$(TZ="$tz" date +%H) * 60 + 10#$(TZ="$tz" date +%M)))
 open_min=$((10#${market_open%:*} * 60 + 10#${market_open#*:}))
 close_min=$((10#${market_close%:*} * 60 + 10#${market_close#*:}))
 if (( now_min >= open_min && now_min < close_min )); then
-    die "refusing to deploy during the capture window (${market_open}-${market_close} ${tz})"
+    if [[ "$FORCE" == true ]]; then
+        log "FORCE: deploying inside the capture window (${market_open}-${market_close} ${tz})"
+    else
+        die "refusing to deploy during the capture window (${market_open}-${market_close} ${tz})"
+    fi
 fi
 
 compose() { APP_VERSION="$1" "${DOCKER[@]}" compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "${@:2}"; }
@@ -108,15 +128,30 @@ if [[ "$current_version" != "local" && -n "$current_version" ]] \
     && compose "$current_version" ps -q 2>/dev/null | grep -q .; then
     existing=true
 fi
-[[ "$current_version" != "$release_id" ]] || { log "release $release_id already active"; exit 0; }
+if [[ "$current_version" == "$release_id" ]]; then
+    if [[ "$FORCE" == true ]]; then
+        log "FORCE: re-deploying already-active release $release_id"
+    else
+        log "release $release_id already active"; exit 0
+    fi
+fi
 
 acquire_lease() {
-    local token resp; token="$(env_get RELEASE_MAINTENANCE_TOKEN)"
-    [[ "$token" =~ ^[A-Za-z0-9_-]{32,256}$ ]] || die "RELEASE_MAINTENANCE_TOKEN must be 32-256 URL-safe chars"
-    resp="$(printf 'header = "X-Release-Maintenance-Token: %s"\n' "$token" \
-        | curl -fsS --max-time 15 -X POST --config - "$(api /api/capture/maintenance)")" \
-        || die "could not acquire the capture maintenance lease"
-    LEASE_ID="$(jq -er '.lease_id' <<<"$resp")" || die "invalid maintenance lease response"
+    local token resp
+    token="$(env_get RELEASE_MAINTENANCE_TOKEN)"
+    if [[ ! "$token" =~ ^[A-Za-z0-9_-]{32,256}$ ]]; then
+        [[ "$FORCE" == true ]] && { log "FORCE: RELEASE_MAINTENANCE_TOKEN invalid; skipping writer drain"; return 1; }
+        die "RELEASE_MAINTENANCE_TOKEN must be 32-256 URL-safe chars"
+    fi
+    if ! resp="$(printf 'header = "X-Release-Maintenance-Token: %s"\n' "$token" \
+        | curl -fsS --max-time 15 -X POST --config - "$(api /api/capture/maintenance)")"; then
+        [[ "$FORCE" == true ]] && { log "FORCE: could not acquire maintenance lease (backend unresponsive?); proceeding without a clean writer drain"; return 1; }
+        die "could not acquire the capture maintenance lease"
+    fi
+    if ! LEASE_ID="$(jq -er '.lease_id' <<<"$resp")"; then
+        [[ "$FORCE" == true ]] && { log "FORCE: invalid maintenance lease response; proceeding"; return 1; }
+        die "invalid maintenance lease response"
+    fi
     log "capture writers drained (lease ${LEASE_ID:0:8}…)"
 }
 release_lease() {
@@ -130,12 +165,20 @@ release_lease() {
 trap release_lease EXIT
 
 if [[ "$existing" == true ]]; then
-    # capture must be stopped before we replace containers
+    # capture must be stopped before we replace containers (unless forced)
     status="$(curl -fsS --max-time 3 "$(api /api/capture/status)" 2>/dev/null)" \
-        || die "cannot verify capture state on the running stack; refusing to restart"
-    grep -Eq '"running"[[:space:]]*:[[:space:]]*true' <<<"$status" \
-        && die "capture is running; wait for the EOD/market close before deploying"
-    acquire_lease
+        || { [[ "$FORCE" == true ]] && log "FORCE: cannot verify capture state; proceeding" \
+                || die "cannot verify capture state on the running stack; refusing to restart"; }
+    if grep -Eq '"running"[[:space:]]*:[[:space:]]*true' <<<"${status:-}"; then
+        if [[ "$FORCE" == true ]]; then
+            log "FORCE: capture is running; draining writers via the maintenance lease before swap"
+        else
+            die "capture is running; wait for the EOD/market close before deploying"
+        fi
+    fi
+    # Drain writers before swapping containers. Under --force this is best-effort:
+    # a hung/unresponsive backend won't block the replacement.
+    acquire_lease || [[ "$FORCE" == true ]]
 
     # save the CURRENTLY running images so a rollback works even after pruning
     save_dir="$rollback_root/$current_version"
@@ -175,7 +218,9 @@ health() {
 
 set_env APP_VERSION "$release_id"
 log "starting release $release_id"
-compose "$release_id" up -d --no-build
+up_extra=(--no-build)
+[[ "$FORCE" == true ]] && up_extra+=(--force-recreate)
+compose "$release_id" up -d "${up_extra[@]}"
 
 if ! health; then
     printf 'release %s failed health checks\n' "$release_id" >&2
