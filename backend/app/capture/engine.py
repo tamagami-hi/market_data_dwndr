@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
-from app.capture.reconnect import ReconnectPolicy, StallDetector
+from app.capture.reconnect import FreshnessMonitor, ReconnectPolicy, StallDetector
 from app.capture.snapshot import CaptureSnapshot
 from app.capture.writer_thread import (
     FileWriterThread,
@@ -40,6 +41,7 @@ class CaptureEngine:
         stock_writer: FileWriterThread | None,
         *,
         clock=now_ms,
+        stale_after_ms: int = 5_000,
     ) -> None:
         self.index_tables = index_tables
         self.stock_matrix = stock_matrix
@@ -48,7 +50,15 @@ class CaptureEngine:
         self._clock = clock
         self.unmatched = 0
         self.captures = 0
+        # Time (ms) spent building+enqueuing the most recent snapshot — pipeline health.
+        self.last_snapshot_ms = 0.0
         self.stall = StallDetector()
+        # Data-freshness health: detects "connected but frozen values" and drives a
+        # self-driven ticker reconnect (threshold from CAPTURE_STALE_SECONDS).
+        self.freshness = FreshnessMonitor(stale_after_ms=stale_after_ms)
+        self.reconnect_policy = ReconnectPolicy()
+        self.degraded = False
+        self._reconnect_at_ms: int | None = None
         self._owners: dict[int, list] = {}
         self._build_routing()
 
@@ -91,6 +101,7 @@ class CaptureEngine:
     def capture_snapshot(self, timestamp_unix_ms: int | None = None) -> CaptureSnapshot:
         """Copy and enqueue frames, returning the same immutable display hand-off."""
         ts = timestamp_unix_ms if timestamp_unix_ms is not None else self._clock()
+        build_start = time.perf_counter()
         index_frames = tuple(
             (name, table.snapshot(ts)) for name, table in self.index_tables.items()
         )
@@ -104,6 +115,7 @@ class CaptureEngine:
             self.stock_writer.enqueue(stock_frame)
 
         self.captures += 1
+        self.last_snapshot_ms = (time.perf_counter() - build_start) * 1000.0
         return CaptureSnapshot(ts, index_frames, stock_frame)
 
     # -- writer lifecycle -------------------------------------------------- #
@@ -142,29 +154,118 @@ class CaptureEngine:
 
     # -- async live loop --------------------------------------------------- #
 
+    @staticmethod
+    def _due_ticks(
+        next_tick: int, now: int, interval_ms: int, max_catchup: int
+    ) -> tuple[list[int], int, bool]:
+        """Return ``(timestamps_to_emit, new_next_tick, stalled)`` for a grid tick.
+
+        Guarantees **no grid second is skipped**: every whole-interval boundary from
+        ``next_tick`` up to ``now`` yields exactly one timestamp (last-value-wins per
+        second). If we have fallen behind by more than ``max_catchup`` intervals — a
+        real stall / clock jump — we emit ``max_catchup`` frames, then resync the grid
+        to just after ``now`` and flag ``stalled`` so the caller can log the gap
+        (fabricating thousands of duplicate frames would be worse than an honest,
+        recorded gap). Under normal operation this returns exactly one timestamp.
+        """
+        if now < next_tick:
+            return [], next_tick, False
+        ticks: list[int] = []
+        t = next_tick
+        while t <= now and len(ticks) < max_catchup:
+            ticks.append(t)
+            t += interval_ms
+        stalled = t <= now  # still behind after the catch-up cap
+        if stalled:
+            t = now + interval_ms  # resync the grid to the next boundary after now
+        return ticks, t, stalled
+
+    def _maybe_reconnect(self, bridge, now: int) -> bool:
+        """Drive a self-managed ticker reconnect when the feed goes stale.
+
+        Uses the content-freshness signal (which also covers a total tick outage) and
+        an exponential backoff so we don't hammer Kite. Returns True if a reconnect
+        was triggered on this call. When fresh data resumes, degraded state clears and
+        the backoff resets. Once the circuit breaker trips we stay degraded and keep
+        snapshotting last-known values rather than spinning forever.
+        """
+        reconnect = getattr(bridge, "reconnect", None)
+        if not self.freshness.is_stale(now):
+            if self.degraded:
+                logger.info("live feed recovered; fresh ticks resumed")
+            self.degraded = False
+            self.reconnect_policy.reset()
+            self._reconnect_at_ms = None
+            return False
+
+        self.degraded = True
+        if not callable(reconnect) or self.reconnect_policy.should_give_up():
+            return False
+        if self._reconnect_at_ms is not None and now < self._reconnect_at_ms:
+            return False  # still inside the backoff window from the last attempt
+        logger.warning(
+            "live feed stale (%s ms without fresh ticks); forcing reconnect",
+            self.freshness.content_age_ms(now),
+        )
+        reconnect()
+        delay_s = self.reconnect_policy.next_delay()
+        self._reconnect_at_ms = now + int(delay_s * 1000)
+        return True
+
     async def run(
         self,
         bridge,
         stop_event: asyncio.Event,
         interval_s: float = 1.0,
         broadcaster=None,
+        max_catchup: int = 60,
     ) -> None:  # pragma: no cover - live loop, integration-only
-        """Consume ticks and snapshot every ``interval_s`` until ``stop_event`` is set.
+        """Consume ticks and snapshot on a drift-free 1 Hz grid until ``stop_event``.
 
-        If a ``broadcaster`` is supplied, the latest display state is queued after
-        each snapshot. Websocket delivery is best-effort and never awaited here, so
-        slow frontend consumers cannot delay API ingestion or BIN persistence.
+        The grid is aligned to whole ``interval_s`` boundaries and advanced by a fixed
+        step (never ``sleep(interval)``-after-work, which drifts), so timestamps stay
+        on the second and the daily frame count converges on the expected total. Every
+        due boundary is snapshotted — a slow cycle catches up instead of skipping — so
+        no second's data is lost. Each snapshot is enqueued to the per-file writer
+        threads, which fsync every frame to disk.
+
+        Websocket delivery via ``broadcaster`` is best-effort and never awaited here.
         """
         self.start_writers()
         consumer = asyncio.create_task(self._consume(bridge))
+        interval_ms = max(1, int(round(interval_s * 1000)))
+        # Align the grid to the next whole-interval boundary from now.
+        now0 = self._clock()
+        self.freshness.start(now0)
+        next_tick = ((now0 // interval_ms) + 1) * interval_ms
         try:
             while not stop_event.is_set():
-                await asyncio.sleep(interval_s)
-                ts = self._clock()
-                snapshot = self.capture_snapshot(ts)
-                if broadcaster is not None:
-                    broadcaster.publish_latest(snapshot)
+                sleep_s = (next_tick - self._clock()) / 1000.0
+                if sleep_s > 0:
+                    try:
+                        # Interruptible wait so a stop is acted on promptly.
+                        await asyncio.wait_for(stop_event.wait(), timeout=sleep_s)
+                        break
+                    except asyncio.TimeoutError:
+                        pass
+                due, next_tick, stalled = self._due_ticks(
+                    next_tick, self._clock(), interval_ms, max_catchup
+                )
+                if stalled:
+                    logger.warning(
+                        "capture fell behind by >%d intervals; filled %d frame(s) then "
+                        "resynced the grid (a gap was recorded)",
+                        max_catchup,
+                        len(due),
+                    )
+                for ts in due:
+                    snapshot = self.capture_snapshot(ts)
+                    if broadcaster is not None:
+                        broadcaster.publish_latest(snapshot)
+                # Health check: reconnect ourselves if the feed has gone stale.
+                self._maybe_reconnect(bridge, self._clock())
         finally:
+            # Drain + durably persist everything queued before returning (no loss).
             consumer.cancel()
             await asyncio.gather(consumer, return_exceptions=True)
             try:
@@ -176,24 +277,26 @@ class CaptureEngine:
 
     async def _consume(self, bridge) -> None:  # pragma: no cover - live loop
         async for batch in bridge.batches():
+            now = self._clock()
             self.apply_ticks(batch)
-            self.stall.mark_message(self._clock())
+            self.stall.mark_message(now)
+            self.freshness.observe(batch, now)
 
 
 def build_index_writer(table: IndexTable, path) -> FileWriterThread:
-    """Convenience: a writer thread for an index table's file."""
+    """Convenience: a writer thread for an index table's file (fsync per frame)."""
     from app.bin_codec.writer import IndexBinWriter
 
     return FileWriterThread(
-        IndexBinWriter(path), table.header(), name=f"idx-{table.chain.underlying}"
+        IndexBinWriter(path, sync=True), table.header(), name=f"idx-{table.chain.underlying}"
     )
 
 
 def build_stock_writer(matrix: StockMatrix, path) -> FileWriterThread:
-    """Convenience: a writer thread for the stock matrix file."""
+    """Convenience: a writer thread for the stock matrix file (fsync per frame)."""
     from app.bin_codec.writer import StockBinWriter
 
-    return FileWriterThread(StockBinWriter(path), matrix.header(), name="stocks")
+    return FileWriterThread(StockBinWriter(path, sync=True), matrix.header(), name="stocks")
 
 
 __all__ = [

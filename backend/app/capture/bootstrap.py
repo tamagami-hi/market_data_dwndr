@@ -134,7 +134,14 @@ def bootstrap_capture(
     if not index_tables and stock_matrix is None:
         raise RuntimeError("bootstrap produced no index chains and no stock board")
 
-    engine = CaptureEngine(index_tables, stock_matrix, index_writers, stock_writer, clock=clock)
+    engine = CaptureEngine(
+        index_tables,
+        stock_matrix,
+        index_writers,
+        stock_writer,
+        clock=clock,
+        stale_after_ms=int(round(getattr(settings, "capture_stale_seconds", 5.0) * 1000)),
+    )
     monitor = CaptureMonitor(
         index_tables,
         stock_matrix,

@@ -196,8 +196,49 @@ def test_monitor_snapshot_end_to_end(tmp_path):
         assert g["frames_expected"] == 23_400 * 2  # NIFTY + STOCKS
         assert g["frames_written"] == 2  # 1 each
         assert 0 <= g["frame_loss_pct"] <= 100
+        # Pipeline-health instrumentation is present and sane.
+        assert g["snapshot_ms"] >= 0.0
+        assert g["writer_lag_max"] >= 0
     finally:
         engine.stop_writers()
+
+
+def test_monitor_reports_stale_feed_and_degrades_heartbeat(tmp_path):
+    """A frozen feed (frames still written, but no fresh ticks) is surfaced honestly."""
+    table = _nifty_table()
+    idx_path = tmp_path / "NIFTY.bin"
+    writer = build_index_writer(table, idx_path)
+    writer.start()
+    writer.wait_until_ready()
+    writer.enqueue(table.snapshot(1000))
+    import time
+
+    for _ in range(50):
+        if writer.frames_written >= 1:
+            break
+        time.sleep(0.01)
+    writer.stop()
+
+    now = writer.last_write_ms or 0  # a frame was written "just now"
+    engine = CaptureEngine(
+        {"NIFTY": table}, None, {"NIFTY": writer}, None,
+        clock=lambda: now, stale_after_ms=5_000,
+    )
+    # Feed content last changed 10s ago -> stale even though a frame was just written.
+    engine.freshness.start(now - 10_000)
+    engine.degraded = True
+
+    monitor = CaptureMonitor(
+        {"NIFTY": table}, None, {"NIFTY": writer}, None, engine=engine, clock=lambda: now
+    )
+    entry = monitor.per_underlying()[0]
+    assert entry["data_fresh"] is False
+    assert entry["heartbeat_ok"] is False  # recent write but the feed is frozen
+
+    g = monitor.global_metrics()
+    assert g["stale"] is True
+    assert g["degraded"] is True
+    assert g["data_age_ms"] >= 5_000
 
 
 def test_monitor_heartbeat_goes_stale(tmp_path):

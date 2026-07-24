@@ -73,6 +73,7 @@ class TickerBridge:
         self.batches_received = 0
         self.ticks_received = 0
         self.dropped_batches = 0
+        self.reconnects = 0
 
     # -- thread-side callbacks (run on the KiteTicker thread) ---------------- #
 
@@ -141,6 +142,10 @@ class TickerBridge:
     def start(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
         """Create the ticker, wire callbacks, and connect on a background thread."""
         self.bind_loop(loop)
+        self._start_ticker()
+
+    def _start_ticker(self) -> None:
+        """Instantiate a fresh ticker, wire callbacks, and connect (threaded)."""
         ticker = self._factory(self.api_key, self.access_token)
         ticker.on_ticks = self._on_ticks
         ticker.on_connect = self._on_connect
@@ -149,6 +154,28 @@ class TickerBridge:
         ticker.on_reconnect = self._on_reconnect
         self._ticker = ticker
         ticker.connect(threaded=True)
+
+    def reconnect(self) -> None:
+        """Tear down the current ticker and start a fresh one (self-driven recovery).
+
+        Called from the event-loop thread when the freshness monitor flags a stall
+        the SDK's own reconnect did not recover (e.g. a half-open socket, or a feed
+        that keeps the connection up but stops sending fresh quotes). A brand-new
+        socket re-subscribes every token in ``full`` mode via ``_on_connect``.
+        """
+        self.reconnects += 1
+        logger.warning("self-driven ticker reconnect (attempt %d)", self.reconnects)
+        old = self._ticker
+        if old is not None:
+            try:
+                old.close()
+            except Exception:  # pragma: no cover - defensive; SDK-specific
+                logger.exception("error closing stale ticker during reconnect")
+        self.connected = False
+        try:
+            self._start_ticker()
+        except Exception:  # pragma: no cover - defensive; SDK-specific
+            logger.exception("failed to start replacement ticker during reconnect")
 
     def stop(self) -> None:
         if self._ticker is not None:

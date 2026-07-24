@@ -119,6 +119,11 @@ class Broadcaster:
         )
         self._latest_snapshot: CaptureSnapshot | None = None
         self._publish_task: asyncio.Task[None] | None = None
+        # Throttled visibility for recurring best-effort broadcast failures (the
+        # publish fires at the capture cadence, so we must not log a traceback every
+        # tick — but we must not swallow them silently either).
+        self._broadcast_fail_count = 0
+        self._last_broadcast_fail_log_ms: int | None = None
 
     # -- message builders (pure) ------------------------------------------- #
 
@@ -255,10 +260,7 @@ class Broadcaster:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - UI must never stop capture
-                    logger.warning(
-                        "best-effort frontend broadcast failed (%s)",
-                        type(exc).__name__,
-                    )
+                    self._log_broadcast_failure(exc)
                 await asyncio.sleep(0)
         finally:
             self._publish_task = None
@@ -266,6 +268,30 @@ class Broadcaster:
                 self._publish_task = asyncio.create_task(
                     self._drain_latest(), name="capture-ui-publisher"
                 )
+
+    def _log_broadcast_failure(self, exc: BaseException) -> None:
+        """Log a broadcast failure, throttled to ~once/10s.
+
+        Called from the capture-cadence publish loop, so unconditional logging would
+        flood. We keep a running count and emit the exception *type* plus how many
+        occurred in the window, so recurring failures stay visible without spamming a
+        line every tick. The exception message is deliberately omitted so a broadcast
+        payload can never leak into the logs (see test_broadcaster).
+        """
+        self._broadcast_fail_count += 1
+        now = self._clock()
+        if (
+            self._last_broadcast_fail_log_ms is None
+            or (now - self._last_broadcast_fail_log_ms) >= 10_000
+        ):
+            logger.warning(
+                "best-effort frontend broadcast failed: %s (%d occurrence(s) in the last window)",
+                type(exc).__name__,
+                self._broadcast_fail_count,
+            )
+            self._last_broadcast_fail_log_ms = now
+            self._broadcast_fail_count = 0
+
 
     async def _publish_snapshot(self, snapshot: CaptureSnapshot) -> None:
         messages = await asyncio.to_thread(self._build_snapshot_messages, snapshot)

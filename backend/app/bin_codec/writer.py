@@ -111,12 +111,19 @@ def encode_stock_frame(frame: StockFrame, n_stocks: int) -> bytes:
 
 
 class _BaseWriter:
-    """Common append-only file handling with header-once semantics."""
+    """Common append-only file handling with header-once semantics.
 
-    def __init__(self, path: str | os.PathLike[str]) -> None:
+    ``sync=True`` fsyncs every frame after flushing so each record is durably on
+    disk (used by the live 1 Hz capture writers, where the fsync cost is trivial
+    and zero data loss on crash/power-loss matters). Bulk writers (e.g. historical
+    backfill) leave it False to keep throughput high, relying on the fsync-on-close.
+    """
+
+    def __init__(self, path: str | os.PathLike[str], *, sync: bool = False) -> None:
         self.path = Path(path)
         self._fh = None
         self._header_written = False
+        self._sync = sync
 
     def open(self) -> _BaseWriter:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,6 +137,10 @@ class _BaseWriter:
             raise RuntimeError("writer is not open")
         self._fh.write(layout.frame_bytes(payload))
         self._fh.flush()
+        if self._sync:
+            # Push the just-appended frame past the OS page cache onto the device,
+            # so a crash or power loss cannot lose an already-captured second.
+            os.fsync(self._fh.fileno())
 
     @property
     def header_written(self) -> bool:
@@ -138,6 +149,10 @@ class _BaseWriter:
     def close(self) -> None:
         if self._fh is not None:
             self._fh.flush()
+            try:
+                os.fsync(self._fh.fileno())  # durable close for every writer
+            except OSError:
+                pass
             self._fh.close()
             self._fh = None
 
@@ -156,8 +171,8 @@ class _BaseWriter:
 class IndexBinWriter(_BaseWriter):
     """Writer for an index option-chain file (one index, one trading day)."""
 
-    def __init__(self, path: str | os.PathLike[str]) -> None:
-        super().__init__(path)
+    def __init__(self, path: str | os.PathLike[str], *, sync: bool = False) -> None:
+        super().__init__(path, sync=sync)
         self._n_strikes: int | None = None
 
     def write_header(self, header: IndexHeader) -> bool:
@@ -180,8 +195,8 @@ class IndexBinWriter(_BaseWriter):
 class StockBinWriter(_BaseWriter):
     """Writer for the daily stocks matrix file (all F&O stocks)."""
 
-    def __init__(self, path: str | os.PathLike[str]) -> None:
-        super().__init__(path)
+    def __init__(self, path: str | os.PathLike[str], *, sync: bool = False) -> None:
+        super().__init__(path, sync=sync)
         self._n_stocks: int | None = None
 
     def write_header(self, header: StockHeader) -> bool:

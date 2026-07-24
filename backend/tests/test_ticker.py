@@ -101,6 +101,30 @@ async def test_stop_closes_ticker():
     assert bridge.connected is False
 
 
+async def test_reconnect_replaces_ticker_and_resubscribes():
+    created: list[FakeTicker] = []
+
+    def factory(api_key, access_token):
+        t = FakeTicker(api_key, access_token)
+        created.append(t)
+        return t
+
+    bridge = TickerBridge("key", "tok", [1, 2], ticker_factory=factory)
+    bridge.start()
+    assert len(created) == 1
+    first = created[0]
+
+    bridge.reconnect()
+
+    # Old ticker closed, a brand-new one created and re-subscribed in full mode.
+    assert first.closed is True
+    assert len(created) == 2
+    assert created[1].subscribed == [1, 2]
+    assert created[1].mode == (MODE_FULL, [1, 2])
+    assert bridge.reconnects == 1
+    assert bridge.connected is True
+
+
 
 async def test_auth_error_from_ticker_thread_signals_event():
     bridge, _ = _make_bridge([1])

@@ -38,6 +38,7 @@ def _set(monkeypatch, **env):
         "EXPECTED_FRAMES_PER_SESSION",
         "RELEASE_MAINTENANCE_TOKEN",
         "RELEASE_MAINTENANCE_TTL_SECONDS",
+        "CAPTURE_STALE_SECONDS",
     ]:
         monkeypatch.delenv(key, raising=False)
     for key, value in {**_REQUIRED, **env}.items():
@@ -54,6 +55,27 @@ def test_indices_parsed_from_comma_env(monkeypatch):
     # The bug: pydantic-settings JSON-decoded the list before the validator. NoDecode
     # keeps the raw string so the comma-split validator runs.
     assert s.indices == ["NIFTY", "BANKNIFTY", "FINNIFTY"]
+
+
+def test_capture_stale_seconds_defaults_to_five(monkeypatch):
+    _set(monkeypatch)  # no CAPTURE_STALE_SECONDS
+    assert _settings().capture_stale_seconds == 5.0
+
+
+def test_capture_stale_seconds_read_from_env(monkeypatch):
+    _set(monkeypatch, CAPTURE_STALE_SECONDS="12.5")
+    assert _settings().capture_stale_seconds == 12.5
+
+
+def test_capture_stale_seconds_blank_falls_back_to_default(monkeypatch):
+    _set(monkeypatch, CAPTURE_STALE_SECONDS="")
+    assert _settings().capture_stale_seconds == 5.0
+
+
+def test_capture_stale_seconds_rejects_non_positive(monkeypatch):
+    _set(monkeypatch, CAPTURE_STALE_SECONDS="0")
+    with pytest.raises(ValidationError):
+        _settings()
 
 
 def test_indices_default_when_unset(monkeypatch):

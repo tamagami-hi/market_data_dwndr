@@ -146,7 +146,25 @@ class Settings(BaseSettings):
             "Baseline for the monitor's frame-loss/completeness metric."
         ),
     )
+    capture_stale_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        le=300,
+        description=(
+            "Seconds without fresh (content-changing) ticks before the live feed is "
+            "flagged stale/degraded and a self-driven ticker reconnect is triggered. "
+            "Tunable via CAPTURE_STALE_SECONDS in .env."
+        ),
+    )
     log_level: str = Field(default="INFO")
+
+    @field_validator("capture_stale_seconds", mode="before")
+    @classmethod
+    def _blank_stale_seconds_is_default(cls, value: object) -> object:
+        """Treat an empty CAPTURE_STALE_SECONDS env value as the default (5s)."""
+        if isinstance(value, str) and not value.strip():
+            return 5.0
+        return value
 
     @field_validator("risk_free_rate", mode="before")
     @classmethod

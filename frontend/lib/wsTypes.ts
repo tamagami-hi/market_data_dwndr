@@ -114,6 +114,8 @@ export interface PerUnderlyingStatus {
   projected_eod_bytes: number;
   heartbeat_ok: boolean;
   heartbeat_age_ms: number | null;
+  /** False when the live feed has frozen (duplicate/absent ticks). */
+  data_fresh: boolean;
   unmatched: number;
 }
 
@@ -131,6 +133,20 @@ export interface GlobalStatus {
   frames_written: number;
   frames_expected: number;
   frame_loss_pct: number;
+  snapshot_ms: number;
+  writer_lag_max: number;
+  /** ms since the feed content last changed (null before the first tick). */
+  data_age_ms: number | null;
+  /** ms since the last batch of any kind arrived (null before the first tick). */
+  liveness_age_ms: number | null;
+  /** True when data has not changed within CAPTURE_STALE_SECONDS. */
+  stale: boolean;
+  /** True when stale or a self-driven reconnect is in progress. */
+  degraded: boolean;
+  /** Count of consecutive unchanged (frozen) batches observed. */
+  frozen_batches: number;
+  /** Number of self-driven ticker reconnects triggered this session. */
+  reconnects: number;
 }
 
 /** EOD zstd compression telemetry (CompressionProgress + persisted history). */

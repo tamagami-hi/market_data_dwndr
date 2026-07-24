@@ -131,6 +131,13 @@ class CaptureMonitor:
         self.fps_window_ms = fps_window_ms if fps_window_ms > 0 else FPS_WINDOW_MS
         self._fps_samples: deque[tuple[int, int]] = deque()
 
+    def _feed_stale(self, now: int) -> bool:
+        """True when the engine's freshness monitor reports frozen/absent data."""
+        freshness = getattr(self.engine, "freshness", None)
+        if freshness is None:
+            return False
+        return bool(freshness.is_stale(now))
+
     def _entry(self, underlying: str, unmatched: int, writer: FileWriterThread | None) -> dict:
         now = self._clock()
         frames = writer.frames_written if writer else 0
@@ -138,7 +145,12 @@ class CaptureMonitor:
         file_bytes = 0
         if writer is not None and writer.path.exists():
             file_bytes = writer.path.stat().st_size
-        heartbeat_ok = last_write is not None and (now - last_write) <= self.heartbeat_window_ms
+        feed_stale = self._feed_stale(now)
+        wrote_recently = last_write is not None and (now - last_write) <= self.heartbeat_window_ms
+        # Heartbeat is only OK when a frame was written recently AND the feed is
+        # delivering *fresh* data. A frozen feed still writes duplicate frames every
+        # second, so the old write-only check reported healthy during a freeze.
+        heartbeat_ok = bool(wrote_recently and not feed_stale)
         heartbeat_age_ms = (now - last_write) if last_write is not None else None
         last_tick_ms = self.engine.stall.last_message_ms if self.engine is not None else None
         connected = bool(self.bridge.connected) if self.bridge is not None else False
@@ -154,6 +166,7 @@ class CaptureMonitor:
             "projected_eod_bytes": projected_eod_bytes(file_bytes, frames, self.expected_frames),
             "heartbeat_ok": heartbeat_ok,
             "heartbeat_age_ms": heartbeat_age_ms,
+            "data_fresh": not feed_stale,
             "unmatched": unmatched,
         }
 
@@ -204,10 +217,26 @@ class CaptureMonitor:
         now = self._clock()
         uptime_ms = max(0, now - self.capture_start_ms)
         disk_free, disk_total = disk_usage(self.market_data_path)
+        # Pipeline health: how long the last snapshot took to build+enqueue, and the
+        # deepest writer queue (a sustained lag is the early warning that the write
+        # path is falling behind — i.e. a data-loss risk).
+        snapshot_ms = round(getattr(self.engine, "last_snapshot_ms", 0.0), 3)
+        writers = [*self.index_writers.values()]
+        if self.stock_writer is not None:
+            writers.append(self.stock_writer)
+        writer_lag_max = max((w.pending for w in writers), default=0)
         # Overall frame integrity: sum of frames vs sum of per-underlying baselines.
         entries = self.per_underlying()
         total_frames = sum(int(e["frames_written"]) for e in entries)
         total_expected = self.expected_frames * len(entries) if entries else 0
+        # Data-freshness health (the "is the feed actually updating?" signal).
+        freshness = getattr(self.engine, "freshness", None)
+        data_age_ms = freshness.content_age_ms(now) if freshness is not None else None
+        liveness_age_ms = freshness.liveness_age_ms(now) if freshness is not None else None
+        frozen_batches = freshness.frozen_batches if freshness is not None else 0
+        stale = self._feed_stale(now)
+        degraded = bool(getattr(self.engine, "degraded", False)) or stale
+        reconnects = int(getattr(self.bridge, "reconnects", 0)) if self.bridge is not None else 0
         return {
             "tokens": self._unique_token_count(),
             "fps": round(self._fps(), 3),
@@ -222,6 +251,15 @@ class CaptureMonitor:
             "frames_written": total_frames,
             "frames_expected": total_expected,
             "frame_loss_pct": round(frame_loss_pct(total_frames, total_expected), 3),
+            "snapshot_ms": snapshot_ms,
+            "writer_lag_max": writer_lag_max,
+            # Live-feed freshness / self-healing telemetry.
+            "data_age_ms": data_age_ms,
+            "liveness_age_ms": liveness_age_ms,
+            "stale": stale,
+            "degraded": degraded,
+            "frozen_batches": frozen_batches,
+            "reconnects": reconnects,
         }
 
     def snapshot(self) -> dict:

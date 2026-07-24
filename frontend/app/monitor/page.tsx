@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import ConnectionDot from "@/components/ConnectionDot";
 import {
@@ -33,7 +33,7 @@ import {
 interface LogLine {
   ts: number;
   text: string;
-  kind: "log" | "session";
+  kind: "log" | "session" | "alert";
 }
 
 const MAX_LOGS = 300;
@@ -47,19 +47,50 @@ export default function MonitorPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [overlay, setOverlay] = useState<null | "logs">(null);
   const [fpsHistory, setFpsHistory] = useState<number[]>([]);
+  // Remembers the last health state so we only log on *transitions*, not every tick.
+  const healthRef = useRef<{ degraded: boolean; stale: boolean; reconnects: number }>({
+    degraded: false,
+    stale: false,
+    reconnects: 0,
+  });
 
-  const onCaptureStatus = useCallback((env: WsEnvelope) => {
-    if (env.type === MSG.CAPTURE_STATUS) {
-      const payload = env.payload as CaptureStatusPayload;
-      setRows(payload.per_underlying ?? []);
-      setGlobals(payload.global ?? null);
-      if (payload.global) {
-        setFpsHistory((prev) => [...prev, payload.global.fps].slice(-SPARK_SAMPLES));
-      }
-    } else if (env.type === MSG.COMPRESSION_PROGRESS) {
-      setCompression(env.payload as CompressionProgressPayload);
-    }
+  const pushLog = useCallback((text: string, kind: LogLine["kind"]) => {
+    setLogs((prev) => [{ ts: Date.now(), text, kind }, ...prev].slice(0, MAX_LOGS));
   }, []);
+
+  const onCaptureStatus = useCallback(
+    (env: WsEnvelope) => {
+      if (env.type === MSG.CAPTURE_STATUS) {
+        const payload = env.payload as CaptureStatusPayload;
+        setRows(payload.per_underlying ?? []);
+        setGlobals(payload.global ?? null);
+        if (payload.global) {
+          const g = payload.global;
+          setFpsHistory((prev) => [...prev, g.fps].slice(-SPARK_SAMPLES));
+
+          // Surface live-feed health changes as newest-on-top session log entries.
+          const prev = healthRef.current;
+          if (g.stale && !prev.stale) {
+            const secs = g.data_age_ms != null ? (g.data_age_ms / 1000).toFixed(1) : "?";
+            pushLog(`⚠ live feed STALE — data unchanged for ${secs}s; reconnecting…`, "alert");
+          } else if (!g.degraded && prev.degraded) {
+            pushLog("✓ live feed recovered — fresh ticks resumed", "session");
+          }
+          if (g.reconnects > prev.reconnects) {
+            pushLog(`↻ self-driven ticker reconnect (#${g.reconnects})`, "alert");
+          }
+          healthRef.current = {
+            degraded: g.degraded,
+            stale: g.stale,
+            reconnects: g.reconnects,
+          };
+        }
+      } else if (env.type === MSG.COMPRESSION_PROGRESS) {
+        setCompression(env.payload as CompressionProgressPayload);
+      }
+    },
+    [pushLog],
+  );
 
   const onSession = useCallback((env: WsEnvelope) => {
     if (env.type === MSG.LOG) {
@@ -167,6 +198,17 @@ function TopBar({
           ingestion degraded
         </span>
       )}
+      {globals?.stale && (
+        <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-xs font-medium text-red-400">
+          feed stale
+          {globals.data_age_ms != null ? ` · ${(globals.data_age_ms / 1000).toFixed(0)}s` : ""}
+        </span>
+      )}
+      {globals != null && !globals.stale && globals.reconnects > 0 && (
+        <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-400">
+          {globals.reconnects} reconnect{globals.reconnects === 1 ? "" : "s"}
+        </span>
+      )}
       {persisted && (
         <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-400">
           last saved snapshot (capture idle)
@@ -197,6 +239,11 @@ function KpiStrip({ globals, fpsHistory }: { globals: GlobalStatus | null; fpsHi
         value={globals ? globals.fps.toFixed(2) : "–"}
         accent={fpsAccent(globals?.fps)}
         spark={fpsHistory}
+        sub={
+          globals
+            ? `writer lag ${globals.writer_lag_max} · build ${globals.snapshot_ms.toFixed(1)}ms`
+            : undefined
+        }
       />
       <Kpi label="Captures" value={globals ? formatIndianNumber(globals.captures, 0) : "–"} />
       <Kpi
@@ -517,10 +564,12 @@ function FullLogs({ logs }: { logs: LogLine[] }) {
 }
 
 function LogRow({ line }: { line: LogLine }) {
+  const textClass =
+    line.kind === "alert" ? "text-red-400" : line.kind === "session" ? "text-amber-400" : "";
   return (
     <div className="text-zinc-400">
       <span className="text-sky-400">{new Date(line.ts).toLocaleTimeString()}</span>{" "}
-      <span className={line.kind === "session" ? "text-amber-400" : ""}>{line.text}</span>
+      <span className={textClass}>{line.text}</span>
     </div>
   );
 }
