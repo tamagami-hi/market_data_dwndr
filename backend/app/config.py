@@ -318,10 +318,6 @@ class Settings(BaseSettings):
             return self.stats_data_path
         return self.state_dir / "stats"
 
-    @property
-    def meta_dir(self) -> Path:
-        return self.market_data_path / "_meta"
-
 
 @lru_cache
 def get_settings() -> Settings:

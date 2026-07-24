@@ -74,6 +74,3 @@ class TradingCalendar:
         if t < self.market_close:
             return PHASE_OPEN
         return PHASE_CLOSED
-
-    def is_open(self, now_ms: int) -> bool:
-        return self.phase(now_ms) == PHASE_OPEN

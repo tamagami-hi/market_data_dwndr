@@ -94,7 +94,6 @@ class FreshnessMonitor:
         self._started_ms: int | None = start_ms
         self._last_digest: int | None = None
         # Observability counters.
-        self.batches_seen = 0
         self.frozen_batches = 0
 
     def start(self, now_ms: int) -> None:
@@ -107,7 +106,6 @@ class FreshnessMonitor:
         if self._started_ms is None:
             self._started_ms = now_ms
         self.last_tick_ms = now_ms
-        self.batches_seen += 1
         digest = self._digest(batch)
         if digest != self._last_digest:
             self._last_digest = digest

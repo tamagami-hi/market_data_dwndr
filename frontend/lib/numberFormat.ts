@@ -31,7 +31,7 @@ export function formatIndianNumber(value: number, decimals = 2): string {
   return getNumberFormatter(decimals).format(value);
 }
 
-export function formatIndianCompact(value: number, maxDecimals = 1): string {
+function formatIndianCompact(value: number, maxDecimals = 1): string {
   return getCompactFormatter(maxDecimals).format(value);
 }
 

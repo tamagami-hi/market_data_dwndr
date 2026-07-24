@@ -15,7 +15,3 @@ class CaptureSnapshot:
     index_frames: tuple[tuple[str, IndexFrame], ...]
     stock_frame: StockFrame | None
 
-    @property
-    def frame_count(self) -> int:
-        return len(self.index_frames) + int(self.stock_frame is not None)
-

@@ -8,9 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# ATM +/- 50 -> up to 101 strikes.
-STRIKES_PER_SIDE = 50
-
 # India VIX (raw, stored per chain).
 VIX_SYMBOL = "NSE:INDIA VIX"
 VIX_TOKEN = 264969

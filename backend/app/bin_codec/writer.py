@@ -142,10 +142,6 @@ class _BaseWriter:
             # so a crash or power loss cannot lose an already-captured second.
             os.fsync(self._fh.fileno())
 
-    @property
-    def header_written(self) -> bool:
-        return self._header_written
-
     def close(self) -> None:
         if self._fh is not None:
             self._fh.flush()

@@ -172,8 +172,3 @@ export interface CaptureStatusPayload {
   per_underlying: PerUnderlyingStatus[];
   global: GlobalStatus;
 }
-
-export interface SessionStatusPayload {
-  phase: string;
-  diagnostics?: Record<string, unknown>;
-}

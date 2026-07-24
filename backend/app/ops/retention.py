@@ -56,8 +56,8 @@ def scan_storage(
     """Summarize transient SSD data and durable HDD archives."""
     live_root = Path(market_data_path)
     archive_root = Path(archive_data_path)
-    raw = [p for p in live_root.rglob("*.bin")]
-    zst = [p for p in archive_root.rglob("*.bin.zst")]
+    raw = list(live_root.rglob("*.bin"))
+    zst = list(archive_root.rglob("*.bin.zst"))
     inst_dir = live_root / "_instruments"
     state_dir = live_root / "_state"
     instruments = list(inst_dir.rglob("*.csv")) if inst_dir.exists() else []

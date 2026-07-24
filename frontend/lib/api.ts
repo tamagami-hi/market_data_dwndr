@@ -72,11 +72,6 @@ export interface CaptureStatus {
   error?: string | null;
 }
 
-export async function getCaptureStatus(): Promise<CaptureStatus> {
-  const res = await apiFetch("/api/capture/status", { cache: "no-store" });
-  return jsonOrThrow<CaptureStatus>(res);
-}
-
 export interface CaptureHistorySession {
   trading_date: string;
   is_current: boolean;

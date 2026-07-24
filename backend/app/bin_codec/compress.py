@@ -102,18 +102,6 @@ def decompress_to_bytes(src: str | os.PathLike[str]) -> bytes:
         return reader.read()
 
 
-def decompress_file(
-    src: str | os.PathLike[str],
-    dst: str | os.PathLike[str],
-) -> Path:
-    """Stream-decompress ``src`` (.zst) to ``dst`` (raw ``.bin``)."""
-    dst = Path(dst)
-    dctx = zstd.ZstdDecompressor()
-    with open(src, "rb") as fin, open(dst, "wb") as fout:
-        dctx.copy_stream(fin, fout)
-    return dst
-
-
 def verify_roundtrip(src_bin: str | os.PathLike[str], dst_zst: str | os.PathLike[str]) -> bool:
     """Stream-compare a compressed file with its raw source byte-for-byte."""
     dctx = zstd.ZstdDecompressor()
