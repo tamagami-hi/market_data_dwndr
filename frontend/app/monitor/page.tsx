@@ -41,10 +41,12 @@ interface LogLine {
 const MAX_LOGS = 300;
 const SPARK_SAMPLES = 60;
 // Poll cadence: fast while the session is live or being established (capture running
-// or the pre-open auth/token window), slow otherwise — outside those windows the last
-// session's numbers are final, so there is nothing to refresh.
+// or the pre-open auth/token window). Outside those windows the numbers are final, so
+// we back off — but only to 60s. A 5-minute idle interval meant a change on the server
+// (e.g. a newly written snapshot) could take minutes to appear, which reads as the app
+// being stuck. One small JSON request per minute is a negligible cost for that.
 const POLL_ACTIVE_MS = 10_000;
-const POLL_IDLE_MS = 300_000;
+const POLL_IDLE_MS = 60_000;
 
 export default function MonitorPage() {
   const [rows, setRows] = useState<PerUnderlyingStatus[]>([]);
@@ -132,10 +134,13 @@ export default function MonitorPage() {
         // Fall back to persisted / current compression when no live WS update yet.
         setCompression((cur) => cur ?? next.compression ?? null);
         // Retain data: when capture is not streaming, show the persisted snapshot —
-        // which may be an EARLIER session — instead of leaving the page blank.
+        // which may be an EARLIER session — instead of leaving the page blank. While
+        // capture IS running the WebSocket owns these values, so don't fight it.
+        // Note this *replaces* on every idle poll: the previous version only filled
+        // empty state, so a snapshot written after the page loaded never appeared.
         if (next.monitor && !next.capture_running) {
-          setRows((cur) => (cur.length ? cur : (next.monitor!.per_underlying ?? [])));
-          setGlobals((cur) => cur ?? next.monitor!.global ?? null);
+          setRows(next.monitor.per_underlying ?? []);
+          setGlobals(next.monitor.global ?? null);
         }
       } catch {
         /* transient; keep last good */
