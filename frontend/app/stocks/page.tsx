@@ -53,18 +53,19 @@ export default function StocksPage() {
 
   return (
     <div className="space-y-4">
-      <header className="flex flex-wrap items-center gap-3">
-        <h1 className="text-xl font-semibold text-zinc-100">Stocks Board</h1>
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <h1 className="text-lg font-semibold text-zinc-100 sm:text-xl">Stocks Board</h1>
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Filter symbol…"
-          className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200 placeholder:text-zinc-600"
+          aria-label="Filter stocks by symbol"
+          className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200 placeholder:text-zinc-600 sm:max-w-56 sm:flex-none"
         />
         <span className="text-xs text-zinc-500">
           {board ? `${rows.length} / ${board.stocks.length} stocks` : ""}
         </span>
-        <div className="ml-auto flex items-center gap-4">
+        <div className="flex w-full items-center gap-3 sm:ml-auto sm:w-auto sm:gap-4">
           {board && (
             <span className="text-xs text-zinc-500">
               updated {formatClockTime(board.timestamp)}
@@ -80,8 +81,12 @@ export default function StocksPage() {
           start the backend capture to stream the stock matrix.
         </div>
       ) : (
-        <div className="overflow-auto rounded-lg border border-zinc-800" style={{ maxHeight: "calc(100vh - 200px)" }}>
-          <table className="w-full border-collapse text-xs">
+        <>
+          <p className="mb-1 text-[11px] text-zinc-500 sm:hidden" aria-hidden="true">
+            Swipe sideways for futures &amp; spreads →
+          </p>
+          <div className="max-h-[70svh] overflow-auto overscroll-x-contain rounded-lg border border-zinc-800 lg:max-h-[calc(100dvh-13rem)]">
+            <table className="w-full border-collapse text-[11px] sm:text-xs">
             <thead className="sticky top-0 z-10 bg-zinc-900/95 backdrop-blur">
               <tr className="text-zinc-400">
                 <Th className="text-left">Symbol</Th>
@@ -108,7 +113,8 @@ export default function StocksPage() {
               ))}
             </tbody>
           </table>
-        </div>
+          </div>
+        </>
       )}
     </div>
   );

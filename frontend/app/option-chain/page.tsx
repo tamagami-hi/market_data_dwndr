@@ -102,14 +102,16 @@ export default function OptionChainPage() {
 
   return (
     <div className="space-y-4">
-      <header className="flex flex-wrap items-center gap-3">
-        <h1 className="text-xl font-semibold text-zinc-100">Option Chain</h1>
-        <div className="flex gap-1">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <h1 className="text-lg font-semibold text-zinc-100 sm:text-xl">Option Chain</h1>
+        {/* Symbol tabs scroll sideways on narrow screens rather than wrapping oddly. */}
+        <div className="-mx-1 flex gap-1 overflow-x-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {symbols.map((sym) => (
             <button
               key={sym}
               onClick={() => setSelected(sym)}
-              className={`rounded px-3 py-1 text-sm ${
+              aria-pressed={selected === sym}
+              className={`shrink-0 whitespace-nowrap rounded px-3 py-1 text-sm ${
                 selected === sym
                   ? "bg-sky-500/15 text-sky-300"
                   : "text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200"
@@ -119,7 +121,7 @@ export default function OptionChainPage() {
             </button>
           ))}
         </div>
-        <div className="ml-auto">
+        <div className="sm:ml-auto">
           <ConnectionDot connection={marketDataConnection} label="market-data" />
         </div>
       </header>
@@ -146,7 +148,9 @@ function HeaderRibbon({
   data?: OptionChainData;
 }) {
   return (
-    <div className="flex flex-wrap gap-6 rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-2.5 text-sm">
+    // A 7-item flex row with gap-6 overflowed on phones; a grid wraps cleanly and
+    // becomes the original single row from `md` up.
+    <div className="grid grid-cols-3 gap-x-4 gap-y-2 rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-sm sm:grid-cols-4 md:flex md:flex-wrap md:gap-6 md:px-4">
       <Stat label="Expiry" value={header.expiry} />
       <Stat label="Spot" value={formatIndianNumber(header.spot, 2)} />
       <Stat label="ATM" value={formatIndianNumber(header.atm, 0)} />

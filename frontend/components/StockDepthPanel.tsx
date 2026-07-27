@@ -45,9 +45,12 @@ export default function StockDepthPanel({
 
 function DepthTable({ label, depth }: { label: string; depth: DepthLevel[] }) {
   return (
-    <section className="min-w-[25rem] rounded-md border border-zinc-800 bg-zinc-900/70 p-2">
+    // The old `min-w-[25rem]` (400px) was wider than a phone viewport and forced the
+    // whole row to overflow. Let it shrink, and scroll the table itself if needed.
+    <section className="min-w-0 rounded-md border border-zinc-800 bg-zinc-900/70 p-2">
       <h3 className="mb-2 text-xs font-medium text-zinc-300">{label} order book</h3>
-      <table className="w-full border-collapse text-[10px] font-mono">
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-[20rem] border-collapse text-[10px] font-mono">
         <caption className="sr-only">{label} order book</caption>
         <thead>
           <tr className="border-b border-zinc-800 text-zinc-500">
@@ -74,6 +77,7 @@ function DepthTable({ label, depth }: { label: string; depth: DepthLevel[] }) {
           ))}
         </tbody>
       </table>
+      </div>
     </section>
   );
 }

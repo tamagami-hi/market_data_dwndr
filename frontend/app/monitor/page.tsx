@@ -160,7 +160,11 @@ export default function MonitorPage() {
   const refreshWindow = stats?.refresh_window ?? null;
 
   return (
-    <div className="flex h-[calc(100dvh-5.25rem)] flex-col gap-2 overflow-hidden text-zinc-200">
+    // Mobile/tablet: natural document flow — the page scrolls and every panel keeps a
+    // usable minimum height. Only on `lg` do we pin the dashboard to the viewport and
+    // hide overflow (the old unconditional h-[calc(100dvh-5.25rem)] + overflow-hidden
+    // squeezed six panels into one screen on a phone, so they collapsed into each other).
+    <div className="flex flex-col gap-2 text-zinc-200 lg:h-[calc(100dvh-5.25rem)] lg:overflow-hidden">
       <TopBar
         globals={globals}
         tradingDate={tradingDate}
@@ -173,7 +177,7 @@ export default function MonitorPage() {
 
       <KpiStrip globals={globals} fpsHistory={fpsHistory} />
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 lg:grid-cols-[1fr_1.25fr]">
+      <div className="grid min-h-0 grid-cols-1 gap-2 lg:flex-1 lg:grid-cols-[1fr_1.25fr]">
         <div className="flex min-h-0 flex-col gap-2">
           <DataLossPanel globals={globals} />
           <FrameIntegrityPanel rows={rows} globals={globals} expectedFrames={expectedFrames} />
@@ -221,8 +225,8 @@ function TopBar({
   const live = captureRunning;
   const refreshing = live || Boolean(refreshWindow?.should_refresh);
   return (
-    <header className="flex flex-shrink-0 items-center gap-4 rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-2">
-      <h1 className="text-base font-semibold text-zinc-100">Capture Monitor</h1>
+    <header className="flex flex-shrink-0 flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2 sm:gap-x-4 sm:px-4">
+      <h1 className="text-sm font-semibold text-zinc-100 sm:text-base">Capture Monitor</h1>
       {tradingDate && (
         <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300">{tradingDate}</span>
       )}
@@ -261,7 +265,7 @@ function TopBar({
           </span>
         )
       )}
-      <div className="ml-auto flex items-center gap-4">
+      <div className="flex w-full items-center gap-3 sm:ml-auto sm:w-auto sm:gap-4">
         <span
           className="text-[10px] uppercase tracking-wide text-zinc-500"
           title={
@@ -303,7 +307,7 @@ function DataLossPanel({ globals }: { globals: GlobalStatus | null }) {
       title="Data loss (this session)"
       subtitle={`vs ${formatIndianNumber(sessionExpected, 0)} elapsed grid seconds`}
     >
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
         <Stat label="Seconds lost" value={formatIndianNumber(lost, 0)} />
         <Stat label="Gap events" value={formatIndianNumber(gaps, 0)} />
         <Stat label="Frozen secs" value={formatIndianNumber(frozen, 0)} />
@@ -868,8 +872,10 @@ function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="flex min-h-0 flex-1 flex-col rounded-lg border border-zinc-800 bg-zinc-900/60 p-3">
-      <div className="mb-2 flex flex-shrink-0 items-baseline justify-between">
+    // min-h on small screens keeps scrollable panels readable in natural flow; on `lg`
+    // it drops to 0 so the flex column can distribute the pinned viewport height.
+    <section className="flex min-h-[13rem] flex-col rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 lg:min-h-0 lg:flex-1">
+      <div className="mb-2 flex flex-shrink-0 flex-wrap items-baseline justify-between gap-x-2">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">{title}</h2>
         {subtitle && <span className="text-[10px] lowercase text-zinc-600">{subtitle}</span>}
       </div>

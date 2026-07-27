@@ -151,8 +151,16 @@ const OptionChainRow = React.memo(function OptionChainRow({
 
 export default function OptionChainTable({ data }: { data: OptionChainData }) {
   return (
-    <div className="overflow-auto rounded-lg border border-zinc-800" style={{ maxHeight: "calc(100vh - 230px)" }}>
-      <table className="w-full border-collapse text-xs">
+    <>
+      {/* The grid is intentionally dense (13 columns per side); on a phone it scrolls
+          sideways rather than being compressed into illegibility. */}
+      <p className="mb-1 text-[11px] text-zinc-500 lg:hidden" aria-hidden="true">
+        Swipe sideways to see all call / put columns →
+      </p>
+      {/* Responsive max height: svh avoids the mobile URL-bar resize jitter that vh has,
+          and the old hardcoded `calc(100vh - 230px)` assumed a single-row navbar. */}
+      <div className="max-h-[68svh] overflow-auto overscroll-x-contain rounded-lg border border-zinc-800 lg:max-h-[calc(100dvh-15rem)]">
+        <table className="w-full border-collapse text-[11px] sm:text-xs">
         <thead className="sticky top-0 z-10 bg-zinc-900/95 backdrop-blur">
           <tr>
             <th colSpan={CALL_COLS.length} className="border-b border-zinc-700 px-1 py-2 text-center font-semibold text-green-400">
@@ -185,6 +193,7 @@ export default function OptionChainTable({ data }: { data: OptionChainData }) {
           ))}
         </tbody>
       </table>
-    </div>
+      </div>
+    </>
   );
 }
