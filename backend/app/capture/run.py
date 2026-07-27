@@ -118,6 +118,14 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - orchestrat
         print(f"bootstrap failed: {exc}", file=sys.stderr)
         return 1
 
+    def _token_provider(current_token: str | None) -> str | None:
+        session = service.refresh_broker_session(current_token)
+        return session.access_token if session and session.access_token else None
+
+    set_provider = getattr(context.bridge, "set_token_provider", None)
+    if callable(set_provider):
+        set_provider(_token_provider)
+
     logger.info(
         "capturing %d indices + %s stocks (%d tokens) for %s",
         len(context.index_tables),

@@ -1,8 +1,14 @@
-"""Reconnect backoff + stall detection for the live WebSocket.
+"""Reconnect backoff + stall/freshness detection for the live WebSocket.
 
 Mirrors algo_engine's ``ReconnectPolicy``: exponential backoff base 5 s, max 300 s,
-~20 attempts before a circuit-breaker give-up. Stall detection triggers a reconnect if
-no message arrives for ~30 s (docs/30-live-capture/live-data-pipeline.md).
+~20 attempts per cycle before the cycle is treated as exhausted (the capture engine then
+escalates a tier rather than giving up — see ``CaptureEngine._maybe_reconnect``).
+
+Recovery is driven by :class:`FreshnessMonitor` (content-level staleness, threshold from
+``CAPTURE_STALE_SECONDS``), which covers both a frozen feed and a total tick outage.
+:class:`StallDetector` is a plain "time since the last message" tracker used for the
+``last_tick_ms`` telemetry only; it does **not** trigger reconnects
+(docs/30-live-capture/live-data-pipeline.md).
 """
 
 from __future__ import annotations

@@ -4,9 +4,16 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from app.bin_codec.reader import IndexBinReader, StockBinReader
 from app.bin_codec.writer import IndexBinWriter
-from app.capture.engine import CaptureEngine, build_index_writer, build_stock_writer
+from app.capture.engine import (
+    CaptureEngine,
+    CaptureStalledError,
+    build_index_writer,
+    build_stock_writer,
+)
 from app.capture.reconnect import FreshnessMonitor, ReconnectPolicy, StallDetector
 from app.capture.writer_thread import FileWriterThread
 from app.chain.assembler import build_option_chain
@@ -138,15 +145,116 @@ def test_engine_maybe_reconnect_recovers_and_resets():
     assert engine.reconnect_policy.attempt == 0  # backoff reset on recovery
 
 
-def test_engine_maybe_reconnect_gives_up_after_circuit_breaker():
-    engine = CaptureEngine({}, None, {}, None, stale_after_ms=5_000)
+def test_engine_reconnect_escalates_cycle_instead_of_silent_giveup():
+    # The old behaviour: once the circuit breaker tripped it returned False forever and
+    # kept writing frozen frames. Now a tripped breaker advances a *cycle* (and, past
+    # max_cycles, escalates) rather than silently giving up.
+    engine = CaptureEngine(
+        {}, None, {}, None, stale_after_ms=5_000, max_cycles=3, escalate_to_exit=True
+    )
     engine.freshness.start(0)
     bridge = _FakeBridge()
-    # Exhaust the circuit breaker directly, then confirm we stop reconnecting.
     engine.reconnect_policy.attempt = engine.reconnect_policy.max_attempts
     assert engine._maybe_reconnect(bridge, 100_000) is False
-    assert engine.degraded is True  # still flagged degraded for the frontend
-    assert bridge.reconnects == 0
+    assert engine.degraded is True
+    assert engine.reconnect_cycles == 1  # advanced a cycle, did not permanently die
+    assert engine.exhausted is False
+    assert engine.reconnect_policy.attempt == 0  # backoff re-armed for the next cycle
+
+
+def test_engine_reconnect_raises_to_restart_when_exhausted():
+    engine = CaptureEngine(
+        {}, None, {}, None, stale_after_ms=5_000, max_cycles=1, escalate_to_exit=True
+    )
+    engine.freshness.start(0)
+    bridge = _FakeBridge()
+    engine.reconnect_policy.attempt = engine.reconnect_policy.max_attempts
+    # max_cycles=1 -> the first exhausted cycle escalates to a process restart.
+    with pytest.raises(CaptureStalledError):
+        engine._maybe_reconnect(bridge, 100_000)
+    assert engine.exhausted is True
+
+
+def test_engine_reconnect_cycles_forever_when_exit_disabled():
+    engine = CaptureEngine(
+        {}, None, {}, None, stale_after_ms=5_000, max_cycles=0, escalate_to_exit=False
+    )
+    engine.freshness.start(0)
+    bridge = _FakeBridge()
+    engine.reconnect_policy.attempt = engine.reconnect_policy.max_attempts
+    # max_cycles=0 -> never escalate; keep cycling (with token refresh) indefinitely.
+    assert engine._maybe_reconnect(bridge, 100_000) is False
+    assert engine.reconnect_cycles == 1
+    assert engine.exhausted is False
+
+
+async def test_engine_tier2_refreshes_token_when_cheap_reconnects_fail():
+    engine = CaptureEngine(
+        {}, None, {}, None, stale_after_ms=5_000, token_refresh_after=1, max_cycles=0
+    )
+    engine.freshness.start(0)
+
+    class _RefreshBridge:
+        def __init__(self):
+            self.reconnects = 0
+            self.refreshes = 0
+
+        def reconnect(self):
+            self.reconnects += 1
+
+        async def reconnect_with_refresh(self):
+            self.refreshes += 1
+            self.reconnect()
+            return True
+
+    bridge = _RefreshBridge()
+
+    # Attempt 1: cheap tier-1 reconnect (reuse token).
+    assert engine._maybe_reconnect(bridge, 5_000) is True
+    assert engine.reconnect_tier == 1
+    assert bridge.reconnects == 1 and bridge.refreshes == 0
+
+    # Attempt 2 (past token_refresh_after=1): tier-2 token-refresh reconnect, scheduled
+    # off the loop so it never blocks capture.
+    assert engine._maybe_reconnect(bridge, 20_000) is True
+    assert engine.reconnect_tier == 2
+    for _ in range(3):
+        await asyncio.sleep(0)  # let the scheduled refresh task run
+    assert bridge.refreshes == 1
+    assert bridge.reconnects == 2
+
+
+def test_engine_proactive_token_refresh_when_token_too_old():
+    engine = CaptureEngine(
+        {},
+        None,
+        {},
+        None,
+        stale_after_ms=5_000,
+        token_refresh_after=10,  # cheap reconnects would normally dominate
+        token_max_age_ms=1_000,  # but an old token forces tier-2 immediately
+    )
+    engine.freshness.start(0)
+
+    class _AgingBridge:
+        def __init__(self):
+            self.reconnects = 0
+            self.refresh_called = False
+
+        def reconnect(self):
+            self.reconnects += 1
+
+        def token_age_ms(self, now=None):
+            return 60_000  # far older than token_max_age_ms
+
+        async def reconnect_with_refresh(self):
+            self.refresh_called = True
+            self.reconnect()
+            return True
+
+    bridge = _AgingBridge()
+    assert engine._maybe_reconnect(bridge, 5_000) is True
+    assert engine.reconnect_tier == 2  # aged token -> refresh even on the first attempt
 
 
 # --- writer thread integration -----------------------------------------------

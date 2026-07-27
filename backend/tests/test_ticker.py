@@ -151,3 +151,94 @@ async def test_non_auth_close_does_not_signal_auth_failure():
     await asyncio.sleep(0)
 
     assert bridge.auth_failed.is_set() is False
+
+
+# --- token-refresh reconnect + GC hygiene ------------------------------------
+
+
+async def test_reconnect_with_refresh_swaps_token_and_resubscribes():
+    created: list[FakeTicker] = []
+
+    def factory(api_key, access_token):
+        t = FakeTicker(api_key, access_token)
+        created.append(t)
+        return t
+
+    seen: list[str | None] = []
+
+    def provider(current_token):
+        seen.append(current_token)
+        return "TOKEN_B"
+
+    bridge = TickerBridge(
+        "key", "TOKEN_A", [1, 2], ticker_factory=factory, token_provider=provider
+    )
+    bridge.bind_loop(asyncio.get_running_loop())
+    bridge.start()
+    assert bridge.access_token == "TOKEN_A"
+
+    result = await bridge.reconnect_with_refresh()
+
+    assert result is True
+    assert seen == ["TOKEN_A"]  # provider was handed the token that just failed
+    assert bridge.access_token == "TOKEN_B"
+    assert created[-1].access_token == "TOKEN_B"  # new socket uses the fresh token
+    assert created[-1].subscribed == [1, 2]
+    assert created[-1].mode == (MODE_FULL, [1, 2])
+    assert bridge.token_refreshes == 1
+    assert bridge.last_token_refresh_ms is not None
+
+
+async def test_reconnect_with_refresh_without_new_token_reuses_current():
+    created: list[FakeTicker] = []
+
+    def factory(api_key, access_token):
+        t = FakeTicker(api_key, access_token)
+        created.append(t)
+        return t
+
+    bridge = TickerBridge(
+        "key", "TOK", [1], ticker_factory=factory, token_provider=lambda _cur: None
+    )
+    bridge.bind_loop(asyncio.get_running_loop())
+    bridge.start()
+
+    result = await bridge.reconnect_with_refresh()
+
+    assert result is False  # broker had nothing to hand back
+    assert bridge.access_token == "TOK"  # kept the current token
+    assert bridge.token_refreshes == 0
+    assert len(created) == 2  # still reconnected so a transient outage doesn't freeze us
+
+
+async def test_reconnect_frees_the_superseded_ticker():
+    """The stale ticker (and its token copy) must be collectable after a reconnect."""
+    import gc
+    import weakref
+
+    created: list[FakeTicker] = []
+
+    def factory(api_key, access_token):
+        t = FakeTicker(api_key, access_token)
+        created.append(t)
+        return t
+
+    bridge = TickerBridge("key", "tok", [1], ticker_factory=factory)
+    bridge.bind_loop(asyncio.get_running_loop())
+    bridge.start()
+
+    ref = weakref.ref(created[0])
+    created.clear()  # drop the test's own reference to the first ticker
+
+    bridge.reconnect()  # replaces it; nothing should still reference the old one
+    gc.collect()
+
+    assert ref() is None  # the superseded ticker was garbage-collected
+
+
+def test_token_age_advances_with_the_clock():
+    times = iter([1_000, 1_000, 9_000])
+    bridge = TickerBridge("key", "tok", [1], clock=lambda: next(times))
+    # __init__ stamps the token at the first clock() == 1000; next reads are 1000, 9000.
+    assert bridge.token_age_ms() == 0
+    assert bridge.token_age_ms() == 8_000

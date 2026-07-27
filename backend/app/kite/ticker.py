@@ -18,6 +18,7 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from app.kite.errors import is_authentication_error
+from app.session import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,11 @@ class Ticker(Protocol):
 
 TickerFactory = Callable[[str, str], Ticker]
 
+# Given the token that just failed, return a fresh access token (or ``None`` if the
+# broker has nothing authenticated to hand back). Runs in a worker thread, so it may
+# block on network I/O (the calspread HTTP fetch).
+TokenProvider = Callable[[str | None], str | None]
+
 
 def _default_ticker_factory(api_key: str, access_token: str) -> Ticker:
     from kiteconnect import KiteTicker
@@ -58,12 +64,16 @@ class TickerBridge:
         tokens: list[int],
         *,
         ticker_factory: TickerFactory | None = None,
+        token_provider: TokenProvider | None = None,
         queue_maxsize: int = 10_000,
+        clock: Callable[[], int] = now_ms,
     ) -> None:
         self.api_key = api_key
         self.access_token = access_token
         self.tokens = list(tokens)
         self._factory = ticker_factory or _default_ticker_factory
+        self._token_provider = token_provider
+        self._clock = clock
         self.queue: asyncio.Queue[list[dict]] = asyncio.Queue(maxsize=queue_maxsize)
         self.auth_failed = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -74,6 +84,10 @@ class TickerBridge:
         self.ticks_received = 0
         self.dropped_batches = 0
         self.reconnects = 0
+        # Token lifecycle: when the current in-memory token was set + refresh telemetry.
+        self._token_set_ms: int = self._clock()
+        self.token_refreshes = 0
+        self.last_token_refresh_ms: int | None = None
 
     # -- thread-side callbacks (run on the KiteTicker thread) ---------------- #
 
@@ -162,20 +176,74 @@ class TickerBridge:
         the SDK's own reconnect did not recover (e.g. a half-open socket, or a feed
         that keeps the connection up but stops sending fresh quotes). A brand-new
         socket re-subscribes every token in ``full`` mode via ``_on_connect``.
+
+        The stale ticker (which holds its own copy of the previous access token) is
+        closed *and* dereferenced before the replacement is created, so it — and any
+        superseded token — becomes collectable immediately rather than lingering on the
+        heap for an unbounded time.
         """
         self.reconnects += 1
         logger.warning("self-driven ticker reconnect (attempt %d)", self.reconnects)
         old = self._ticker
+        self._ticker = None  # drop the bridge's reference before replacing
         if old is not None:
             try:
                 old.close()
             except Exception:  # pragma: no cover - defensive; SDK-specific
                 logger.exception("error closing stale ticker during reconnect")
+        del old  # let the superseded ticker (and its token copy) be GC'd promptly
         self.connected = False
         try:
             self._start_ticker()
         except Exception:  # pragma: no cover - defensive; SDK-specific
             logger.exception("failed to start replacement ticker during reconnect")
+
+    def set_token_provider(self, token_provider: TokenProvider | None) -> None:
+        """Wire (or replace) the callable used to fetch a fresh token on reconnect."""
+        self._token_provider = token_provider
+
+    def _apply_new_token(self, token: str) -> None:
+        """Adopt a freshly fetched token, dropping the reference to the old one."""
+        self.access_token = token  # rebinds away from the previous (dead) token
+        self._token_set_ms = self._clock()
+        self.token_refreshes += 1
+        self.last_token_refresh_ms = self._token_set_ms
+
+    def token_age_ms(self, now: int | None = None) -> int:
+        """Milliseconds since the in-memory access token was last (re)set."""
+        reference = now if now is not None else self._clock()
+        return max(0, reference - self._token_set_ms)
+
+    async def reconnect_with_refresh(self) -> bool:
+        """Fetch a fresh access token (calspread HTTP, off-loop) then reconnect.
+
+        The provider runs in a worker thread via ``asyncio.to_thread`` so the blocking
+        HTTP round-trip never stalls the 1 Hz capture loop. If a new token comes back it
+        is adopted (and the old one dropped) before a brand-new socket is opened; if the
+        provider yields nothing we still reconnect with the current token so a transient
+        broker outage does not leave the feed frozen. Returns ``True`` when a token was
+        obtained.
+        """
+        provider = self._token_provider
+        new_token: str | None = None
+        if provider is not None:
+            try:
+                new_token = await asyncio.to_thread(provider, self.access_token)
+            except Exception:  # noqa: BLE001 - broker/network failure must not crash the loop
+                logger.exception("token refresh via calspread failed")
+                new_token = None
+        if new_token:
+            if new_token != self.access_token:
+                logger.info("obtained a fresh Kite access token; reconnecting with it")
+                self._apply_new_token(new_token)
+            else:
+                self.last_token_refresh_ms = self._clock()
+        else:
+            logger.warning(
+                "token refresh returned nothing; reconnecting with the current token"
+            )
+        self.reconnect()
+        return bool(new_token)
 
     def stop(self) -> None:
         if self._ticker is not None:

@@ -30,10 +30,10 @@ from app.ops.calendar import TradingCalendar
 from app.session import (
     SessionState,
     invalidate_session,
+    latest_stored_risk_free_rate,
     load_latest_session_before,
     load_session,
     now_ms,
-    latest_stored_risk_free_rate,
     save_session,
 )
 
@@ -89,10 +89,7 @@ class SessionService:
             )
 
     def _validate_broker_token(self, access_token: str) -> None:
-        client = build_kite_http_client(
-            self.settings.kite_static_ip,
-            self.settings.kite_http_proxy,
-        )
+        client = build_kite_http_client()
         try:
             validate_access_token(
                 client,
@@ -106,6 +103,28 @@ class SessionService:
     def acquire_broker_session(self) -> SessionState | None:
         """Reuse a valid prior token, otherwise fetch and validate the shared token."""
         with self._session_lock:
+            return self._acquire_broker_session_unlocked()
+
+    def refresh_broker_session(
+        self, expected_access_token: str | None = None
+    ) -> SessionState | None:
+        """Force a fresh token from calspread, discarding the one that just failed.
+
+        Used by the live-capture reconnect ladder when the feed has gone stale and a
+        cheap reconnect (reusing the current token) did not recover it. Unlike
+        :meth:`acquire_broker_session` — which short-circuits on any persisted token —
+        this first *invalidates* the exact token that failed so the next acquire is
+        guaranteed to hit the broker (``fetch_external_access_token`` -> calspread) for a
+        genuinely new token, then validates and persists it. Returns the new session, or
+        ``None`` when the broker has nothing authenticated to hand back yet.
+        """
+        with self._session_lock:
+            if expected_access_token:
+                invalidate_session(
+                    self.settings.state_dir,
+                    self.trading_date(),
+                    expected_access_token,
+                )
             return self._acquire_broker_session_unlocked()
 
     def _acquire_broker_session_unlocked(self) -> SessionState | None:
@@ -181,9 +200,6 @@ class SessionService:
             "market_phase": self.calendar.phase(now),
             "credentials_present": self.credentials_present,
             "external_token_source_configured": self.external_token_source_configured,
-            "static_ip_configured": bool(
-                self.settings.kite_static_ip or self.settings.kite_http_proxy
-            ),
             "risk_free_rate": session.risk_free_rate if session else None,
             "risk_free_rate_as_of": session.risk_free_rate_as_of if session else None,
             "capture_ready": session.capture_ready if session else False,

@@ -80,6 +80,31 @@ def test_stale_feed_is_degraded_but_http_200():
     assert fresh["reconnects"] == 3
 
 
+def test_exhausted_recovery_is_dead_and_http_503():
+    # The tiered reconnect (incl. calspread token refresh) gave up: this is a real dead
+    # signal, not "self-healing in progress", so it must flip HTTP to 503 for recovery.
+    snap = {
+        "global": {
+            "stale": True,
+            "degraded": True,
+            "exhausted": True,
+            "data_age_ms": 120_000,
+            "reconnect_cycles": 3,
+            "reconnects": 60,
+            "token_refreshes": 5,
+        }
+    }
+    payload, status = build_health(
+        _state(capture_controller=_controller(running=True, snapshot=snap))
+    )
+    assert status == CODE_DEAD
+    assert payload["status"] == "dead"
+    fresh = _check(payload, "data_freshness")
+    assert fresh["status"] == "dead"
+    assert fresh["code"] == CODE_DEAD
+    assert fresh["token_refreshes"] == 5
+
+
 def test_crashed_capture_task_is_dead_and_http_503():
     payload, status = build_health(
         _state(capture_controller=_controller(running=False, has_failed=True))

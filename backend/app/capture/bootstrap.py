@@ -66,6 +66,7 @@ def bootstrap_capture(
     instrument_store: InstrumentStore | None = None,
     quote_fn=None,
     ticker_factory=None,
+    token_provider=None,
     clock=now_ms,
 ) -> CaptureContext:
     """Assemble a :class:`CaptureContext` for today's session."""
@@ -141,6 +142,12 @@ def bootstrap_capture(
         stock_writer,
         clock=clock,
         stale_after_ms=int(round(getattr(settings, "capture_stale_seconds", 5.0) * 1000)),
+        token_refresh_after=getattr(settings, "capture_reconnect_token_refresh_after", 2),
+        max_cycles=getattr(settings, "capture_reconnect_max_cycles", 3),
+        escalate_to_exit=getattr(settings, "capture_reconnect_escalate_to_exit", True),
+        token_max_age_ms=int(
+            round(getattr(settings, "capture_token_max_age_seconds", 0.0) * 1000)
+        ),
     )
     monitor = CaptureMonitor(
         index_tables,
@@ -175,7 +182,12 @@ def bootstrap_capture(
     from app.kite.ticker import TickerBridge
 
     bridge = TickerBridge(
-        settings.kite_api_key, access_token, tokens, ticker_factory=ticker_factory
+        settings.kite_api_key,
+        access_token,
+        tokens,
+        ticker_factory=ticker_factory,
+        token_provider=token_provider,
+        clock=clock,
     )
     monitor.bridge = bridge
 

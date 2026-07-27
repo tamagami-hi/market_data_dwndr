@@ -7,8 +7,9 @@ monitor, and the Docker healthcheck all read the same source of truth:
 * **capture_task** — ``ok`` while running, ``idle`` off-hours/pre-open, or ``dead`` when
   the in-process task has crashed and needs a fresh process (``CaptureController.has_failed``).
 * **data_freshness** — ``ok`` when ticks are fresh, ``idle`` when capture isn't running,
-  or ``stale`` when the live feed has frozen (the in-process ticker reconnect is already
-  self-healing this; it is reported, not restart-triggering).
+  ``stale`` when the live feed has frozen but the tiered reconnect (incl. calspread token
+  refresh) is still self-healing it (reported, not restart-triggering), or ``dead`` once
+  that recovery is *exhausted* (escalated: a process restart is required).
 
 Critically, the **HTTP status code encodes liveness only**: ``503`` iff a component is
 *dead*, otherwise ``200`` — even when degraded/stale. The Docker healthcheck's
@@ -88,6 +89,25 @@ def _freshness_check(controller) -> dict:
     g = snapshot.get("global") or {}
     data_age_ms = g.get("data_age_ms")
     reconnects = g.get("reconnects")
+    if bool(g.get("exhausted")):
+        # The tiered reconnect ladder (incl. calspread token refresh) could not restore
+        # a live feed. This is a real dead signal: surface 503 so the healthcheck /
+        # restart tooling recovers, rather than pretending recovery is still in progress.
+        return {
+            "component": "data_freshness",
+            "status": "dead",
+            "code": CODE_DEAD,
+            "message": (
+                f"live feed stale ({data_age_ms} ms) and reconnect recovery exhausted "
+                f"after {g.get('reconnect_cycles')} cycle(s); process restart required"
+            ),
+            "data_age_ms": data_age_ms,
+            "liveness_age_ms": g.get("liveness_age_ms"),
+            "frozen_batches": g.get("frozen_batches"),
+            "reconnects": reconnects,
+            "reconnect_tier": g.get("reconnect_tier"),
+            "token_refreshes": g.get("token_refreshes"),
+        }
     if bool(g.get("degraded")) or bool(g.get("stale")):
         return {
             "component": "data_freshness",
@@ -95,12 +115,16 @@ def _freshness_check(controller) -> dict:
             "code": CODE_STALE,
             "message": (
                 f"live feed frozen ({data_age_ms} ms without fresh ticks); "
-                f"auto-reconnect in progress (reconnects={reconnects})"
+                f"auto-reconnect in progress "
+                f"(tier={g.get('reconnect_tier')}, reconnects={reconnects}, "
+                f"token_refreshes={g.get('token_refreshes')})"
             ),
             "data_age_ms": data_age_ms,
             "liveness_age_ms": g.get("liveness_age_ms"),
             "frozen_batches": g.get("frozen_batches"),
             "reconnects": reconnects,
+            "reconnect_tier": g.get("reconnect_tier"),
+            "token_refreshes": g.get("token_refreshes"),
         }
     return {
         "component": "data_freshness",
