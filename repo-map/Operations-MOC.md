@@ -17,7 +17,7 @@ related: ["[[Decisions-MOC]]", "[[Live-Capture-MOC]]", "[[Code-Map]]"]
 | Note | Purpose | Status |
 |------|---------|:------:|
 | [[operations-runbook]] | daily lifecycle: login, hours/calendar, EOD, restart | done |
-| [[config-and-env]] | env vars, settings, **automated login (`md-login`)**, static IP | done |
+| [[config-and-env]] | env vars, settings, **automated login (`md-login`)** | done |
 | [[session-state]] | access_token + risk-free-rate persistence & resume | done |
 | [[failure-modes]] | disconnects, auth expiry, disk full, truncated-file recovery | done |
 | [[data-retention]] | raw vs compressed lifetime, integrity checks | done |

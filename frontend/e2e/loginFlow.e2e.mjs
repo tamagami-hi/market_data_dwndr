@@ -170,7 +170,6 @@ async function mockBackend(page) {
         market_phase: "OPEN",
         credentials_present: true,
         external_token_source_configured: true,
-        static_ip_configured: true,
         risk_free_rate: 0.0691,
         risk_free_rate_as_of: "2026-07-22",
         capture_ready: true,

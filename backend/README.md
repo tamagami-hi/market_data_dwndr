@@ -44,8 +44,9 @@ Broker tokens are validated by the exchange step before persistence. Credentials
 read via `getpass` (no echo, never in shell history or argv).
 
 
-Outbound Kite calls bind `KITE_STATIC_IP` / use `KITE_HTTP_PROXY` when set, to satisfy
-Kite's static-IP whitelist (Apr 2026). See `docs/60-operations/config-and-env.md`.
+This service only downloads market data, so it needs no static egress IP: Kite's
+static-IP whitelist (Apr 2026) applies only to order-placement endpoints (handled by the
+separate `algo_engine`). See `docs/60-operations/config-and-env.md`.
 
 ## Run
 

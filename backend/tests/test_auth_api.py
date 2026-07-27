@@ -21,8 +21,6 @@ def _settings(tmp_path, **overrides):
         kite_api_secret="secret",
         kite_user_id="AB1234",
         kite_password="pass",
-        kite_static_ip=None,
-        kite_http_proxy=None,
         risk_free_rate=None,
         timezone="Asia/Kolkata",
         market_open="09:15",

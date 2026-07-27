@@ -62,8 +62,6 @@ def _settings(tmp_path):
         kite_api_secret="secret",
         kite_user_id="AB1234",
         kite_password="password",
-        kite_static_ip=None,
-        kite_http_proxy=None,
         state_dir=tmp_path,
     )
 

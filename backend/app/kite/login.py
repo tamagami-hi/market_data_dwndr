@@ -14,11 +14,6 @@ Here we automate the whole thing headlessly so a single ``md-login`` run gets a 
 
 Credentials are seeded from the environment (see ``config.Settings``); the TOTP is
 always entered by the user through the terminal or staged frontend flow.
-
-Static IP (Kite requires a whitelisted static IP for API calls from Apr 2026): the
-outbound HTTP client can bind a source address (``KITE_STATIC_IP``) and/or route
-through a proxy (``KITE_HTTP_PROXY``), so on a static-IP host all Kite calls egress
-from that IP.
 """
 
 from __future__ import annotations
@@ -52,7 +47,7 @@ class KiteLoginError(Exception):
 
 
 # --------------------------------------------------------------------------- #
-# HTTP client (static-IP / proxy aware)
+# HTTP client
 # --------------------------------------------------------------------------- #
 
 
@@ -74,28 +69,19 @@ class HttpClient(Protocol):
     def close(self) -> None: ...
 
 
-def build_kite_http_client(
-    static_ip: str | None = None,
-    proxy: str | None = None,
-    timeout: float = 30.0,
-):
-    """Build an ``httpx.Client`` that binds the static IP / uses a proxy for egress.
+def build_kite_http_client(timeout: float = 30.0):
+    """Build the ``httpx.Client`` used for Kite login + REST calls.
 
     ``follow_redirects=False`` -- we walk the ``connect/login`` redirect chain by hand
     to capture the ``request_token`` from the ``Location`` header.
     """
     import httpx
 
-    kwargs: dict = {
-        "follow_redirects": False,
-        "timeout": timeout,
-        "headers": {"User-Agent": _USER_AGENT},
-    }
-    if proxy:
-        kwargs["proxy"] = proxy
-    elif static_ip:
-        kwargs["transport"] = httpx.HTTPTransport(local_address=static_ip)
-    return httpx.Client(**kwargs)
+    return httpx.Client(
+        follow_redirects=False,
+        timeout=timeout,
+        headers={"User-Agent": _USER_AGENT},
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -331,7 +317,7 @@ def run_login(
 
     provider = totp_provider or prompt_totp
     owns_client = client is None
-    http = client or build_kite_http_client(settings.kite_static_ip, settings.kite_http_proxy)
+    http = client or build_kite_http_client()
     try:
         request_token = fetch_request_token(
             http, settings.kite_api_key, settings.kite_user_id, settings.kite_password, provider
@@ -374,10 +360,7 @@ def run_interactive_login(
         validation_client = None
         try:
             if external_token_validator is None:
-                validation_client = build_kite_http_client(
-                    settings.kite_static_ip,
-                    settings.kite_http_proxy,
-                )
+                validation_client = build_kite_http_client()
                 validate_access_token(
                     validation_client,
                     settings.kite_api_key,
@@ -403,7 +386,7 @@ def run_interactive_login(
         )
 
     owns_client = client is None
-    http = client or build_kite_http_client(settings.kite_static_ip, settings.kite_http_proxy)
+    http = client or build_kite_http_client()
     try:
         challenge = begin_login(http, settings.kite_user_id, settings.kite_password)
         request_token = complete_totp(
@@ -471,7 +454,7 @@ def run_credentials_login(
     every credentials login, so ``totp_provider`` is always invoked.
     """
     owns_client = client is None
-    http = client or build_kite_http_client(settings.kite_static_ip, settings.kite_http_proxy)
+    http = client or build_kite_http_client()
     try:
         challenge = begin_login(http, user_id, password)
         request_token = complete_totp(http, api_key, user_id, challenge, totp_provider())
@@ -601,7 +584,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"login failed: {exc}", file=sys.stderr)
         return 1
 
-    rate_txt = state.risk_free_rate if state.risk_free_rate is not None else "unset (rate broker + env fallback both unavailable)"
+    rate_txt = (
+        state.risk_free_rate
+        if state.risk_free_rate is not None
+        else "unset (rate broker + env fallback both unavailable)"
+    )
     print(
         f"login OK for {trading_date}: risk_free_rate={rate_txt}. "
         "Session saved under _state/."

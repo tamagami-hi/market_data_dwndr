@@ -31,8 +31,6 @@ class FakeStore:
 def _settings(tmp_path, indices=("NIFTY",), stock_universe="all"):
     return SimpleNamespace(
         kite_api_key="apikey",
-        kite_static_ip=None,
-        kite_http_proxy=None,
         indices=list(indices),
         stock_universe=stock_universe,
         market_holidays=[],

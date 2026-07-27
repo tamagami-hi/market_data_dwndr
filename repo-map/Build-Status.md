@@ -38,9 +38,8 @@ related: ["[[build-guide]]", "[[Code-Map]]", "[[progress-log]]"]
 | WS broadcaster (Greeks-enriched) | ✅ | `capture/broadcaster.py` |
 | Automated login (env creds + terminal TOTP) | ✅ | `kite/login.py` (`md-login`) |
 | `/api/auth` + startup resume + login UI | ✅ | `api/auth.py`, `session_service.py`, `frontend/app/login` |
-| Static-IP egress for Kite (Apr 2026) | ✅ | `KITE_STATIC_IP` / `KITE_HTTP_PROXY` |
 | Live capture bootstrap (`md-capture` + `/api/capture`) | ✅ | login→instruments→chains+board→ticker→1 Hz engine, broadcasting |
-| Live end-to-end against real Kite creds | ⏳ | needs credentials + whitelisted IP |
+| Live end-to-end against real Kite creds | ⏳ | needs real credentials |
 | Docker-compose (backend + frontend) | 💡 | optional deploy convenience |
 
 ## Definition-of-Done gates (met)

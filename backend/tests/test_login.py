@@ -228,8 +228,6 @@ def _settings(tmp_path, **overrides):
         kite_api_secret="secret",
         kite_user_id="AB1234",
         kite_password="pass",
-        kite_static_ip=None,
-        kite_http_proxy=None,
         risk_free_rate=None,
         state_dir=tmp_path,
     )
@@ -335,13 +333,9 @@ def test_interactive_login_wraps_external_token_validation_failure(tmp_path):
 # --- client builder ----------------------------------------------------------
 
 
-def test_build_kite_http_client_variants():
+def test_build_kite_http_client_builds_a_client():
     plain = build_kite_http_client()
     plain.close()
-    bound = build_kite_http_client(static_ip="127.0.0.1")
-    bound.close()
-    proxied = build_kite_http_client(proxy="http://127.0.0.1:9")
-    proxied.close()
 
 
 # --- CLI credentials login (md-login) ----------------------------------------
@@ -426,7 +420,9 @@ def test_main_manual_collects_all_four_credentials_and_totp(tmp_path, monkeypatc
 
     captured: dict = {}
 
-    def fake_login(settings, *, trading_date, user_id, password, api_key, api_secret, totp_provider):
+    def fake_login(
+        settings, *, trading_date, user_id, password, api_key, api_secret, totp_provider
+    ):
         captured.update(
             user_id=user_id,
             password=password,

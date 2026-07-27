@@ -114,14 +114,12 @@ ssh -i ~/.ssh/beonedge_vps \
 Do not publish the backend to the public internet: CORS/Origin checks are not
 authentication, and capture control is an administrative capability. If this VPS gains
 a public/static IP later, add TLS and an authenticated edge as a separate deployment
-change.
+change (see `docs/60-operations/lan-and-public-domain-routing.md`).
 
-The shared token broker solves authentication, not Kite's static-egress requirement.
-`KITE_STATIC_IP` only selects an address already present on this host; it cannot turn a
-dynamic home connection into a static public IP. Live Kite REST/WebSocket capture from
-this VPS may therefore require `KITE_HTTP_PROXY`, a VPN/exit path through the cloud VPS,
-or another whitelisted static-egress service. That network rollover is intentionally
-deferred to the next phase.
+This project only downloads market data, so it does **not** need a static egress IP:
+Kite's static-IP whitelist (Apr 2026) applies only to order-placement endpoints, which
+live in the separate `algo_engine` service. Token fetch/validation goes through
+calspread.online (our own AWS-hosted platform) and never required a static IP.
 
 ## 4. Validate, build, and start
 

@@ -175,8 +175,6 @@ def _settings(tmp_path):
         kite_api_secret="secret",
         kite_user_id="AB1234",
         kite_password=None,
-        kite_static_ip=None,
-        kite_http_proxy=None,
         kite_token_broker_url="https://calspread.online/api/kite/token",
         kite_token_broker_passcode=object(),
         risk_free_rate=None,

@@ -29,8 +29,10 @@ The private home-VPS workflow is implemented on `ai-dev/made`:
 
 ## Remaining external validation
 
-Live Kite REST/WebSocket validation still requires real credentials and a whitelisted
-static-egress path. The implementation is covered with injected clients/tickers and
+Live Kite REST/WebSocket validation still requires real credentials. This is a
+data-only service, so it needs no static egress IP — Kite's static-IP whitelist
+(Apr 2026) applies only to order-placement endpoints (the separate `algo_engine`). The
+implementation is covered with injected clients/tickers and
 focused tests; do not place credentials or broker passcodes in tracked files.
 
 ## VPS activation

@@ -92,16 +92,6 @@ class Settings(BaseSettings):
         description="Bounded lifetime for a persisted release-maintenance lease",
     )
 
-    # --- egress control (Kite requires a whitelisted static IP from Apr 2026) ---
-    # Bind outbound Kite calls to this source address (the host's static IP), and/or
-    # route them through a proxy that egresses from the static IP.
-    kite_static_ip: str | None = Field(
-        default=None, description="Local source IP to bind outbound Kite requests to"
-    )
-    kite_http_proxy: str | None = Field(
-        default=None, description="Optional proxy URL for Kite egress (e.g. http://host:port)"
-    )
-
     # --- networking (ports come ONLY from the environment; no hardcoded defaults) ---
     # ``http_port`` is required so the backend port is configured entirely via .env.
     http_host: str = Field(default="127.0.0.1", description="Bind host for the backend")
@@ -156,6 +146,48 @@ class Settings(BaseSettings):
             "Tunable via CAPTURE_STALE_SECONDS in .env."
         ),
     )
+    capture_reconnect_token_refresh_after: int = Field(
+        default=2,
+        ge=0,
+        le=50,
+        description=(
+            "Cheap 'reuse the current token' reconnect attempts to try before escalating "
+            "to a fresh token fetch from calspread. Tier-1 handles a half-open socket; "
+            "tier-2 handles an expired/rotated token. Tunable via "
+            "CAPTURE_RECONNECT_TOKEN_REFRESH_AFTER."
+        ),
+    )
+    capture_reconnect_max_cycles: int = Field(
+        default=3,
+        ge=0,
+        le=100,
+        description=(
+            "How many full backoff cycles (each ~MAX_ATTEMPTS reconnects with token "
+            "refresh) to run while the feed stays stale before the recovery is declared "
+            "exhausted. 0 = cycle forever (never escalate). Tunable via "
+            "CAPTURE_RECONNECT_MAX_CYCLES."
+        ),
+    )
+    capture_reconnect_escalate_to_exit: bool = Field(
+        default=True,
+        description=(
+            "When the recovery is exhausted (see CAPTURE_RECONNECT_MAX_CYCLES), exit the "
+            "process so Docker's restart policy recovers with a clean session + fresh "
+            "token. When false, keep cycling with token refresh and report 'exhausted' "
+            "on /health instead. Tunable via CAPTURE_RECONNECT_ESCALATE_TO_EXIT."
+        ),
+    )
+    capture_token_max_age_seconds: float = Field(
+        default=0.0,
+        ge=0,
+        le=86_400,
+        description=(
+            "Max age of the in-memory access token before a reconnect proactively "
+            "re-fetches a fresh one from calspread (even on the first stale event). "
+            "0 = disabled (only refresh reactively after cheap reconnects fail). "
+            "Tunable via CAPTURE_TOKEN_MAX_AGE_SECONDS."
+        ),
+    )
     log_level: str = Field(default="INFO")
 
     @field_validator("capture_stale_seconds", mode="before")
@@ -164,6 +196,19 @@ class Settings(BaseSettings):
         """Treat an empty CAPTURE_STALE_SECONDS env value as the default (5s)."""
         if isinstance(value, str) and not value.strip():
             return 5.0
+        return value
+
+    @field_validator(
+        "capture_reconnect_token_refresh_after",
+        "capture_reconnect_max_cycles",
+        "capture_token_max_age_seconds",
+        mode="before",
+    )
+    @classmethod
+    def _blank_numeric_recovery_is_default(cls, value: object, info) -> object:
+        """Treat an empty recovery-tuning env value as unset (use the field default)."""
+        if isinstance(value, str) and not value.strip():
+            return cls.model_fields[info.field_name].default
         return value
 
     @field_validator("risk_free_rate", mode="before")

@@ -239,7 +239,6 @@ function StatusCard({ status }: { status: AuthStatus | null | undefined }) {
       <Stat label="Kite token" value={status.authenticated ? "validated" : "pending"} tone={status.authenticated ? "green" : "amber"} />
       <Stat label="Token broker" value={status.external_token_source_configured ? "configured" : "missing"} />
       <Stat label="Capture" value={status.capture?.running ? "running" : status.capture_ready ? "ready" : "waiting"} />
-      <Stat label="Static egress" value={status.static_ip_configured ? "ready" : "not set"} />
     </div>
   );
 }

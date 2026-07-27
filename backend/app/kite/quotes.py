@@ -2,8 +2,8 @@
 
 The option-chain assembler needs the current **spot** to pick the ATM ± 50 window, so
 before the tick stream is live we fetch a one-shot LTP quote for each index spot symbol
-(and India VIX) via ``GET https://api.kite.trade/quote/ltp?i=…``. The same static-IP /
-proxy-aware client used for login is reused so the call egresses from the whitelisted IP.
+(and India VIX) via ``GET https://api.kite.trade/quote/ltp?i=…`` using the shared Kite
+login client.
 
 The HTTP call is injected so bootstrap can be unit-tested without the network.
 """
@@ -56,12 +56,12 @@ def fetch_ltp(client, api_key: str, access_token: str, symbols: Iterable[str]) -
 
 
 def default_quote_fn(settings, access_token: str) -> QuoteFn:
-    """Build a network-backed ``QuoteFn`` using the static-IP/proxy-aware client."""
+    """Build a network-backed ``QuoteFn`` using the shared Kite login client."""
 
     def _quote(symbols: Iterable[str]) -> dict[str, float]:
         from app.kite.login import build_kite_http_client
 
-        client = build_kite_http_client(settings.kite_static_ip, settings.kite_http_proxy)
+        client = build_kite_http_client()
         try:
             return fetch_ltp(client, settings.kite_api_key, access_token, symbols)
         finally:

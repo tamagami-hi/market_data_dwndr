@@ -27,8 +27,6 @@ Configuration is via **pydantic-settings** reading a `.env` file (typed, validat
 | `RELEASE_MAINTENANCE_TOKEN` | release | `••••` | At least 32 characters; authenticates the internal capture drain API |
 | `RELEASE_MAINTENANCE_TTL_SECONDS` | – | `900` | Persistent drain lease lifetime; release tooling requires 600–900 seconds |
 | `RISK_FREE_RATE` | – | `0.0691` | Fallback risk-free rate (decimal) used only when `KITE_RATE_BROKER_URL` is unavailable |
-| `KITE_STATIC_IP` | – | `203.0.113.7` | Source IP to bind Kite calls to (static-IP whitelist, Apr 2026) |
-| `KITE_HTTP_PROXY` | – | `http://10.0.0.5:3128` | Proxy that egresses from the static IP (alternative to bind) |
 | `INDICES` | – | `NIFTY,BANKNIFTY,FINNIFTY,SENSEX` | Index universe (default locked set) |
 | `MARKET_HOLIDAYS` | – | `2026-08-15,2026-10-02` | Comma-separated exchange closure dates (`YYYY-MM-DD`); no broker polling, capture, or EOD on these dates |
 | `STOCK_UNIVERSE` | – | `all` | `all` or a comma allow-list |
@@ -123,8 +121,10 @@ Flow:
    `POST api.kite.trade/session/token` with `checksum = SHA-256(api_key+request_token+api_secret)`
    → `access_token`, persisted to `_state/session-<date>.json`
 
-All outbound Kite calls go through one client that can **bind `KITE_STATIC_IP`** or use
-`KITE_HTTP_PROXY`, satisfying Kite's static-IP whitelist requirement (Apr 2026).
+All outbound Kite calls go through one shared HTTP client. This project only downloads
+market data (login, quotes, instruments, WebSocket ticker), so it does **not** require a
+static egress IP — Kite's static-IP whitelist (Apr 2026) applies only to order-placement
+endpoints, which live in the separate `algo_engine` service.
 
 ## `.gitignore` (must-haves)
 

@@ -69,7 +69,7 @@ class _LoginAttempt:
         )
 
 
-ClientFactory = Callable[[str | None, str | None], HttpClient]
+ClientFactory = Callable[[], HttpClient]
 ExternalTokenFetcher = Callable[[], str | None]
 ExternalTokenValidator = Callable[[str], None]
 
@@ -101,10 +101,7 @@ class LoginCoordinator:
         if external_token_validator is None:
 
             def configured_token_validator(access_token: str) -> None:
-                client = self._client_factory(
-                    self._settings.kite_static_ip,
-                    self._settings.kite_http_proxy,
-                )
+                client = self._client_factory()
                 try:
                     validate_access_token(
                         client,
@@ -163,10 +160,7 @@ class LoginCoordinator:
             if not user_id or not password:
                 raise KiteLoginError("KITE_USER_ID and KITE_PASSWORD must be configured")
 
-            client = self._client_factory(
-                self._settings.kite_static_ip,
-                self._settings.kite_http_proxy,
-            )
+            client = self._client_factory()
             try:
                 challenge = begin_login(client, user_id, password)
             except Exception:
