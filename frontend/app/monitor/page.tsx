@@ -9,6 +9,8 @@ import {
   type CaptureHistory,
   type CompressionHistory,
   type DashboardStats,
+  type RefreshWindow,
+  type SessionSummary,
 } from "@/lib/api";
 import {
   formatBytes,
@@ -38,6 +40,11 @@ interface LogLine {
 
 const MAX_LOGS = 300;
 const SPARK_SAMPLES = 60;
+// Poll cadence: fast while the session is live or being established (capture running
+// or the pre-open auth/token window), slow otherwise — outside those windows the last
+// session's numbers are final, so there is nothing to refresh.
+const POLL_ACTIVE_MS = 10_000;
+const POLL_IDLE_MS = 300_000;
 
 export default function MonitorPage() {
   const [rows, setRows] = useState<PerUnderlyingStatus[]>([]);
@@ -77,7 +84,8 @@ export default function MonitorPage() {
             pushLog("✓ live feed recovered — fresh ticks resumed", "session");
           }
           if (g.reconnects > prev.reconnects) {
-            pushLog(`↻ self-driven ticker reconnect (#${g.reconnects})`, "alert");
+            const tier = g.reconnect_tier === 2 ? " (fresh token)" : "";
+            pushLog(`↻ self-driven ticker reconnect (#${g.reconnects})${tier}`, "alert");
           }
           healthRef.current = {
             degraded: g.degraded,
@@ -107,8 +115,13 @@ export default function MonitorPage() {
   useTopicEnvelopes(captureStatusConnection, onCaptureStatus);
   useTopicEnvelopes(sessionConnection, onSession);
 
-  // Poll /api/stats for compression history averages, trading date, and a
-  // persisted fallback snapshot when live telemetry is not flowing.
+  // Poll /api/stats for compression averages, session history, and the retained
+  // snapshot. The interval adapts to the refresh window the backend reports, so we
+  // only poll frequently while a session is live or being established (08:30–09:00).
+  const captureRunning = stats?.capture_running ?? false;
+  const shouldRefresh = stats?.refresh_window?.should_refresh ?? true;
+  const pollMs = captureRunning || shouldRefresh ? POLL_ACTIVE_MS : POLL_IDLE_MS;
+
   useEffect(() => {
     let active = true;
     const poll = async () => {
@@ -118,8 +131,10 @@ export default function MonitorPage() {
         setStats(next);
         // Fall back to persisted / current compression when no live WS update yet.
         setCompression((cur) => cur ?? next.compression ?? null);
-        if (next.monitor && next.monitor_persisted) {
-          setRows((cur) => (cur.length ? cur : next.monitor!.per_underlying ?? []));
+        // Retain data: when capture is not streaming, show the persisted snapshot —
+        // which may be an EARLIER session — instead of leaving the page blank.
+        if (next.monitor && !next.capture_running) {
+          setRows((cur) => (cur.length ? cur : (next.monitor!.per_underlying ?? [])));
           setGlobals((cur) => cur ?? next.monitor!.global ?? null);
         }
       } catch {
@@ -127,17 +142,22 @@ export default function MonitorPage() {
       }
     };
     void poll();
-    const timer = window.setInterval(() => void poll(), 10_000);
+    const timer = window.setInterval(() => void poll(), pollMs);
     return () => {
       active = false;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [pollMs]);
 
   const expectedFrames = stats?.expected_frames_per_session ?? 23_400;
   const history = stats?.compression_history ?? null;
   const tradingDate = stats?.trading_date ?? null;
   const persisted = Boolean(stats && !stats.capture_running && stats.monitor_persisted);
+  // The session the displayed telemetry belongs to (may differ from today).
+  const shownDate = stats?.monitor_trading_date ?? null;
+  const isPastSession = Boolean(persisted && shownDate && shownDate !== tradingDate);
+  const sessionHistory = stats?.session_history ?? [];
+  const refreshWindow = stats?.refresh_window ?? null;
 
   return (
     <div className="flex h-[calc(100dvh-5.25rem)] flex-col gap-2 overflow-hidden text-zinc-200">
@@ -145,17 +165,23 @@ export default function MonitorPage() {
         globals={globals}
         tradingDate={tradingDate}
         persisted={persisted}
+        shownDate={shownDate}
+        isPastSession={isPastSession}
+        refreshWindow={refreshWindow}
+        captureRunning={captureRunning}
       />
 
       <KpiStrip globals={globals} fpsHistory={fpsHistory} />
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 lg:grid-cols-[1fr_1.25fr]">
         <div className="flex min-h-0 flex-col gap-2">
+          <DataLossPanel globals={globals} />
           <FrameIntegrityPanel rows={rows} globals={globals} expectedFrames={expectedFrames} />
           <HistoryPanel />
         </div>
         <div className="flex min-h-0 flex-col gap-2">
           <PerUnderlyingPanel rows={rows} />
+          <SessionHistoryPanel sessions={sessionHistory} />
           <CompressionPanel current={compression} history={history} />
         </div>
       </div>
@@ -179,11 +205,21 @@ function TopBar({
   globals,
   tradingDate,
   persisted,
+  shownDate,
+  isPastSession,
+  refreshWindow,
+  captureRunning,
 }: {
   globals: GlobalStatus | null;
   tradingDate: string | null;
   persisted: boolean;
+  shownDate: string | null;
+  isPastSession: boolean;
+  refreshWindow: RefreshWindow | null;
+  captureRunning: boolean;
 }) {
+  const live = captureRunning;
+  const refreshing = live || Boolean(refreshWindow?.should_refresh);
   return (
     <header className="flex flex-shrink-0 items-center gap-4 rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-2">
       <h1 className="text-base font-semibold text-zinc-100">Capture Monitor</h1>
@@ -193,6 +229,11 @@ function TopBar({
       <span className="text-xs text-zinc-500">
         uptime <span className="font-mono text-zinc-300">{formatUptime(globals?.uptime_ms)}</span>
       </span>
+      {globals?.exhausted && (
+        <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-xs font-semibold text-red-300">
+          recovery exhausted — restart required
+        </span>
+      )}
       {globals?.ingestion_degraded && (
         <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-xs font-medium text-red-400">
           ingestion degraded
@@ -209,16 +250,152 @@ function TopBar({
           {globals.reconnects} reconnect{globals.reconnects === 1 ? "" : "s"}
         </span>
       )}
-      {persisted && (
-        <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-400">
-          last saved snapshot (capture idle)
+      {isPastSession ? (
+        <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-xs text-sky-300">
+          showing last session · {shownDate}
         </span>
+      ) : (
+        persisted && (
+          <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-400">
+            last saved snapshot (capture idle)
+          </span>
+        )
       )}
       <div className="ml-auto flex items-center gap-4">
+        <span
+          className="text-[10px] uppercase tracking-wide text-zinc-500"
+          title={
+            refreshWindow
+              ? `auth window ${refreshWindow.auth_poll_start}–${refreshWindow.auth_poll_end} IST` +
+                (refreshWindow.local_time ? ` · now ${refreshWindow.local_time}` : "")
+              : undefined
+          }
+        >
+          {live ? "live" : refreshing ? "refreshing" : "idle · retained"}
+        </span>
         <ConnectionDot connection={captureStatusConnection} label="capture" />
         <ConnectionDot connection={sessionConnection} label="session" />
       </div>
     </header>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Data loss (per session)                                                    */
+/* -------------------------------------------------------------------------- */
+
+function DataLossPanel({ globals }: { globals: GlobalStatus | null }) {
+  if (!globals) {
+    return (
+      <Panel title="Data loss (this session)" subtitle="grid-second accounting">
+        <Empty small message="Awaiting telemetry…" />
+      </Panel>
+    );
+  }
+  const lost = globals.grid_seconds_lost ?? 0;
+  const gaps = globals.grid_gaps ?? 0;
+  const frozen = globals.frozen_seconds ?? 0;
+  const sessionLoss = globals.session_loss_pct ?? 0;
+  const sessionExpected = globals.session_frames_expected ?? 0;
+  const runway = globals.disk_runway_hours ?? 0;
+  return (
+    <Panel
+      title="Data loss (this session)"
+      subtitle={`vs ${formatIndianNumber(sessionExpected, 0)} elapsed grid seconds`}
+    >
+      <div className="grid grid-cols-3 gap-2">
+        <Stat label="Seconds lost" value={formatIndianNumber(lost, 0)} />
+        <Stat label="Gap events" value={formatIndianNumber(gaps, 0)} />
+        <Stat label="Frozen secs" value={formatIndianNumber(frozen, 0)} />
+        <Stat label="Elapsed loss" value={formatPercent(sessionLoss, 3)} />
+        <Stat label="Unmatched ticks" value={formatIndianNumber(globals.unmatched_ticks ?? 0, 0)} />
+        <Stat label="Dropped batches" value={formatIndianNumber(globals.dropped_batches, 0)} />
+        <Stat label="Ticks / sec" value={formatIndianNumber(globals.ticks_per_sec ?? 0, 1)} />
+        <Stat label="Writer lag" value={formatIndianNumber(globals.writer_lag_max ?? 0, 0)} />
+        <Stat
+          label="Disk runway"
+          value={runway > 0 ? `${formatIndianNumber(runway, 1)} h` : "–"}
+        />
+      </div>
+      {(lost > 0 || gaps > 0) && (
+        <div className="mt-2 rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-300">
+          {formatIndianNumber(lost, 0)} grid second(s) permanently lost across {gaps} gap event(s).
+        </div>
+      )}
+      {frozen > 0 && lost === 0 && (
+        <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-300">
+          {formatIndianNumber(frozen, 0)} second(s) written with duplicate (frozen) values.
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Session history (cross-session data loss)                                  */
+/* -------------------------------------------------------------------------- */
+
+function SessionHistoryPanel({ sessions }: { sessions: SessionSummary[] }) {
+  return (
+    <Panel title="Session history" subtitle={`${sessions.length} recorded sessions`}>
+      {sessions.length === 0 ? (
+        <Empty small message="No completed sessions recorded yet." />
+      ) : (
+        <div className="min-h-0 flex-1 overflow-auto">
+          <table className="w-full text-left text-xs tabular-nums">
+            <thead className="sticky top-0 bg-zinc-900 text-[10px] uppercase tracking-wide text-zinc-500">
+              <tr>
+                <th className="px-2 py-1.5">Session</th>
+                <th className="px-2 py-1.5 text-right">Frames</th>
+                <th className="px-2 py-1.5 text-right">Loss</th>
+                <th className="px-2 py-1.5 text-right">Lost s</th>
+                <th className="px-2 py-1.5 text-right">Gaps</th>
+                <th className="px-2 py-1.5 text-right">Frozen s</th>
+                <th className="px-2 py-1.5 text-right">Recon</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-800/70">
+              {sessions.map((s) => (
+                <tr key={s.trading_date} className="hover:bg-zinc-800/40">
+                  <td className="px-2 py-1.5 font-medium text-zinc-200">
+                    {s.trading_date}
+                    {s.exhausted && (
+                      <span className="ml-1.5 rounded-full bg-red-500/15 px-1.5 py-0.5 text-[9px] text-red-400">
+                        stalled
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5 text-right">{formatIndianNumber(s.captures, 0)}</td>
+                  <td
+                    className={`px-2 py-1.5 text-right ${
+                      s.session_loss_pct > 1 ? "text-amber-400" : "text-zinc-300"
+                    }`}
+                  >
+                    {formatPercent(s.session_loss_pct, 2)}
+                  </td>
+                  <td
+                    className={`px-2 py-1.5 text-right ${
+                      s.grid_seconds_lost > 0 ? "text-red-400" : "text-zinc-500"
+                    }`}
+                  >
+                    {formatIndianNumber(s.grid_seconds_lost, 0)}
+                  </td>
+                  <td className="px-2 py-1.5 text-right text-zinc-500">
+                    {formatIndianNumber(s.grid_gaps, 0)}
+                  </td>
+                  <td className="px-2 py-1.5 text-right text-zinc-500">
+                    {formatIndianNumber(s.frozen_seconds, 0)}
+                  </td>
+                  <td className="px-2 py-1.5 text-right text-zinc-500">
+                    {formatIndianNumber(s.reconnects, 0)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
   );
 }
 

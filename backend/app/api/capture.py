@@ -26,6 +26,13 @@ from app.kite.errors import KiteAuthenticationError
 
 logger = logging.getLogger(__name__)
 
+# Graceful-stop budget for the capture task. It must exceed the worst-case writer flush:
+# ``stop_writers`` joins each writer thread with a 5 s deadline, and a session runs up to
+# 6 writers (5 indices + stocks), so a fully-blocked disk can legitimately take ~30 s.
+# The old 10 s budget mistook a slow-but-healthy flush for a crash, which set
+# ``_has_failed`` and triggered the SIGTERM/restart path mid-shutdown.
+STOP_TIMEOUT_S = 45.0
+
 
 class CaptureError(Exception):
     """Raised for invalid capture control requests (already running, not logged in…)."""
@@ -160,6 +167,7 @@ class CaptureController:
                 "broker session expired; waiting for automatic token refresh"
             ) from exc
         self._context = context
+        self._wire_token_provider(context)
         self._stop = asyncio.Event()
         self._error = None
         self._has_failed = False
@@ -196,7 +204,7 @@ class CaptureController:
             self._stop.set()
         if self._task is not None:
             try:
-                await asyncio.wait_for(asyncio.shield(self._task), timeout=10.0)
+                await asyncio.wait_for(asyncio.shield(self._task), timeout=STOP_TIMEOUT_S)
             except TimeoutError:
                 self._has_failed = True
                 self._error = "capture task failed; inspect backend logs"
@@ -206,11 +214,33 @@ class CaptureController:
             except asyncio.CancelledError:
                 if not self._task.cancelled():
                     raise
+        self._record_session_summary()
         self._task = None
         self._stop = None
         if self._has_failed:
             raise CaptureError("capture did not flush and stop safely")
         return self.status()
+
+    def _record_session_summary(self) -> None:
+        """Persist this session's data-loss summary so the dashboard can show history.
+
+        Best-effort and never raises: a telemetry/persistence failure must not turn a
+        clean capture stop into a reported failure (which would block the EOD sweep).
+        """
+        ctx = self._context
+        monitor = getattr(ctx, "monitor", None) if ctx is not None else None
+        if monitor is None:
+            return
+        stats_root = getattr(self.settings, "stats_dir", None)
+        if stats_root is None:
+            return
+        try:
+            from app.ops import stats_store
+
+            summary = monitor.session_summary(getattr(ctx, "trading_date", "unknown"))
+            stats_store.record_session_summary(stats_root, summary)
+        except Exception:  # noqa: BLE001 - telemetry must never break a clean stop
+            logger.debug("failed to record capture session summary", exc_info=True)
 
     async def acquire_maintenance(self, provided_token: str | None) -> MaintenanceLease:
         self._authenticate_maintenance(provided_token)
@@ -228,6 +258,34 @@ class CaptureController:
         async with self._lifecycle_lock:
             self._maintenance_store.release(lease_id)
             return True
+
+    def _wire_token_provider(self, context) -> None:
+        """Give the live ticker a way to fetch a fresh token from calspread on reconnect.
+
+        Set on the bridge *after* bootstrap so the injected ``bootstrap_fn`` signature is
+        unchanged (and test doubles without a ``bridge`` are simply skipped). The provider
+        invalidates the failed token and re-acquires via the session service, which reaches
+        the calspread broker over HTTP.
+        """
+        bridge = getattr(context, "bridge", None)
+        if bridge is None:
+            return
+        setter = getattr(bridge, "set_token_provider", None)
+        if callable(setter):
+            setter(self._make_token_provider())
+
+    def _make_token_provider(self):
+        service = self.session_service
+
+        def _provider(current_token: str | None) -> str | None:
+            refresh = getattr(service, "refresh_broker_session", None)
+            if not callable(refresh):
+                return None
+            session = refresh(current_token)
+            token = getattr(session, "access_token", None) if session else None
+            return token or None
+
+        return _provider
 
     def _handle_authentication_failure(self, expected_access_token: str) -> None:
         invalidate = getattr(self.session_service, "invalidate_active_session", None)

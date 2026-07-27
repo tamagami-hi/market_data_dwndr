@@ -117,6 +117,10 @@ export interface PerUnderlyingStatus {
   /** False when the live feed has frozen (duplicate/absent ticks). */
   data_fresh: boolean;
   unmatched: number;
+  /** Ticks routed into this stream (separates one frozen underlying from a dead feed). */
+  applied?: number;
+  /** This stream's writer queue depth. */
+  writer_pending?: number;
 }
 
 export interface GlobalStatus {
@@ -147,6 +151,34 @@ export interface GlobalStatus {
   frozen_batches: number;
   /** Number of self-driven ticker reconnects triggered this session. */
   reconnects: number;
+  /** Active reconnect tier: 1 = reuse token, 2 = fresh token from calspread. */
+  reconnect_tier?: number;
+  /** Completed backoff cycles while the feed stayed stale. */
+  reconnect_cycles?: number;
+  /** True once reconnect recovery is exhausted (needs a process restart). */
+  exhausted?: boolean;
+  /** Access-token refreshes fetched during recovery. */
+  token_refreshes?: number;
+  last_token_refresh_ms?: number | null;
+  token_age_ms?: number | null;
+  // --- per-session data loss ---
+  /** Times the 1 Hz grid fell so far behind it had to resync (lost whole seconds). */
+  grid_gaps?: number;
+  /** Total grid seconds that could never be written. */
+  grid_seconds_lost?: number;
+  /** Seconds captured while the feed was stale (duplicate values, no fresh data). */
+  frozen_seconds?: number;
+  /** Frames the grid should have produced over the ELAPSED capture span. */
+  session_frames_expected?: number;
+  /** Loss measured against elapsed time (not the full-day baseline). */
+  session_loss_pct?: number;
+  /** Ticks that matched no subscribed instrument. */
+  unmatched_ticks?: number;
+  batches_received?: number;
+  ticks_received?: number;
+  ticks_per_sec?: number;
+  /** Hours of capture the remaining free disk can absorb. */
+  disk_runway_hours?: number;
 }
 
 /** EOD zstd compression telemetry (CompressionProgress + persisted history). */

@@ -17,7 +17,6 @@ export interface AuthStatus {
   market_phase?: string;
   credentials_present?: boolean;
   external_token_source_configured?: boolean;
-  static_ip_configured?: boolean;
   risk_free_rate?: number | null;
   access_token_at?: number | null;
   risk_free_rate_as_of?: string | null;
@@ -132,13 +131,59 @@ export interface MonitorPayload {
   global: GlobalStatus;
 }
 
+export interface SessionStreamSummary {
+  underlying: string;
+  frames_written: number;
+  frame_loss_pct: number;
+  file_bytes: number;
+}
+
+/** One completed capture session's data-loss record (from session-history.jsonl). */
+export interface SessionSummary {
+  trading_date: string;
+  recorded_at: number;
+  uptime_ms: number;
+  captures: number;
+  frames_written: number;
+  frames_expected: number;
+  frame_loss_pct: number;
+  session_frames_expected: number;
+  session_loss_pct: number;
+  grid_gaps: number;
+  grid_seconds_lost: number;
+  frozen_seconds: number;
+  dropped_batches: number;
+  drop_rate_pct: number;
+  unmatched_ticks: number;
+  ticks_received: number;
+  reconnects: number;
+  token_refreshes: number;
+  exhausted: boolean;
+  disk_bytes: number;
+  streams: SessionStreamSummary[];
+}
+
+/** When the dashboard should actively refresh (capture running or pre-open auth window). */
+export interface RefreshWindow {
+  auth_poll_start: string;
+  auth_poll_end: string;
+  in_auth_window: boolean;
+  should_refresh: boolean;
+  local_time?: string;
+}
+
 export interface DashboardStats {
   generated_at: number;
   capture_running: boolean;
   trading_date: string | null;
+  market_phase?: string | null;
   expected_frames_per_session: number;
   monitor: MonitorPayload | null;
   monitor_persisted: boolean;
+  /** Trading date the monitor payload belongs to (may be an earlier session). */
+  monitor_trading_date?: string | null;
+  session_history?: SessionSummary[];
+  refresh_window?: RefreshWindow;
   compression: CompressionProgressPayload | null;
   compression_history: CompressionHistory;
 }

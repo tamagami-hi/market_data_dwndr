@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 from collections import deque
 from pathlib import Path
 
@@ -29,6 +30,10 @@ HEARTBEAT_WINDOW_MS = 2_000
 FPS_WINDOW_MS = 5_000
 # Minimum spanned time before a rate is reported (avoids startup / tiny-interval spikes).
 FPS_MIN_SPAN_MS = 900
+
+# ``directory_bytes`` is an O(files) filesystem walk; cache it for this long so the
+# per-second broadcast and every dashboard poll don't each pay for it.
+DISK_BYTES_TTL_MS = 30_000
 
 # Full-session frame baseline (09:00-15:30 @ 1 Hz). Overridable via Settings.
 DEFAULT_EXPECTED_FRAMES = 23_400
@@ -71,6 +76,44 @@ def frame_loss_pct(frames_written: int, frames_expected: int) -> float:
     return max(0.0, min(100.0, loss))
 
 
+def expected_frames_elapsed(
+    first_capture_ms: int | None,
+    last_capture_ms: int | None,
+    interval_ms: int = 1_000,
+) -> int:
+    """Frames the 1 Hz grid *should* have produced over the elapsed capture span.
+
+    ``frame_loss_pct`` against the whole-day baseline reports ~96% "loss" at 09:20,
+    which is correct as a completion figure but useless as a health signal. Measuring
+    against elapsed grid time answers the question that actually matters intraday:
+    *of the seconds we have been running, how many did we capture?*
+    """
+    if first_capture_ms is None or last_capture_ms is None:
+        return 0
+    interval_ms = max(1, int(interval_ms))
+    span = max(0, int(last_capture_ms) - int(first_capture_ms))
+    return span // interval_ms + 1
+
+
+def disk_runway_hours(
+    disk_free_bytes: int,
+    bytes_per_frame: float,
+    active_writers: int,
+    interval_s: float = 1.0,
+) -> float:
+    """Hours of capture the free space can still absorb (0 when not computable).
+
+    Predicts ENOSPC — the failure mode that kills every writer at once — from values
+    the monitor already has.
+    """
+    if disk_free_bytes <= 0 or bytes_per_frame <= 0 or active_writers <= 0:
+        return 0.0
+    per_second = bytes_per_frame * active_writers / max(0.001, interval_s)
+    if per_second <= 0:
+        return 0.0
+    return disk_free_bytes / per_second / 3600.0
+
+
 def drop_rate_pct(dropped_batches: int, captures: int) -> float:
     """Percent of ingest batches dropped: dropped / (captures + dropped) * 100."""
     denom = captures + dropped_batches
@@ -111,6 +154,7 @@ class CaptureMonitor:
         expected_frames: int = DEFAULT_EXPECTED_FRAMES,
         capture_start_ms: int | None = None,
         fps_window_ms: int = FPS_WINDOW_MS,
+        disk_bytes_ttl_ms: int = DISK_BYTES_TTL_MS,
     ) -> None:
         self.index_tables = index_tables
         self.stock_matrix = stock_matrix
@@ -130,6 +174,26 @@ class CaptureMonitor:
         # persistence all share this monitor), so extra calls can't create spikes.
         self.fps_window_ms = fps_window_ms if fps_window_ms > 0 else FPS_WINDOW_MS
         self._fps_samples: deque[tuple[int, int]] = deque()
+        self._fps_lock = threading.Lock()
+        # ``directory_bytes`` walks the whole MARKET_DATA tree (rglob + stat per file),
+        # which grows without bound as sessions accumulate — and snapshot() is called
+        # every second by the broadcaster *plus* on every /api/status and /api/stats
+        # read. Cache it behind a TTL so dashboard polling can't multiply the cost.
+        self.disk_bytes_ttl_ms = (
+            disk_bytes_ttl_ms if disk_bytes_ttl_ms > 0 else DISK_BYTES_TTL_MS
+        )
+        self._disk_bytes_cache: tuple[int, int] | None = None  # (measured_at_ms, bytes)
+
+    def _cached_directory_bytes(self, now: int) -> int:
+        """``directory_bytes`` behind a TTL (see ``disk_bytes_ttl_ms``)."""
+        if self.market_data_path is None:
+            return 0
+        cache = self._disk_bytes_cache
+        if cache is not None and (now - cache[0]) < self.disk_bytes_ttl_ms:
+            return cache[1]
+        total = directory_bytes(self.market_data_path)
+        self._disk_bytes_cache = (now, total)
+        return total
 
     def _feed_stale(self, now: int) -> bool:
         """True when the engine's freshness monitor reports frozen/absent data."""
@@ -138,7 +202,13 @@ class CaptureMonitor:
             return False
         return bool(freshness.is_stale(now))
 
-    def _entry(self, underlying: str, unmatched: int, writer: FileWriterThread | None) -> dict:
+    def _entry(
+        self,
+        underlying: str,
+        unmatched: int,
+        writer: FileWriterThread | None,
+        applied: int = 0,
+    ) -> dict:
         now = self._clock()
         frames = writer.frames_written if writer else 0
         last_write = writer.last_write_ms if writer else None
@@ -168,15 +238,33 @@ class CaptureMonitor:
             "heartbeat_age_ms": heartbeat_age_ms,
             "data_fresh": not feed_stale,
             "unmatched": unmatched,
+            # Ticks routed into this table/matrix — separates "one underlying froze"
+            # from "the whole feed froze" (the global freshness signal can't).
+            "applied": int(applied),
+            # This file's writer queue depth; a sustained non-zero value is the early
+            # warning that the write path is falling behind for *this* stream.
+            "writer_pending": int(writer.pending) if writer is not None else 0,
         }
 
     def per_underlying(self) -> list[dict]:
         entries = [
-            self._entry(name, table.unmatched, self.index_writers.get(name))
+            self._entry(
+                name,
+                table.unmatched,
+                self.index_writers.get(name),
+                applied=getattr(table, "applied", 0),
+            )
             for name, table in self.index_tables.items()
         ]
         if self.stock_matrix is not None:
-            entries.append(self._entry("STOCKS", self.stock_matrix.unmatched, self.stock_writer))
+            entries.append(
+                self._entry(
+                    "STOCKS",
+                    self.stock_matrix.unmatched,
+                    self.stock_writer,
+                    applied=getattr(self.stock_matrix, "applied", 0),
+                )
+            )
         return entries
 
     def _unique_token_count(self) -> int:
@@ -200,18 +288,22 @@ class CaptureMonitor:
             return 0.0
         now = self._clock()
         captures = self.engine.captures
-        samples = self._fps_samples
-        samples.append((now, captures))
-        # Trim to the trailing window, always keeping at least two samples to measure.
-        while len(samples) > 2 and (now - samples[0][0]) > self.fps_window_ms:
-            samples.popleft()
-        oldest_ts, oldest_captures = samples[0]
+        # snapshot() is called concurrently from the display worker thread (broadcaster)
+        # and the event loop (/api/status, /api/stats), so the sample deque needs a lock
+        # or the two callers interleave and produce a nonsense rate.
+        with self._fps_lock:
+            samples = self._fps_samples
+            samples.append((now, captures))
+            # Trim to the trailing window, always keeping at least two samples to measure.
+            while len(samples) > 2 and (now - samples[0][0]) > self.fps_window_ms:
+                samples.popleft()
+            oldest_ts, oldest_captures = samples[0]
         elapsed_ms = now - oldest_ts
         if elapsed_ms < FPS_MIN_SPAN_MS:
             return 0.0  # not enough spanned time yet (startup / rapid successive calls)
         return (captures - oldest_captures) / (elapsed_ms / 1000.0)
 
-    def global_metrics(self) -> dict:
+    def global_metrics(self, entries: list[dict] | None = None) -> dict:
         dropped_batches = self.bridge.dropped_batches if self.bridge is not None else 0
         captures = self.engine.captures if self.engine is not None else 0
         now = self._clock()
@@ -226,7 +318,10 @@ class CaptureMonitor:
             writers.append(self.stock_writer)
         writer_lag_max = max((w.pending for w in writers), default=0)
         # Overall frame integrity: sum of frames vs sum of per-underlying baselines.
-        entries = self.per_underlying()
+        # ``entries`` is passed in by snapshot() so per_underlying() (which stats every
+        # writer file) is computed once per snapshot rather than twice.
+        if entries is None:
+            entries = self.per_underlying()
         total_frames = sum(int(e["frames_written"]) for e in entries)
         total_expected = self.expected_frames * len(entries) if entries else 0
         # Data-freshness health (the "is the feed actually updating?" signal).
@@ -237,10 +332,50 @@ class CaptureMonitor:
         stale = self._feed_stale(now)
         degraded = bool(getattr(self.engine, "degraded", False)) or stale
         reconnects = int(getattr(self.bridge, "reconnects", 0)) if self.bridge is not None else 0
+        # Tiered self-healing telemetry: which recovery tier is active, how many token
+        # refreshes have happened, and whether the recovery has been declared exhausted
+        # (the escalation signal that replaces the old silent freeze).
+        reconnect_tier = int(getattr(self.engine, "reconnect_tier", 0))
+        reconnect_cycles = int(getattr(self.engine, "reconnect_cycles", 0))
+        exhausted = bool(getattr(self.engine, "exhausted", False))
+        token_refreshes = (
+            int(getattr(self.bridge, "token_refreshes", 0)) if self.bridge is not None else 0
+        )
+        last_token_refresh_ms = (
+            getattr(self.bridge, "last_token_refresh_ms", None)
+            if self.bridge is not None
+            else None
+        )
+        token_age_fn = getattr(self.bridge, "token_age_ms", None) if self.bridge else None
+        token_age_ms = int(token_age_fn(now)) if callable(token_age_fn) else None
+        # --- per-session data loss ------------------------------------------------ #
+        # Grid gaps are the ground truth for lost seconds (previously log-only).
+        grid_gaps = int(getattr(self.engine, "grid_gaps", 0))
+        grid_seconds_lost = int(getattr(self.engine, "grid_seconds_lost", 0))
+        frozen_seconds = int(getattr(self.engine, "frozen_seconds", 0))
+        session_expected = expected_frames_elapsed(
+            getattr(self.engine, "first_capture_ms", None),
+            getattr(self.engine, "last_capture_ms", None),
+        )
+        # Loss measured against ELAPSED capture time (not the full-day baseline), so an
+        # early-session reading is meaningful instead of showing ~96% "loss".
+        session_loss_pct = round(frame_loss_pct(captures, session_expected), 3)
+        # Ingest throughput straight from the bridge.
+        batches_received = int(getattr(self.bridge, "batches_received", 0)) if self.bridge else 0
+        ticks_received = int(getattr(self.bridge, "ticks_received", 0)) if self.bridge else 0
+        uptime_s = uptime_ms / 1000.0
+        ticks_per_sec = round(ticks_received / uptime_s, 2) if uptime_s >= 1 else 0.0
+        # Disk runway: predicts the ENOSPC that would kill every writer at once.
+        active_writers = max(1, len(entries))
+        mean_bytes_per_frame = (
+            sum(float(e["avg_bytes_per_frame"]) for e in entries) / len(entries)
+            if entries
+            else 0.0
+        )
         return {
             "tokens": self._unique_token_count(),
             "fps": round(self._fps(), 3),
-            "disk_bytes": directory_bytes(self.market_data_path) if self.market_data_path else 0,
+            "disk_bytes": self._cached_directory_bytes(now),
             "disk_free_bytes": disk_free,
             "disk_total_bytes": disk_total,
             "captures": captures,
@@ -260,8 +395,64 @@ class CaptureMonitor:
             "degraded": degraded,
             "frozen_batches": frozen_batches,
             "reconnects": reconnects,
+            "reconnect_tier": reconnect_tier,
+            "reconnect_cycles": reconnect_cycles,
+            "exhausted": exhausted,
+            "token_refreshes": token_refreshes,
+            "last_token_refresh_ms": last_token_refresh_ms,
+            "token_age_ms": token_age_ms,
+            # --- per-session data loss ---
+            "grid_gaps": grid_gaps,
+            "grid_seconds_lost": grid_seconds_lost,
+            "frozen_seconds": frozen_seconds,
+            "session_frames_expected": session_expected,
+            "session_loss_pct": session_loss_pct,
+            "unmatched_ticks": int(getattr(self.engine, "unmatched", 0)),
+            "batches_received": batches_received,
+            "ticks_received": ticks_received,
+            "ticks_per_sec": ticks_per_sec,
+            "disk_runway_hours": round(
+                disk_runway_hours(disk_free, mean_bytes_per_frame, active_writers), 2
+            ),
         }
 
     def snapshot(self) -> dict:
         """The full ``CaptureStatus`` envelope for the ``capture-status`` topic."""
-        return protocol.capture_status(self.per_underlying(), self.global_metrics())
+        entries = self.per_underlying()
+        return protocol.capture_status(entries, self.global_metrics(entries))
+
+    def session_summary(self, trading_date: str) -> dict:
+        """A compact end-of-session record for the cross-session history log."""
+        entries = self.per_underlying()
+        g = self.global_metrics(entries)
+        return {
+            "trading_date": trading_date,
+            "recorded_at": self._clock(),
+            "uptime_ms": g["uptime_ms"],
+            "captures": g["captures"],
+            "frames_written": g["frames_written"],
+            "frames_expected": g["frames_expected"],
+            "frame_loss_pct": g["frame_loss_pct"],
+            "session_frames_expected": g["session_frames_expected"],
+            "session_loss_pct": g["session_loss_pct"],
+            "grid_gaps": g["grid_gaps"],
+            "grid_seconds_lost": g["grid_seconds_lost"],
+            "frozen_seconds": g["frozen_seconds"],
+            "dropped_batches": g["dropped_batches"],
+            "drop_rate_pct": g["drop_rate_pct"],
+            "unmatched_ticks": g["unmatched_ticks"],
+            "ticks_received": g["ticks_received"],
+            "reconnects": g["reconnects"],
+            "token_refreshes": g["token_refreshes"],
+            "exhausted": g["exhausted"],
+            "disk_bytes": g["disk_bytes"],
+            "streams": [
+                {
+                    "underlying": e["underlying"],
+                    "frames_written": e["frames_written"],
+                    "frame_loss_pct": e["frame_loss_pct"],
+                    "file_bytes": e["file_bytes"],
+                }
+                for e in entries
+            ],
+        }

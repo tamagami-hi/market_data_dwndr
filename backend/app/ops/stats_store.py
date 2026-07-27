@@ -30,6 +30,10 @@ COMPRESSION_HISTORY_FILE = "compression-history.jsonl"
 # Keep cross-day averages bounded to the most recent sweeps.
 MAX_COMPRESSION_HISTORY = 365
 
+SESSION_HISTORY_FILE = "session-history.jsonl"
+# One record per capture session; a year of trading days is plenty.
+MAX_SESSION_HISTORY = 365
+
 
 def stats_dir(root: str | os.PathLike[str]) -> Path:
     """Return the stats directory (identity -- files live directly in ``root``)."""
@@ -42,6 +46,10 @@ def compression_history_path(stats_dir_path: str | os.PathLike[str]) -> Path:
 
 def capture_snapshot_path(stats_dir_path: str | os.PathLike[str], trading_date: str) -> Path:
     return Path(stats_dir_path) / f"capture-{trading_date}.json"
+
+
+def session_history_path(stats_dir_path: str | os.PathLike[str]) -> Path:
+    return Path(stats_dir_path) / SESSION_HISTORY_FILE
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -171,3 +179,78 @@ def load_capture_snapshot(
     except json.JSONDecodeError:
         logger.debug("capture snapshot for %s is corrupt", trading_date)
         return None
+
+
+def latest_capture_snapshot(
+    state_dir: str | os.PathLike[str],
+) -> tuple[str, dict] | None:
+    """Return ``(trading_date, payload)`` for the newest snapshot on disk, any date.
+
+    Lets the dashboard keep showing the **last session's** telemetry when today's
+    capture has not started yet (or on a holiday/weekend), instead of an empty page.
+    """
+    root = Path(state_dir)
+    if not root.exists():
+        return None
+    best: tuple[str, dict] | None = None
+    for path in sorted(root.glob("capture-*.json"), reverse=True):
+        date_part = path.stem[len("capture-") :]
+        if not date_part:
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.debug("skipping unreadable capture snapshot %s", path.name)
+            continue
+        if isinstance(payload, dict):
+            best = (date_part, payload)
+            break
+    return best
+
+
+def record_session_summary(
+    state_dir: str | os.PathLike[str],
+    summary: dict,
+) -> Path:
+    """Append one completed-session summary to the session-history log.
+
+    One line per capture session (keyed by trading date), holding the per-session
+    data-loss figures: grid gaps/seconds lost, elapsed-based loss, dropped batches,
+    reconnects. Re-recording the same trading date replaces the earlier entry so a
+    mid-day restart does not create duplicates.
+    """
+    trading_date = str(summary.get("trading_date") or "unknown")
+    history = [r for r in load_session_history(state_dir) if r.get("trading_date") != trading_date]
+    history.append(summary)
+    history = history[-MAX_SESSION_HISTORY:]
+    path = session_history_path(state_dir)
+    text = "\n".join(json.dumps(row) for row in history) + "\n"
+    _atomic_write_text(path, text)
+    return path
+
+
+def load_session_history(state_dir: str | os.PathLike[str]) -> list[dict]:
+    """Return all recorded session summaries (oldest first); empty if none/corrupt."""
+    path = session_history_path(state_dir)
+    if not path.exists():
+        return []
+    records: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            logger.debug("skipping corrupt session-history line")
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def session_history(state_dir: str | os.PathLike[str], limit: int = 30) -> list[dict]:
+    """Most recent session summaries, newest first (bounded by ``limit``)."""
+    records = load_session_history(state_dir)
+    records.sort(key=lambda r: str(r.get("trading_date") or ""), reverse=True)
+    return records[: max(0, int(limit))]

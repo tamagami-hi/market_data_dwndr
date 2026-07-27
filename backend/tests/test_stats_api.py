@@ -30,12 +30,93 @@ def _running_controller():
     )
 
 
-def _patch_settings(monkeypatch, tmp_path):
+def _patch_settings(monkeypatch, tmp_path, **extra):
     monkeypatch.setattr(
         stats_api,
         "get_settings",
-        lambda: SimpleNamespace(stats_dir=tmp_path, expected_frames_per_session=23_400),
+        lambda: SimpleNamespace(
+            stats_dir=tmp_path,
+            expected_frames_per_session=23_400,
+            auth_poll_start=extra.get("auth_poll_start", "08:30"),
+            auth_poll_end=extra.get("auth_poll_end", "09:00"),
+        ),
     )
+
+
+def test_stats_exposes_session_history(monkeypatch, tmp_path):
+    _patch_settings(monkeypatch, tmp_path)
+    stats_store.record_session_summary(
+        tmp_path, {"trading_date": "2026-07-24", "grid_seconds_lost": 7}
+    )
+    payload = collect_stats(SimpleNamespace(session_service=_session()))
+    assert [r["trading_date"] for r in payload["session_history"]] == ["2026-07-24"]
+    assert payload["session_history"][0]["grid_seconds_lost"] == 7
+
+
+def test_stats_retains_last_session_snapshot_when_today_has_none(monkeypatch, tmp_path):
+    """With no capture today, the dashboard must fall back to the newest prior session."""
+    _patch_settings(monkeypatch, tmp_path)
+    stats_store.write_capture_snapshot(
+        tmp_path, "2026-07-24", {"global": {"captures": 42}, "per_underlying": []}
+    )
+    payload = collect_stats(SimpleNamespace(session_service=_session("2026-07-27")))
+    assert payload["monitor_persisted"] is True
+    assert payload["monitor_trading_date"] == "2026-07-24"  # an EARLIER session
+    assert payload["monitor"]["global"]["captures"] == 42
+
+
+def test_stats_prefers_todays_snapshot_over_older(monkeypatch, tmp_path):
+    _patch_settings(monkeypatch, tmp_path)
+    stats_store.write_capture_snapshot(tmp_path, "2026-07-24", {"global": {"captures": 1}})
+    stats_store.write_capture_snapshot(tmp_path, "2026-07-27", {"global": {"captures": 2}})
+    payload = collect_stats(SimpleNamespace(session_service=_session("2026-07-27")))
+    assert payload["monitor_trading_date"] == "2026-07-27"
+    assert payload["monitor"]["global"]["captures"] == 2
+
+
+def test_refresh_window_should_refresh_while_capture_runs(monkeypatch, tmp_path):
+    _patch_settings(monkeypatch, tmp_path)
+    payload = collect_stats(
+        SimpleNamespace(
+            session_service=_session(),
+            capture_controller=_running_controller(),
+        )
+    )
+    window = payload["refresh_window"]
+    assert window["should_refresh"] is True
+    assert window["auth_poll_start"] == "08:30"
+    assert window["auth_poll_end"] == "09:00"
+
+
+def test_refresh_window_reports_auth_window_from_calendar(monkeypatch, tmp_path):
+    """Inside 08:30-09:00 the dashboard should refresh even with capture stopped."""
+    _patch_settings(monkeypatch, tmp_path)
+
+    class _Cal:
+        def local_dt(self, _ms):
+            from datetime import datetime
+
+            return datetime(2026, 7, 27, 8, 45)
+
+    service = SimpleNamespace(status=lambda: {"trading_date": "2026-07-27"}, calendar=_Cal())
+    payload = collect_stats(SimpleNamespace(session_service=service))
+    assert payload["refresh_window"]["in_auth_window"] is True
+    assert payload["refresh_window"]["should_refresh"] is True
+
+
+def test_refresh_window_idle_outside_windows(monkeypatch, tmp_path):
+    _patch_settings(monkeypatch, tmp_path)
+
+    class _Cal:
+        def local_dt(self, _ms):
+            from datetime import datetime
+
+            return datetime(2026, 7, 27, 22, 0)  # after hours
+
+    service = SimpleNamespace(status=lambda: {"trading_date": "2026-07-27"}, calendar=_Cal())
+    payload = collect_stats(SimpleNamespace(session_service=service))
+    assert payload["refresh_window"]["in_auth_window"] is False
+    assert payload["refresh_window"]["should_refresh"] is False
 
 
 def test_stats_merges_live_monitor_and_compression(monkeypatch, tmp_path):
