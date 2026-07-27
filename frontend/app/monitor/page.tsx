@@ -160,11 +160,11 @@ export default function MonitorPage() {
   const refreshWindow = stats?.refresh_window ?? null;
 
   return (
-    // Mobile/tablet: natural document flow — the page scrolls and every panel keeps a
-    // usable minimum height. Only on `lg` do we pin the dashboard to the viewport and
-    // hide overflow (the old unconditional h-[calc(100dvh-5.25rem)] + overflow-hidden
-    // squeezed six panels into one screen on a phone, so they collapsed into each other).
-    <div className="flex flex-col gap-2 text-zinc-200 lg:h-[calc(100dvh-5.25rem)] lg:overflow-hidden">
+    // The dashboard flows naturally and the PAGE scrolls, at every breakpoint. It used
+    // to be pinned to the viewport (h-[calc(100dvh-5.25rem)] + overflow-hidden), but
+    // with three panels per column each scroll area collapsed to ~40px — unreadable.
+    // Panels keep a minimum height instead, so nothing is ever crushed.
+    <div className="flex flex-col gap-2 text-zinc-200">
       <TopBar
         globals={globals}
         tradingDate={tradingDate}
@@ -177,13 +177,13 @@ export default function MonitorPage() {
 
       <KpiStrip globals={globals} fpsHistory={fpsHistory} />
 
-      <div className="grid min-h-0 grid-cols-1 gap-2 lg:flex-1 lg:grid-cols-[1fr_1.25fr]">
-        <div className="flex min-h-0 flex-col gap-2">
+      <div className="grid grid-cols-1 gap-2 lg:grid-cols-[1fr_1.25fr]">
+        <div className="flex flex-col gap-2">
           <DataLossPanel globals={globals} />
           <FrameIntegrityPanel rows={rows} globals={globals} expectedFrames={expectedFrames} />
           <HistoryPanel />
         </div>
-        <div className="flex min-h-0 flex-col gap-2">
+        <div className="flex flex-col gap-2">
           <PerUnderlyingPanel rows={rows} />
           <SessionHistoryPanel sessions={sessionHistory} />
           <CompressionPanel current={compression} history={history} />
@@ -527,16 +527,19 @@ function FrameIntegrityPanel({
   const overallCompleteness = globals ? 100 - globals.frame_loss_pct : 0;
   return (
     <Panel title="Frame integrity" subtitle={`baseline ${formatIndianNumber(expectedFrames, 0)} frames / session`}>
-      <div className="mb-3 flex items-center gap-3">
+      {/* Compact header row: smaller gauge + inline figure, so the per-stream list
+          below keeps real height instead of being squeezed to a couple of pixels. */}
+      <div className="mb-2 flex flex-shrink-0 items-center gap-2.5">
         <Gauge value={overallCompleteness} />
-        <div className="text-xs text-zinc-400">
-          <div className="text-2xl font-bold tabular-nums text-zinc-100">
+        <div className="text-[10px] leading-tight text-zinc-500">
+          <div className="text-lg font-bold tabular-nums text-zinc-100">
             {globals ? formatPercent(overallCompleteness, 1) : "–"}
           </div>
-          <div>captured of full session</div>
+          captured of full session
         </div>
       </div>
-      <div className="flex flex-col gap-1.5 overflow-auto">
+      <div className="min-h-0 flex-1 overflow-auto">
+        <div className="flex flex-col gap-1.5">
         {rows.length === 0 ? (
           <Empty small message="Awaiting telemetry…" />
         ) : (
@@ -555,6 +558,7 @@ function FrameIntegrityPanel({
             );
           })
         )}
+        </div>
       </div>
     </Panel>
   );
@@ -565,10 +569,10 @@ function Gauge({ value }: { value: number }) {
   const color = pct >= 95 ? "#22c55e" : pct >= 50 ? "#f59e0b" : "#38bdf8";
   return (
     <div
-      className="grid h-16 w-16 flex-shrink-0 place-items-center rounded-full"
+      className="grid h-12 w-12 flex-shrink-0 place-items-center rounded-full"
       style={{ background: `conic-gradient(${color} ${pct * 3.6}deg, #27272a 0deg)` }}
     >
-      <div className="grid h-12 w-12 place-items-center rounded-full bg-zinc-900 text-[10px] font-semibold text-zinc-300">
+      <div className="grid h-9 w-9 place-items-center rounded-full bg-zinc-900 text-[9px] font-semibold text-zinc-300">
         {pct.toFixed(0)}%
       </div>
     </div>
@@ -608,13 +612,15 @@ function CompressionPanel({
       {current ? (
         <>
           <Bar value={pct} />
-          <div className="mt-2 grid grid-cols-3 gap-2">
-            <Stat label="Ratio" value={`${formatIndianNumber(current.ratio, 2)}×`} />
-            <Stat label="Last batch" value={formatDuration(current.elapsed_ms)} />
-            <Stat label="Throughput" value={formatThroughput(current.throughput_mbps)} />
-            <Stat label="Files" value={`${current.files_done}/${current.files_total}`} />
-            <Stat label="Avg / file" value={formatDuration(current.avg_file_ms)} />
-            <Stat label="Threads" value={String(current.threads)} />
+          {/* Compact 3x2 micro-stat grid: labels and values on one line each so the
+              panel stops dominating the column. */}
+          <div className="mt-1.5 grid grid-cols-3 gap-x-2 gap-y-1">
+            <MicroStat label="Ratio" value={`${formatIndianNumber(current.ratio, 2)}×`} />
+            <MicroStat label="Elapsed" value={formatDuration(current.elapsed_ms)} />
+            <MicroStat label="MB/s" value={formatThroughput(current.throughput_mbps)} />
+            <MicroStat label="Files" value={`${current.files_done}/${current.files_total}`} />
+            <MicroStat label="Avg/file" value={formatDuration(current.avg_file_ms)} />
+            <MicroStat label="Threads" value={String(current.threads)} />
           </div>
           {current.current_file && (
             <div className="mt-1 truncate text-[10px] text-zinc-500">{current.current_file}</div>
@@ -624,21 +630,38 @@ function CompressionPanel({
         <Empty small message="No compression sweep yet today." />
       )}
 
-      <div className="mt-3 border-t border-zinc-800 pt-2">
-        <div className="mb-1 text-[10px] uppercase tracking-wide text-zinc-500">
-          Cross-day averages{history ? ` (${history.samples} sweeps)` : ""}
-        </div>
+      {/* Cross-day averages as a single inline row instead of three boxed stats. */}
+      <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-t border-zinc-800 pt-1.5 text-[10px] text-zinc-500">
+        <span className="uppercase tracking-wide">
+          avg{history ? ` · ${history.samples} sweeps` : ""}
+        </span>
         {history && history.samples > 0 ? (
-          <div className="grid grid-cols-3 gap-2">
-            <Stat label="Avg ratio" value={`${formatIndianNumber(history.avg_ratio, 2)}×`} />
-            <Stat label="Avg time" value={formatDuration(history.avg_total_elapsed_ms)} />
-            <Stat label="Avg MB/s" value={formatThroughput(history.avg_throughput_mbps)} />
-          </div>
+          <>
+            <span className="tabular-nums text-zinc-300">
+              {formatIndianNumber(history.avg_ratio, 2)}× ratio
+            </span>
+            <span className="tabular-nums text-zinc-300">
+              {formatDuration(history.avg_total_elapsed_ms)}
+            </span>
+            <span className="tabular-nums text-zinc-300">
+              {formatThroughput(history.avg_throughput_mbps)}
+            </span>
+          </>
         ) : (
-          <div className="text-[11px] text-zinc-600">No history recorded yet.</div>
+          <span className="text-zinc-600">no history yet</span>
         )}
       </div>
     </Panel>
+  );
+}
+
+/** Label + value on one line — much denser than the boxed `Stat`. */
+function MicroStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-1 border-b border-zinc-800/60 pb-0.5">
+      <span className="truncate text-[9px] uppercase tracking-wide text-zinc-500">{label}</span>
+      <span className="shrink-0 text-[11px] font-semibold tabular-nums text-zinc-100">{value}</span>
+    </div>
   );
 }
 
@@ -801,23 +824,25 @@ function HistoryTable() {
     history.totals.total_bytes > 0 ? (history.totals.archived_bytes / history.totals.total_bytes) * 100 : 0;
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3">
-      <div className="grid flex-shrink-0 grid-cols-2 gap-2 sm:grid-cols-4">
-        <Kpi label="Sessions" value={formatIndianNumber(history.totals.sessions, 0)} />
-        <Kpi label="Data files" value={formatIndianNumber(history.totals.data_files, 0)} />
-        <Kpi label="Stored data" value={formatBytes(history.totals.total_bytes)} />
-        <Kpi label="Archived share" value={`${archiveShare.toFixed(1)}%`} />
+    <div className="flex h-full min-h-0 flex-col gap-1.5">
+      {/* Totals as one dense inline strip instead of four tall Kpi cards — that row
+          was eating the height the table needs to show more than one session. */}
+      <div className="flex flex-shrink-0 flex-wrap items-baseline gap-x-3 gap-y-0.5 rounded border border-zinc-800/80 bg-zinc-950/40 px-2 py-1 text-[10px] text-zinc-500">
+        <Inline label="sessions" value={formatIndianNumber(history.totals.sessions, 0)} />
+        <Inline label="files" value={formatIndianNumber(history.totals.data_files, 0)} />
+        <Inline label="stored" value={formatBytes(history.totals.total_bytes)} />
+        <Inline label="archived" value={`${archiveShare.toFixed(1)}%`} />
       </div>
-      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-zinc-800">
-        <table className="w-full text-left text-xs tabular-nums">
-          <thead className="sticky top-0 bg-zinc-950 text-[10px] uppercase tracking-wide text-zinc-500">
+      <div className="min-h-[9rem] flex-1 overflow-auto rounded-lg border border-zinc-800">
+        <table className="w-full text-left text-[11px] tabular-nums">
+          <thead className="sticky top-0 bg-zinc-950 text-[9px] uppercase tracking-wide text-zinc-500">
             <tr>
-              <th className="px-3 py-2">Session</th>
-              <th className="px-3 py-2">State</th>
-              <th className="px-3 py-2 text-right">Stored</th>
-              <th className="px-3 py-2 text-right">Raw / archive</th>
-              <th className="px-3 py-2 text-right">Files</th>
-              <th className="px-3 py-2">Captured sets</th>
+              <th className="px-2 py-1">Session</th>
+              <th className="px-2 py-1">State</th>
+              <th className="px-2 py-1 text-right">Stored</th>
+              <th className="hidden px-2 py-1 text-right sm:table-cell">Raw / archive</th>
+              <th className="px-2 py-1 text-right">Files</th>
+              <th className="hidden px-2 py-1 lg:table-cell">Captured sets</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-800">
@@ -832,19 +857,21 @@ function HistoryTable() {
                     : "Archived";
               return (
                 <tr key={s.trading_date} className="text-zinc-300">
-                  <td className="whitespace-nowrap px-3 py-2 font-medium text-zinc-100">
+                  <td className="whitespace-nowrap px-2 py-1 font-medium text-zinc-100">
                     {s.trading_date}
                     {s.is_current && (
-                      <span className="ml-2 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] text-sky-300">current</span>
+                      <span className="ml-1.5 rounded-full bg-sky-500/15 px-1.5 py-0.5 text-[9px] text-sky-300">
+                        current
+                      </span>
                     )}
                   </td>
-                  <td className="px-3 py-2">{state}</td>
-                  <td className="whitespace-nowrap px-3 py-2 text-right">{formatBytes(s.total_bytes)}</td>
-                  <td className="whitespace-nowrap px-3 py-2 text-right text-zinc-500">
+                  <td className="px-2 py-1">{state}</td>
+                  <td className="whitespace-nowrap px-2 py-1 text-right">{formatBytes(s.total_bytes)}</td>
+                  <td className="hidden whitespace-nowrap px-2 py-1 text-right text-zinc-500 sm:table-cell">
                     {formatBytes(s.raw_bytes)} / {formatBytes(s.archived_bytes)}
                   </td>
-                  <td className="px-3 py-2 text-right">{formatIndianNumber(s.data_files, 0)}</td>
-                  <td className="px-3 py-2 text-zinc-400">
+                  <td className="px-2 py-1 text-right">{formatIndianNumber(s.data_files, 0)}</td>
+                  <td className="hidden px-2 py-1 text-zinc-400 lg:table-cell">
                     {s.indices.length > 0 ? s.indices.join(", ") : "No indices"}
                     {s.stock_files > 0 ? ` · stocks (${s.stock_files})` : ""}
                   </td>
@@ -855,6 +882,16 @@ function HistoryTable() {
         </table>
       </div>
     </div>
+  );
+}
+
+/** `label value` on one line, for dense summary strips. */
+function Inline({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="whitespace-nowrap">
+      <span className="uppercase tracking-wide">{label} </span>
+      <span className="font-semibold tabular-nums text-zinc-200">{value}</span>
+    </span>
   );
 }
 
@@ -872,9 +909,10 @@ function Panel({
   children: React.ReactNode;
 }) {
   return (
-    // min-h on small screens keeps scrollable panels readable in natural flow; on `lg`
-    // it drops to 0 so the flex column can distribute the pinned viewport height.
-    <section className="flex min-h-[13rem] flex-col rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 lg:min-h-0 lg:flex-1">
+    // A real minimum height at every breakpoint: the panel's scroll regions must stay
+    // tall enough to show a header plus several rows, which is what broke when the
+    // dashboard was pinned to the viewport.
+    <section className="flex min-h-[14rem] flex-col rounded-lg border border-zinc-800 bg-zinc-900/60 p-3">
       <div className="mb-2 flex flex-shrink-0 flex-wrap items-baseline justify-between gap-x-2">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">{title}</h2>
         {subtitle && <span className="text-[10px] lowercase text-zinc-600">{subtitle}</span>}

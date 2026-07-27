@@ -147,4 +147,38 @@ describe("responsive layout", () => {
       await page.close();
     }
   });
+
+  it("monitor scroll containers have room for multiple rows on a desktop viewport", async () => {
+    const page = await browser.newPage();
+    try {
+      // 1440x900 is the pinned-dashboard case (lg): every scroll region must still be
+      // tall enough to show more than a single table row, which was the complaint about
+      // the download-history panel.
+      await page.setViewport({ width: 1440, height: 900 });
+      await page.goto(`${BASE}/monitor`, { waitUntil: "networkidle2", timeout: 30_000 });
+      await new Promise((r) => setTimeout(r, 600));
+
+      const heights = await page.evaluate(() =>
+        [...document.querySelectorAll("section")].map((s) => {
+          const title = s.querySelector("h2")?.textContent?.trim() ?? "?";
+          const scroller = s.querySelector(".overflow-auto");
+          return {
+            title,
+            panel: Math.round(s.getBoundingClientRect().height),
+            scroller: scroller ? Math.round(scroller.getBoundingClientRect().height) : null,
+          };
+        }),
+      );
+      // A table row is ~22px at this density; 60px guarantees header + 2 rows.
+      for (const h of heights) {
+        if (h.scroller === null) continue;
+        assert.ok(
+          h.scroller >= 60,
+          `panel "${h.title}" scroll area is only ${h.scroller}px tall (panel ${h.panel}px)`,
+        );
+      }
+    } finally {
+      await page.close();
+    }
+  });
 });
