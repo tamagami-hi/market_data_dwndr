@@ -15,8 +15,11 @@ ENV NEXT_TELEMETRY_DISABLED=1
 WORKDIR /app
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
-RUN test -n "${NEXT_PUBLIC_BACKEND_URL}" \
-    && npm run build
+# NEXT_PUBLIC_BACKEND_URL may be empty on purpose: an empty value builds the image in
+# same-origin mode (relative /api + window.location-derived WS), so the browser talks to
+# whatever host served the page via a reverse proxy. Set it to an absolute origin only
+# for a direct/tunnelled deployment. Either way it is inlined into the client bundle here.
+RUN npm run build
 
 FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS runtime
 

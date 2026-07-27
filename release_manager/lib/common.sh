@@ -34,15 +34,21 @@ release_bundle_version() {
 # Deterministic identity of the built images (git SHA is combined with this).
 image_build_config_hash() {
     local backend_env=$1 frontend_env=$2 backend_url app_name app_uid app_gid
-    backend_url="$(env_value "$frontend_env" NEXT_PUBLIC_BACKEND_URL)"
+    # An optional 3rd arg overrides the baked NEXT_PUBLIC_BACKEND_URL so the build identity
+    # matches the value actually compiled in (same-origin builds force it empty, decoupled
+    # from the dev-oriented frontend/.env.local). Without it, fall back to the env file.
+    if [[ $# -ge 3 ]]; then
+        backend_url=$3
+    else
+        backend_url="$(env_value "$frontend_env" NEXT_PUBLIC_BACKEND_URL)"
+    fi
     app_name="$(env_value "$frontend_env" NEXT_PUBLIC_APP_NAME)"
     [[ -n "$app_name" ]] || app_name="TickVault"
     app_uid="$(env_value "$backend_env" APP_UID)"
     app_gid="$(env_value "$backend_env" APP_GID)"
-    if [[ -z "$backend_url" ]]; then
-        echo "NEXT_PUBLIC_BACKEND_URL is required to identify the frontend build." >&2
-        return 1
-    fi
+    # An empty NEXT_PUBLIC_BACKEND_URL is intentional: it selects same-origin mode
+    # (relative /api + window.location WS behind a reverse proxy). It still yields a
+    # stable, deterministic build identity, so it is allowed here.
     if [[ ! "$app_uid" =~ ^[0-9]+$ || ! "$app_gid" =~ ^[0-9]+$ ]]; then
         echo "APP_UID and APP_GID must be numeric to identify the image build." >&2
         return 1

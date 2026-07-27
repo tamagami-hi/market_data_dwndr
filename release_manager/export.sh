@@ -24,14 +24,30 @@ DOCKER=()
 # shellcheck source=lib/common.sh
 source "$RELEASE_DIR/lib/common.sh"
 
-usage() { echo "Usage: ./release_manager/export.sh"; }
+usage() {
+    cat <<'EOF'
+Usage: ./release_manager/export.sh [--major|--minor|--patch] [--backend-url URL]
+
+  --backend-url URL   Bake an ABSOLUTE backend origin into the frontend image (the
+                      browser calls that origin directly). Omit for the default
+                      SAME-ORIGIN build (empty NEXT_PUBLIC_BACKEND_URL: relative /api +
+                      window.location WS, fronted by a reverse proxy). Same-origin
+                      images are domain/scheme-agnostic — no rebuild to rename/retls.
+EOF
+}
 BUMP="patch"
+# Same-origin is the default shipped build (empty NEXT_PUBLIC_BACKEND_URL). This is
+# decoupled from frontend/.env.local, which stays absolute for local `next dev`.
+build_backend_url=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --help|-h) usage; exit 0 ;;
         --major) BUMP="major"; shift ;;
         --minor) BUMP="minor"; shift ;;
         --patch) BUMP="patch"; shift ;;
+        --backend-url)
+            [[ $# -ge 2 ]] || { echo "--backend-url requires a value" >&2; usage >&2; exit 1; }
+            build_backend_url="$2"; shift 2 ;;
         *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 1 ;;
     esac
 done
@@ -75,13 +91,22 @@ mapfile -d '' -t DOCKER < <(docker_engine_command)
 COMPOSE=("${DOCKER[@]}" compose)
 "${COMPOSE[@]}" version >/dev/null
 
-build_hash="$(image_build_config_hash "$BACKEND_ENV" "$FRONTEND_ENV")"
+build_hash="$(image_build_config_hash "$BACKEND_ENV" "$FRONTEND_ENV" "$build_backend_url")"
 release_id="v${new_version}"
 backend_image="market-data-dwndr-backend:${release_id}"
 frontend_image="market-data-dwndr-frontend:${release_id}"
 
+if [[ -z "$build_backend_url" ]]; then
+    printf 'Frontend build mode: SAME-ORIGIN (relative /api + window.location WS; reverse-proxy fronted)\n'
+else
+    printf 'Frontend build mode: ABSOLUTE backend URL = %s\n' "$build_backend_url"
+fi
+
 printf 'Building images for release %s...\n' "$release_id"
-APP_VERSION="$release_id" "${COMPOSE[@]}" \
+# Force the effective NEXT_PUBLIC_BACKEND_URL for the build: a shell env var takes
+# precedence over the --env-file value, so this overrides the dev-oriented .env.local
+# (empty => same-origin). NEXT_PUBLIC_APP_NAME still comes from the env file.
+NEXT_PUBLIC_BACKEND_URL="$build_backend_url" APP_VERSION="$release_id" "${COMPOSE[@]}" \
     --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" \
     --env-file "$BACKEND_ENV" --env-file "$FRONTEND_ENV" build --pull
 backend_image_id="$("${DOCKER[@]}" image inspect --format '{{.Id}}' "$backend_image")"

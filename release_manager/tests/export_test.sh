@@ -10,7 +10,7 @@ REPO="$TEST_ROOT/repo"
 FAKE_BIN="$TEST_ROOT/bin"
 
 mkdir -p "$REPO/release_manager/lib" "$REPO/release_manager/DATA_DOWNLOADER/images" \
-    "$REPO/backend" "$REPO/frontend" "$FAKE_BIN"
+    "$REPO/backend/app" "$REPO/frontend" "$FAKE_BIN"
 cp "$SRC_RM/export.sh" "$REPO/release_manager/export.sh"
 cp "$SRC_RM/lib/common.sh" "$REPO/release_manager/lib/common.sh"
 cp "$SRC_RM/compose.deploy.yaml" "$REPO/release_manager/compose.deploy.yaml"
@@ -21,6 +21,7 @@ cp "$SRC_RM/DATA_DOWNLOADER/README.md" "$REPO/release_manager/DATA_DOWNLOADER/RE
 chmod +x "$REPO/release_manager/export.sh"
 
 printf 'APP_UID=10001\nAPP_GID=10001\nHTTP_PORT=9000\n' > "$REPO/backend/.env"
+printf '__version__ = "0.1.0"\n' > "$REPO/backend/app/__init__.py"
 printf 'PORT=3789\nNEXT_PUBLIC_BACKEND_URL=http://localhost:9000\nNEXT_PUBLIC_APP_NAME=TickVault\n' \
     > "$REPO/frontend/.env.local"
 printf 'services: {}\n' > "$REPO/compose.yaml"

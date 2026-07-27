@@ -71,7 +71,7 @@ services:
       args:
         APP_UID: ${APP_UID:-10001}
         APP_GID: ${APP_GID:-10001}
-        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:?Set NEXT_PUBLIC_BACKEND_URL in frontend/.env.local}
+        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL-}
         NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-TickVault}
     env_file:
       - ./frontend/.env.local
