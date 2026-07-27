@@ -11,7 +11,7 @@ the same (loopback/Tailscale) interface as the rest of the read-only API.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import PlainTextResponse
@@ -35,7 +35,7 @@ def _fmt_bytes(n: int | None) -> str:
 def _fmt_ms(ms: int | None) -> str:
     if not ms:
         return "-"
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone().strftime("%H:%M:%S")
+    return datetime.fromtimestamp(ms / 1000, tz=UTC).astimezone().strftime("%H:%M:%S")
 
 
 def collect_status(app_state) -> dict:

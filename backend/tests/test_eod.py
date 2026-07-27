@@ -78,7 +78,9 @@ def test_compression_timing_and_throughput(tmp_path):
     for key in ("elapsed_ms", "file_elapsed_ms", "avg_file_ms", "throughput_mbps"):
         assert key in final
     # A per-file 'running' event should report a positive per-file elapsed time.
-    running_with_file = [p for p in progress if p["phase"] == "running" and p["file_elapsed_ms"] > 0]
+    running_with_file = [
+        p for p in progress if p["phase"] == "running" and p["file_elapsed_ms"] > 0
+    ]
     assert running_with_file, "expected per-file timing in running events"
 
 
