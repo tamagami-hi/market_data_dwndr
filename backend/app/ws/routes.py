@@ -8,6 +8,7 @@ A ``ConnectionManager`` fans messages out to clients subscribed to each topic.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections import defaultdict
 
@@ -41,12 +42,22 @@ class ConnectionManager:
         return len(self._topics[topic])
 
     async def broadcast(self, topic: str, message: dict) -> int:
-        """Send ``message`` to every client on ``topic``; prune dead sockets."""
+        """Send ``message`` to every client on ``topic``; prune dead sockets.
+
+        The payload is serialized **once** and sent as text to each client. Using
+        ``send_json`` would re-run ``json.dumps`` per client, and these frames are large
+        (a full option grid) and sent every second, so per-client encoding wasted event-
+        loop time proportional to the number of dashboards open.
+        """
+        subscribers = self._topics[topic]
+        if not subscribers:
+            return 0
+        text = json.dumps(message)
         dead: list[WebSocket] = []
         sent = 0
-        for websocket in list(self._topics[topic]):
+        for websocket in list(subscribers):
             try:
-                await websocket.send_json(message)
+                await websocket.send_text(text)
                 sent += 1
             except Exception:  # noqa: BLE001 - a broken client shouldn't stop the rest
                 dead.append(websocket)

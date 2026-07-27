@@ -136,8 +136,20 @@ def implied_vol(
         if sigma <= 0 or sigma > 10:
             break
 
-    # Bisection fallback over a wide vol range.
+    # Bisection fallback over a wide vol range. Check the bracket first: BS price is
+    # monotonically increasing in sigma, so if the target price is not between the
+    # prices at lo and hi there is no root here — bisecting 200 times cannot find one.
+    # Deep-OTM strikes hit this constantly, and this runs ~1k times/second on the
+    # display thread, so the early return is a real CPU saving (it holds the GIL).
     lo, hi = 1e-4, 8.0
+    try:
+        price_lo = bs_price(spot, strike, t, r, lo, option)
+        price_hi = bs_price(spot, strike, t, r, hi, option)
+    except ValueError:
+        return None
+    if not (price_lo - tol) <= price <= (price_hi + tol):
+        return None
+
     for _ in range(200):
         mid = 0.5 * (lo + hi)
         diff = bs_price(spot, strike, t, r, mid, option) - price

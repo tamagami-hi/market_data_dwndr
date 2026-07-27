@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -11,19 +13,24 @@ from app.ws.routes import ConnectionManager, create_ws_router
 
 
 class FakeWebSocket:
+    """Stand-in socket. The hub serializes once and calls ``send_text``, so decode here
+    to keep assertions expressed in terms of the logical message."""
+
     def __init__(self, fail_on_send: bool = False) -> None:
         self.accepted = False
         self.sent: list[dict] = []
+        self.raw: list[str] = []
         self.closed_code: int | None = None
         self._fail = fail_on_send
 
     async def accept(self) -> None:
         self.accepted = True
 
-    async def send_json(self, message: dict) -> None:
+    async def send_text(self, text: str) -> None:
         if self._fail:
             raise RuntimeError("broken client")
-        self.sent.append(message)
+        self.raw.append(text)
+        self.sent.append(json.loads(text))
 
 
 # --- ConnectionManager unit tests --------------------------------------------

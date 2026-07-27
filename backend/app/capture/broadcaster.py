@@ -57,7 +57,19 @@ def _rupees(paise: int) -> float:
 
 
 def _finite(x: float, decimals: int = 6) -> float:
-    return 0.0 if (x is None or math.isnan(x)) else round(float(x), decimals)
+    """Coerce a float to a JSON-safe finite number.
+
+    ``json.dumps`` emits bare ``Infinity``/``NaN`` for non-finite floats, which
+    ``JSON.parse`` rejects — one bad value would drop the *entire* frame in the
+    browser. Greeks can legitimately go non-finite (e.g. ``gamma = pdf / (spot *
+    sigma * sqrt_t)`` overflows for a tiny sigma), so guard both cases, not just NaN.
+    """
+    if x is None:
+        return 0.0
+    value = float(x)
+    if not math.isfinite(value):
+        return 0.0
+    return round(value, decimals)
 
 
 def _build_grid_block(raw: RawBlock, greeks_side: dict, prev_oi: list[int] | None) -> dict:
@@ -68,7 +80,7 @@ def _build_grid_block(raw: RawBlock, greeks_side: dict, prev_oi: list[int] | Non
         "oi": oi,
         "change_in_oi": change_in_oi,
         "volume": [int(v) for v in raw.columns["volume"]],
-        "iv": [_finite(v * 100, 4) if not math.isnan(v) else 0.0 for v in greeks_side["iv"]],
+        "iv": [_finite(v * 100, 4) for v in greeks_side["iv"]],
         "delta": [_finite(v, 4) for v in greeks_side["delta"]],
         "gamma": [_finite(v, 6) for v in greeks_side["gamma"]],
         "theta": [_finite(v, 4) for v in greeks_side["theta"]],
