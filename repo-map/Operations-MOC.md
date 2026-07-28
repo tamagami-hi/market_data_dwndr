@@ -22,6 +22,8 @@ related: ["[[Decisions-MOC]]", "[[Live-Capture-MOC]]", "[[Code-Map]]"]
 | [[failure-modes]] | disconnects, auth expiry, disk full, truncated-file recovery | done |
 | [[data-retention]] | raw vs compressed lifetime, integrity checks | done |
 | [[vps-docker-deployment]] | private Tailscale deployment, storage preflight, systemd boot startup | done |
+| [[lan-and-public-domain-routing]] | same-origin design, AdGuard DNS + nginx, LAN → public path | done |
+| [[nginx-vhost-guide]] | install / update / verify the reverse-proxy vhost, troubleshooting | done |
 
 ## Implemented in
 - `backend/app/ops/{calendar,scheduler,eod,session_manager,retention}.py`
@@ -29,6 +31,8 @@ related: ["[[Decisions-MOC]]", "[[Live-Capture-MOC]]", "[[Code-Map]]"]
 - `backend/app/api/auth.py` — `/api/auth/{status,login,login-url}`
 - `backend/app/main.py` — startup resume + route wiring
 - `deploy/preflight.sh`, `deploy/market-data-dwndr.service.example` — mount/network checks and boot-safe Compose startup
+- `deploy/nginx/tickvault.beonedge.internal.conf` — same-origin reverse-proxy vhost (annotated); see [[nginx-vhost-guide]]
+- `docs/60-operations/network-topology.svg` — the four access paths in one diagram
 - Tests: `test_calendar_scheduler`, `test_eod`, `test_session_manager`, `test_retention`,
   `test_login`, `test_auth_api`
 
