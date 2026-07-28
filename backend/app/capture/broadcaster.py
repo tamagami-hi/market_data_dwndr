@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from dataclasses import dataclass
 
 from app.bin_codec.layout import (
@@ -138,9 +139,12 @@ class Broadcaster:
         )
         self._latest_snapshot: CaptureSnapshot | None = None
         self._publish_task: asyncio.Task[None] | None = None
-        # Server-side latency of the most recent publish (grid timestamp -> encoded),
-        # also surfaced on every message's `meta.pipeline_ms`.
-        self.last_pipeline_ms = 0
+        # Server-side build timings for the most recent publish, also surfaced on every
+        # message's `meta` (see _build_snapshot_messages for the measurement window).
+        self.last_build_ms = 0.0
+        self.last_greeks_ms = 0.0
+        self.last_stocks_ms = 0.0
+        self.last_queue_ms = 0
         # Throttled visibility for recurring best-effort broadcast failures (the
         # publish fires at the capture cadence, so we must not log a traceback every
         # tick — but we must not swallow them silently either).
@@ -349,7 +353,13 @@ class Broadcaster:
     def _build_snapshot_messages(
         self, snapshot: CaptureSnapshot
     ) -> tuple[tuple[str, dict], ...]:
+        # LATENCY WINDOW STARTS HERE — immediately before the first Greeks reconstruction
+        # — and ends once the whole 1 Hz batch is encoded and ready to hand to the
+        # websocket hub. It therefore covers exactly the server-side work: IV/Greeks for
+        # every chain, chain metrics, the columnar stock board, and monitor telemetry.
+        build_start = time.perf_counter()
         messages: list[tuple[str, dict]] = []
+        greeks_start = build_start
         for name, frame in snapshot.index_frames:
             header = self._index_headers.get(name)
             if header is None:
@@ -358,25 +368,38 @@ class Broadcaster:
                 ("market-data", message)
                 for message in self._index_frame_messages(name, header, frame)
             )
+        greeks_ms = (time.perf_counter() - greeks_start) * 1000.0
+
         if snapshot.stock_frame is not None:
             messages.append(("stocks", self._stock_frame_message(snapshot.stock_frame)))
+        stocks_ms = (time.perf_counter() - greeks_start) * 1000.0 - greeks_ms
+
         if self.monitor is not None:
             status = self.monitor.snapshot()
             messages.append(("capture-status", status))
             self._maybe_persist_snapshot(status.get("payload"))
         messages.append(("session", protocol.heartbeat(snapshot.timestamp_unix_ms)))
 
-        # Stamp the server-side pipeline latency on every message: the elapsed time from
-        # this frame's grid timestamp through Greeks reconstruction and encoding. Measured
-        # here (after the work, before the send) so it covers the whole build cost.
-        pipeline_ms = max(0, self._clock() - snapshot.timestamp_unix_ms)
-        self.last_pipeline_ms = pipeline_ms
+        # Batch is ready for the stream: close the window.
+        build_ms = (time.perf_counter() - build_start) * 1000.0
+        self.last_build_ms = round(build_ms, 2)
+        self.last_greeks_ms = round(greeks_ms, 2)
+        self.last_stocks_ms = round(stocks_ms, 2)
+        # How long the frame waited between its grid tick and the start of this build —
+        # useful to separate "the build is slow" from "we were queued behind something".
+        self.last_queue_ms = max(0, self._clock() - snapshot.timestamp_unix_ms) - int(build_ms)
+
+        meta = {
+            "pipeline_ms": self.last_build_ms,
+            "greeks_ms": self.last_greeks_ms,
+            "stocks_ms": self.last_stocks_ms,
+        }
         for _topic, message in messages:
-            meta = message.get("meta")
-            if meta is None:
-                message["meta"] = {"pipeline_ms": pipeline_ms}
+            existing = message.get("meta")
+            if existing is None:
+                message["meta"] = dict(meta)
             else:
-                meta["pipeline_ms"] = pipeline_ms
+                existing.update(meta)
         return tuple(messages)
 
     def _maybe_persist_snapshot(self, payload: dict | None, *, force: bool = False) -> None:

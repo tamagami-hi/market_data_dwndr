@@ -193,6 +193,38 @@ def test_latest_capture_snapshot_none_when_empty(tmp_path):
     assert stats_store.latest_capture_snapshot(tmp_path) is None
 
 
+def test_ticks_per_sec_is_a_trailing_rate_not_a_lifetime_average():
+    """The label promises a rate, so it must reflect the CURRENT rate.
+
+    The old form was ticks_received/uptime, which only ever creeps toward the session
+    mean: if ingest stops, it keeps reporting a large number, and if ingest doubles it
+    barely moves. This asserts the value tracks the recent window instead.
+    """
+    engine = CaptureEngine({}, None, {}, None)
+    clock = {"now": 0}
+    bridge = SimpleNamespace(
+        dropped_batches=0, reconnects=0, batches_received=0, ticks_received=0,
+        token_refreshes=0, last_token_refresh_ms=None, connected=True,
+    )
+    monitor = CaptureMonitor(
+        {}, None, {}, None, engine=engine, bridge=bridge,
+        clock=lambda: clock["now"], capture_start_ms=0,
+    )
+
+    # Steady 100 ticks/sec for 5 seconds.
+    for sec in range(1, 6):
+        clock["now"] = sec * 1000
+        bridge.ticks_received = sec * 100
+        rate = monitor.global_metrics()["ticks_per_sec"]
+    assert 90 <= rate <= 110, f"expected ~100 ticks/s, got {rate}"
+
+    # Ingest STOPS. A lifetime average would still report ~100; a trailing rate decays.
+    for sec in range(6, 13):
+        clock["now"] = sec * 1000
+        rate = monitor.global_metrics()["ticks_per_sec"]
+    assert rate == 0.0, f"a stalled feed must report 0 ticks/s, got {rate}"
+
+
 def test_session_summary_payload_shape():
     engine = CaptureEngine({}, None, {}, None, stale_after_ms=5_000)
     engine.freshness.start(0)

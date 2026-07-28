@@ -5,8 +5,17 @@ export interface WsEnvelope {
   payload?: unknown;
   /** Transport diagnostics, not market data (see backend app/ws/protocol.py envelope). */
   meta?: {
-    /** Server-side ms from the capture grid timestamp to the encoded message. */
+    /**
+     * Server-side build latency in ms: measured from immediately before the first
+     * Greeks reconstruction until the whole 1 Hz batch is encoded and ready for the
+     * websocket hub. Server-measured on purpose — comparing a server timestamp with the
+     * browser clock would report clock skew, not latency.
+     */
     pipeline_ms?: number;
+    /** Portion of pipeline_ms spent reconstructing IV/Greeks for every chain. */
+    greeks_ms?: number;
+    /** Portion spent building the columnar stock board (all legs, L1–L5). */
+    stocks_ms?: number;
   };
 }
 

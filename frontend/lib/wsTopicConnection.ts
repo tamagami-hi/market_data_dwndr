@@ -14,8 +14,15 @@ import type { WsEnvelope } from "@/lib/wsTypes";
 export interface WsConnectionState {
   connected: boolean;
   error: string | null;
-  /** Server-side latency of the last message: grid timestamp -> encoded (ms). */
+  /**
+   * Server-side build latency (ms): from just before the first Greeks reconstruction
+   * until the 1 Hz batch is encoded and ready to stream.
+   */
   pipelineMs: number | null;
+  /** Portion of pipelineMs spent on IV/Greeks. */
+  greeksMs: number | null;
+  /** Portion spent building the columnar stock board. */
+  stocksMs: number | null;
   /** Decompressed bytes received on this topic over the trailing window, per second. */
   bytesPerSec: number;
   /** Milliseconds since the last message arrived (client clock only — no skew). */
@@ -53,6 +60,8 @@ function createTopicConnection(topic: string): TopicConnection {
     connected: false,
     error: null,
     pipelineMs: null,
+    greeksMs: null,
+    stocksMs: null,
     bytesPerSec: 0,
     ageMs: null,
   };
@@ -120,9 +129,13 @@ function createTopicConnection(topic: string): TopicConnection {
         if (envelopeHandlers.size === 0) return;
         const envelope = parseEnvelope(raw);
         if (!envelope) return;
-        const pm = envelope.meta?.pipeline_ms;
-        if (typeof pm === "number" && pm !== connState.pipelineMs) {
-          setConnState({ pipelineMs: pm });
+        const m = envelope.meta;
+        if (m && typeof m.pipeline_ms === "number" && m.pipeline_ms !== connState.pipelineMs) {
+          setConnState({
+            pipelineMs: m.pipeline_ms,
+            greeksMs: typeof m.greeks_ms === "number" ? m.greeks_ms : connState.greeksMs,
+            stocksMs: typeof m.stocks_ms === "number" ? m.stocks_ms : connState.stocksMs,
+          });
         }
         for (const handler of envelopeHandlers) {
           try {
@@ -179,7 +192,10 @@ function createTopicConnection(topic: string): TopicConnection {
     }
     samples = [];
     lastMessageAt = null;
-    connState = { connected: false, error: null, pipelineMs: null, bytesPerSec: 0, ageMs: null };
+    connState = {
+      connected: false, error: null, pipelineMs: null, greeksMs: null,
+      stocksMs: null, bytesPerSec: 0, ageMs: null,
+    };
   }
 
   return {

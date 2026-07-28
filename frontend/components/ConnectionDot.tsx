@@ -46,8 +46,12 @@ export default function ConnectionDot({
         <span
           className="whitespace-nowrap font-mono text-[0.6875rem] text-zinc-500"
           title={
-            `server pipeline latency: ${state.pipelineMs ?? "–"} ms (snapshot → Greeks → encode)\n` +
-            `payload rate: ${formatBytes(state.bytesPerSec)}/s decompressed\n` +
+            `build latency: ${state.pipelineMs ?? "–"} ms — measured from just before the first\n` +
+            `Greeks reconstruction until the 1s batch is encoded and ready to stream.\n` +
+            (state.greeksMs != null ? `  · IV/Greeks (all chains): ${state.greeksMs} ms\n` : "") +
+            (state.stocksMs != null ? `  · stock board (L1–L5):   ${state.stocksMs} ms\n` : "") +
+            `payload rate: ${formatBytes(state.bytesPerSec)}/s decompressed ` +
+            `(~1/3 that on the wire — permessage-deflate)\n` +
             `last message: ${state.ageMs == null ? "–" : `${(state.ageMs / 1000).toFixed(1)}s ago`}`
           }
         >

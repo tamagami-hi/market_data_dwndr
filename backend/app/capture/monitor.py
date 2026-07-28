@@ -174,6 +174,8 @@ class CaptureMonitor:
         # persistence all share this monitor), so extra calls can't create spikes.
         self.fps_window_ms = fps_window_ms if fps_window_ms > 0 else FPS_WINDOW_MS
         self._fps_samples: deque[tuple[int, int]] = deque()
+        # Same trailing-window treatment for ingest rate (see _ticks_rate).
+        self._ticks_samples: deque[tuple[int, int]] = deque()
         self._fps_lock = threading.Lock()
         # ``directory_bytes`` walks the whole MARKET_DATA tree (rglob + stat per file),
         # which grows without bound as sessions accumulate — and snapshot() is called
@@ -319,6 +321,23 @@ class CaptureMonitor:
             return 0.0  # not enough spanned time yet (startup / rapid successive calls)
         return (captures - oldest_captures) / (elapsed_ms / 1000.0)
 
+    def _ticks_rate(self, now: int, ticks_received: int) -> float:
+        """Ticks/sec over a trailing window (same approach as ``_fps``).
+
+        Measured against the OLDEST sample still inside the window, so the value is a
+        genuine current rate and is unaffected by how often ``snapshot()`` is called.
+        """
+        with self._fps_lock:
+            samples = self._ticks_samples
+            samples.append((now, ticks_received))
+            while len(samples) > 2 and (now - samples[0][0]) > self.fps_window_ms:
+                samples.popleft()
+            oldest_ts, oldest_ticks = samples[0]
+        elapsed_ms = now - oldest_ts
+        if elapsed_ms < FPS_MIN_SPAN_MS:
+            return 0.0
+        return round((ticks_received - oldest_ticks) / (elapsed_ms / 1000.0), 2)
+
     def global_metrics(self, entries: list[dict] | None = None) -> dict:
         dropped_batches = self.bridge.dropped_batches if self.bridge is not None else 0
         captures = self.engine.captures if self.engine is not None else 0
@@ -376,11 +395,12 @@ class CaptureMonitor:
         # Loss measured against ELAPSED capture time (not the full-day baseline), so an
         # early-session reading is meaningful instead of showing ~96% "loss".
         session_loss_pct = round(frame_loss_pct(captures, session_expected), 3)
-        # Ingest throughput straight from the bridge.
+        # Ingest throughput from the bridge. `ticks_per_sec` is a TRAILING-WINDOW rate,
+        # not ticks_received/uptime — a lifetime average only ever creeps toward the mean
+        # and cannot show the current rate (which is what the label promises).
         batches_received = int(getattr(self.bridge, "batches_received", 0)) if self.bridge else 0
         ticks_received = int(getattr(self.bridge, "ticks_received", 0)) if self.bridge else 0
-        uptime_s = uptime_ms / 1000.0
-        ticks_per_sec = round(ticks_received / uptime_s, 2) if uptime_s >= 1 else 0.0
+        ticks_per_sec = self._ticks_rate(now, ticks_received)
         # Disk runway: predicts the ENOSPC that would kill every writer at once.
         active_writers = max(1, len(entries))
         mean_bytes_per_frame = (

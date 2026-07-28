@@ -26,6 +26,8 @@ const SERVER_STATE: WsConnectionState = {
   connected: false,
   error: null,
   pipelineMs: null,
+  greeksMs: null,
+  stocksMs: null,
   bytesPerSec: 0,
   ageMs: null,
 };
