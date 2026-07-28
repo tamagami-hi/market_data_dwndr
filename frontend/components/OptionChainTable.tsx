@@ -86,7 +86,7 @@ function Badge({ tone, children }: { tone: "sky" | "yellow" | "red"; children: R
     red: "bg-red-500/20 text-red-300",
   } as const;
   return (
-    <span className={`rounded px-1 text-[10px] font-semibold ${tones[tone]}`}>{children}</span>
+    <span className={`rounded px-1 text-[0.625rem] font-semibold ${tones[tone]}`}>{children}</span>
   );
 }
 
@@ -154,13 +154,13 @@ export default function OptionChainTable({ data }: { data: OptionChainData }) {
     <>
       {/* The grid is intentionally dense (13 columns per side); on a phone it scrolls
           sideways rather than being compressed into illegibility. */}
-      <p className="mb-1 text-[11px] text-zinc-500 lg:hidden" aria-hidden="true">
+      <p className="mb-1 text-[0.6875rem] text-zinc-500 lg:hidden" aria-hidden="true">
         Swipe sideways to see all call / put columns →
       </p>
       {/* Responsive max height: svh avoids the mobile URL-bar resize jitter that vh has,
           and the old hardcoded `calc(100vh - 230px)` assumed a single-row navbar. */}
       <div className="max-h-[68svh] overflow-auto overscroll-x-contain rounded-lg border border-zinc-800 lg:max-h-[calc(100dvh-15rem)]">
-        <table className="w-full border-collapse text-[11px] sm:text-xs">
+        <table className="w-full border-collapse text-[0.6875rem] sm:text-xs">
         <thead className="sticky top-0 z-10 bg-zinc-900/95 backdrop-blur">
           <tr>
             <th colSpan={CALL_COLS.length} className="border-b border-zinc-700 px-1 py-2 text-center font-semibold text-green-400">

@@ -165,7 +165,7 @@ function HeaderRibbon({
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col">
-      <span className="text-[11px] uppercase tracking-wide text-zinc-500">{label}</span>
+      <span className="text-[0.6875rem] uppercase tracking-wide text-zinc-500">{label}</span>
       <span className="font-semibold text-zinc-100">{value}</span>
     </div>
   );

@@ -23,6 +23,38 @@ body {
   font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
 }
 
+/*
+ * Scale the whole UI on large / high-resolution displays.
+ *
+ * Every size in this app is rem-based (Tailwind's spacing, text and radius scales all
+ * derive from the root font size), so bumping `html { font-size }` grows text, padding
+ * and gaps together — proportionally, without touching a single component.
+ *
+ * Why it is needed: at 100% zoom a 3200px-wide panel renders the same 16px text as a
+ * 1366px laptop, so the interface looks postage-stamp small even though there is plenty
+ * of room. Tailwind's own breakpoints are px-based and therefore unaffected by this,
+ * so the responsive layout rules keep behaving exactly as before.
+ *
+ * Kept modest on purpose: too aggressive and dense tables start wrapping.
+ */
+@media (min-width: 1920px) {
+  html {
+    font-size: 17px;
+  }
+}
+
+@media (min-width: 2400px) {
+  html {
+    font-size: 19px;
+  }
+}
+
+@media (min-width: 3000px) {
+  html {
+    font-size: 21px;
+  }
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

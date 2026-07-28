@@ -256,7 +256,7 @@ function Stat({ label, value, tone = "default" }: { label: string; value: string
   const color = tone === "green" ? "text-green-400" : tone === "amber" ? "text-amber-400" : "text-zinc-200";
   return (
     <div className="flex flex-col">
-      <span className="text-[11px] uppercase tracking-wide text-zinc-500">{label}</span>
+      <span className="text-[0.6875rem] uppercase tracking-wide text-zinc-500">{label}</span>
       <span className={`font-semibold ${color}`}>{value}</span>
     </div>
   );

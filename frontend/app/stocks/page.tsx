@@ -82,11 +82,11 @@ export default function StocksPage() {
         </div>
       ) : (
         <>
-          <p className="mb-1 text-[11px] text-zinc-500 sm:hidden" aria-hidden="true">
+          <p className="mb-1 text-[0.6875rem] text-zinc-500 sm:hidden" aria-hidden="true">
             Swipe sideways for futures &amp; spreads →
           </p>
           <div className="max-h-[70svh] overflow-auto overscroll-x-contain rounded-lg border border-zinc-800 lg:max-h-[calc(100dvh-13rem)]">
-            <table className="w-full border-collapse text-[11px] sm:text-xs">
+            <table className="w-full border-collapse text-[0.6875rem] sm:text-xs">
             <thead className="sticky top-0 z-10 bg-zinc-900/95 backdrop-blur">
               <tr className="text-zinc-400">
                 <Th className="text-left">Symbol</Th>
@@ -183,7 +183,7 @@ function FutureCell({ f }: { f?: { expiry: string; ltp: number; oi: number } }) 
   return (
     <td className="px-2 py-1.5 text-right font-mono text-zinc-300 whitespace-nowrap">
       <div>{fmtCell(f.ltp, 2)}</div>
-      <div className="text-[10px] text-zinc-500">
+      <div className="text-[0.625rem] text-zinc-500">
         {f.expiry.slice(5)} · OI {formatIndianNumber(f.oi, 0)}
       </div>
     </td>

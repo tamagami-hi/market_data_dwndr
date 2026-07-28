@@ -33,7 +33,7 @@ export default function StockDepthPanel({
       aria-label={`${depth.name} L5 market depth`}
       className="grid gap-3 border-y border-zinc-700/70 bg-zinc-950/70 p-3 lg:grid-cols-2 2xl:grid-cols-4"
     >
-      <p className="text-[11px] text-zinc-500 lg:col-span-2 2xl:col-span-4">
+      <p className="text-[0.6875rem] text-zinc-500 lg:col-span-2 2xl:col-span-4">
         On-demand snapshot loaded when this row was expanded. Collapse and reopen to refresh.
       </p>
       {legs.map((leg) => (
@@ -50,7 +50,7 @@ function DepthTable({ label, depth }: { label: string; depth: DepthLevel[] }) {
     <section className="min-w-0 rounded-md border border-zinc-800 bg-zinc-900/70 p-2">
       <h3 className="mb-2 text-xs font-medium text-zinc-300">{label} order book</h3>
       <div className="overflow-x-auto">
-      <table className="w-full min-w-[20rem] border-collapse text-[10px] font-mono">
+      <table className="w-full min-w-[20rem] border-collapse text-[0.625rem] font-mono">
         <caption className="sr-only">{label} order book</caption>
         <thead>
           <tr className="border-b border-zinc-800 text-zinc-500">
