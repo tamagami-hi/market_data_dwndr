@@ -122,7 +122,12 @@ acquire_release_lock() {
 }
 
 global_release_lock_file() {
-    printf '%s' "${TMPDIR:-/tmp}/market-data-dwndr-release.lock"
+    # Keep every release artifact inside release_manager/ — never the system temp dir.
+    # ${BASH_SOURCE[0]} is lib/common.sh, so its parent's parent is release_manager/.
+    local lib_dir release_dir
+    lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    release_dir="$(cd "$lib_dir/.." && pwd)"
+    printf '%s' "$release_dir/.release.lock"
 }
 
 assert_outside_capture_window() {

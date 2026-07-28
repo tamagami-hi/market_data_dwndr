@@ -1,1 +1,3 @@
 DATA_DOWNLOADER/MARKET_DATA
+# runtime concurrency lock for export/deploy (kept inside release_manager, not /tmp)
+.release.lock
