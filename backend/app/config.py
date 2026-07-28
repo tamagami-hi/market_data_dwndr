@@ -27,6 +27,17 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 DEFAULT_INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"]
 
 
+def _parse_hhmm(value: str) -> time:
+    """Parse a strict ``HH:MM`` schedule value (used by validation and session sizing)."""
+    try:
+        hour_text, minute_text = str(value).split(":")
+        if len(hour_text) != 2 or len(minute_text) != 2:
+            raise ValueError
+        return time(int(hour_text), int(minute_text))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("daily schedule values must use HH:MM") from exc
+
+
 class Settings(BaseSettings):
     """Application settings loaded from the environment / ``.env``."""
 
@@ -128,12 +139,15 @@ class Settings(BaseSettings):
     market_open: str = Field(default="09:00", description="Capture start (IST, HH:MM)")
     market_close: str = Field(default="15:30", description="Session close (IST, HH:MM)")
     timezone: str = Field(default="Asia/Kolkata", description="Exchange timezone")
-    expected_frames_per_session: int = Field(
-        default=23_400,
+    expected_frames_override: int | None = Field(
+        default=None,
         ge=1,
+        validation_alias="EXPECTED_FRAMES_PER_SESSION",
         description=(
-            "Frames expected in a full 1 Hz session (09:00-15:30 = 6h30m = 23,400s). "
-            "Baseline for the monitor's frame-loss/completeness metric."
+            "Optional hard override for the full-session frame baseline. Leave unset: "
+            "the baseline is normally DERIVED from MARKET_OPEN..MARKET_CLOSE and "
+            "CAPTURE_HZ (see the expected_frames_per_session property), so changing the "
+            "session window automatically corrects the monitor's frame-loss metric."
         ),
     )
     capture_stale_seconds: float = Field(
@@ -209,6 +223,17 @@ class Settings(BaseSettings):
         """Treat an empty recovery-tuning env value as unset (use the field default)."""
         if isinstance(value, str) and not value.strip():
             return cls.model_fields[info.field_name].default
+        return value
+
+    @field_validator(
+        "expected_frames_override",
+        mode="before",
+    )
+    @classmethod
+    def _blank_frames_override_is_none(cls, value: object) -> object:
+        """A blank EXPECTED_FRAMES_PER_SESSION means 'derive it', not 'invalid'."""
+        if isinstance(value, str) and not value.strip():
+            return None
         return value
 
     @field_validator("risk_free_rate", mode="before")
@@ -302,19 +327,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_daily_schedule(self) -> Settings:
-        def parse(value: str) -> time:
-            try:
-                hour_text, minute_text = value.split(":")
-                if len(hour_text) != 2 or len(minute_text) != 2:
-                    raise ValueError
-                return time(int(hour_text), int(minute_text))
-            except (TypeError, ValueError) as exc:
-                raise ValueError("daily schedule values must use HH:MM") from exc
-
-        auth_start = parse(self.auth_poll_start)
-        auth_end = parse(self.auth_poll_end)
-        market_open = parse(self.market_open)
-        market_close = parse(self.market_close)
+        auth_start = _parse_hhmm(self.auth_poll_start)
+        auth_end = _parse_hhmm(self.auth_poll_end)
+        market_open = _parse_hhmm(self.market_open)
+        market_close = _parse_hhmm(self.market_close)
         if not auth_start < auth_end <= market_open < market_close:
             raise ValueError(
                 "daily schedule must satisfy AUTH_POLL_START < AUTH_POLL_END "
@@ -326,6 +342,34 @@ class Settings(BaseSettings):
     def cors_origins(self) -> list[str]:
         """Allowed browser origins, parsed from ``frontend_url`` (comma-separated)."""
         return [o.strip() for o in self.frontend_url.split(",") if o.strip()]
+
+    # --- derived session sizing -------------------------------------------- #
+    @property
+    def session_seconds(self) -> int:
+        """Length of the capture window in seconds (``MARKET_OPEN``..``MARKET_CLOSE``).
+
+        The schedule validator guarantees ``market_open < market_close``, so this is
+        always positive and never wraps midnight.
+        """
+        opened = _parse_hhmm(self.market_open)
+        closed = _parse_hhmm(self.market_close)
+        return (closed.hour - opened.hour) * 3600 + (closed.minute - opened.minute) * 60
+
+    @property
+    def expected_frames_per_session(self) -> int:
+        """Frames a complete session should produce — the monitor's loss baseline.
+
+        DERIVED from the configured market window and snapshot cadence rather than
+        hardcoded, so shortening/extending the session (e.g. a muhurat session, or
+        MARKET_OPEN moved to 09:15) automatically yields the right baseline instead of
+        silently reporting phantom frame loss against a stale 23,400.
+
+        Default 09:00-15:30 at 1 Hz = 6h30m = 23,400 frames — the previous constant.
+        ``EXPECTED_FRAMES_PER_SESSION`` still overrides it when set.
+        """
+        if self.expected_frames_override is not None:
+            return self.expected_frames_override
+        return max(1, self.session_seconds * self.capture_hz)
 
     # --- derived storage paths (docs/20-data-and-storage/storage-layout.md) ---
     @property

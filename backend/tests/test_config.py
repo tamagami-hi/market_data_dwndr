@@ -117,7 +117,54 @@ def test_blank_stats_data_path_falls_back_to_default(monkeypatch, value):
 
 def test_expected_frames_default(monkeypatch):
     _set(monkeypatch)
-    assert _settings().expected_frames_per_session == 23_400
+    # 09:00-15:30 at 1 Hz = 6h30m = 23,400 — now DERIVED, not a hardcoded constant.
+    s = _settings()
+    assert s.session_seconds == 23_400
+    assert s.expected_frames_per_session == 23_400
+    assert s.expected_frames_override is None
+
+
+def test_expected_frames_follows_market_window(monkeypatch):
+    """Shortening the session must shrink the baseline, not report phantom loss."""
+    _set(monkeypatch, MARKET_OPEN="09:15", MARKET_CLOSE="15:30")
+    assert _settings().expected_frames_per_session == 22_500  # 6h15m
+
+    _set(monkeypatch, MARKET_OPEN="10:30", MARKET_CLOSE="14:00")
+    assert _settings().expected_frames_per_session == 12_600  # 3h30m
+
+
+def test_expected_frames_short_session(monkeypatch):
+    """A one-hour muhurat-style session yields 3,600 frames at 1 Hz."""
+    _set(
+        monkeypatch,
+        AUTH_POLL_START="17:00",
+        AUTH_POLL_END="18:00",
+        MARKET_OPEN="18:00",
+        MARKET_CLOSE="19:00",
+    )
+    s = _settings()
+    assert s.session_seconds == 3_600
+    assert s.expected_frames_per_session == 3_600
+
+
+def test_expected_frames_scales_with_capture_hz(monkeypatch):
+    _set(monkeypatch, CAPTURE_HZ="2")
+    assert _settings().expected_frames_per_session == 46_800
+
+
+def test_expected_frames_env_override_wins(monkeypatch):
+    _set(monkeypatch, EXPECTED_FRAMES_PER_SESSION="12345", MARKET_OPEN="09:15")
+    s = _settings()
+    assert s.expected_frames_override == 12_345
+    assert s.expected_frames_per_session == 12_345  # override beats the derived value
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_blank_expected_frames_override_derives(monkeypatch, value):
+    _set(monkeypatch, EXPECTED_FRAMES_PER_SESSION=value)
+    s = _settings()
+    assert s.expected_frames_override is None
+    assert s.expected_frames_per_session == 23_400
 
 
 def test_http_port_is_required(monkeypatch):
