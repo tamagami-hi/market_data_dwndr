@@ -51,8 +51,30 @@ for f in docker-compose.yml .env.example deploy.sh rollback.sh manifest.json ver
 done
 [[ -x "$BUNDLE/deploy.sh" && -x "$BUNDLE/rollback.sh" ]] || { echo "runners must be executable" >&2; exit 1; }
 [[ "$(jq -r '.git_sha' "$BUNDLE/manifest.json")" == "$(git -C "$REPO" rev-parse HEAD)" ]]
+# A full export must declare both services.
+[[ "$(jq -rc '.services' "$BUNDLE/manifest.json")" == '["backend","frontend"]' ]] \
+    || { echo "full bundle must list both services" >&2; exit 1; }
 # secrets must never be bundled
 if find "$BUNDLE" -type f -name '.env' -print -quit | grep -q .; then
     echo "bundle must not contain a real .env" >&2; exit 1; fi
+
+# --- PARTIAL export: --frontend must bundle ONLY the frontend image ----------
+PATH="$FAKE_BIN:$PATH" TMPDIR="$TEST_ROOT" "$REPO/release_manager/export.sh" --frontend >/dev/null
+mapfile -t bundles2 < <(find "$REPO/release_manager/recent_builds" -mindepth 1 -maxdepth 1 -type d -print)
+[[ ${#bundles2[@]} -eq 1 ]] || { echo "expected exactly one staged bundle after partial export" >&2; exit 1; }
+PB="${bundles2[0]}"
+
+[[ "$(jq -rc '.services' "$PB/manifest.json")" == '["frontend"]' ]] \
+    || { echo "partial bundle must list only frontend, got $(jq -rc '.services' "$PB/manifest.json")" >&2; exit 1; }
+[[ -f "$PB/images/frontend.tar.gz" ]] || { echo "partial bundle missing frontend image" >&2; exit 1; }
+[[ ! -f "$PB/images/backend.tar.gz" ]] \
+    || { echo "partial frontend bundle must NOT contain a backend image" >&2; exit 1; }
+[[ "$(jq -r '.images.backend // "absent"' "$PB/manifest.json")" == "absent" ]] \
+    || { echo "partial manifest must not describe a backend image" >&2; exit 1; }
+# The integrity check must accept a partial bundle (it only verifies what is shipped).
+verify_bundle_sha256 "$PB" || { echo "partial bundle must pass checksum verification" >&2; exit 1; }
+mapfile -t pservices < <(bundle_services "$PB")
+[[ "${pservices[*]}" == "frontend" ]] || { echo "bundle_services must report frontend only" >&2; exit 1; }
+grep -q 'Scope:' "$PB/README.txt" || { echo "bundle README should record the scope" >&2; exit 1; }
 
 printf 'release export integration test passed\n'

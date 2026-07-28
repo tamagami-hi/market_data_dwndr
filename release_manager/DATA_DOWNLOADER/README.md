@@ -108,6 +108,30 @@ stack up with `--no-build`, health-check `/health` and `/login`, and **roll back
 automatically if the health check fails**. It never touches `.env` or the data
 mounts.
 
+### Deploying one service
+
+The scope normally comes from the bundle (`manifest.json` → `services`), so a bundle
+built with `export.sh --frontend` only ever recreates the frontend. You can also narrow
+it by hand:
+
+```bash
+./deploy.sh --frontend    # only the frontend; --no-deps, so capture is untouched
+./deploy.sh --backend     # only the backend; interrupts capture
+./deploy.sh --backend --force   # urgent backend fix inside market hours
+```
+
+A **frontend-only** run is safe during market hours and behaves differently on purpose:
+the market-window gate is skipped, the capture-stopped guard is skipped, and **no
+maintenance lease is taken** — acquiring one deliberately stops capture, which would
+defeat a UI-only release. Only the frontend is health-checked.
+
+A **backend** run keeps every guard: it refuses inside the capture window unless
+`--force`, and still drains writers via the lease before swapping containers.
+
+When a run replaces only one service, the other's image is re-tagged from the currently
+active version to the new `release_id`, so `${APP_VERSION}` resolves for both services
+in `docker-compose.yml`.
+
 ---
 
 ## 5. Rollback

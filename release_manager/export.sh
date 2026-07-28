@@ -27,6 +27,14 @@ source "$RELEASE_DIR/lib/common.sh"
 usage() {
     cat <<'EOF'
 Usage: ./release_manager/export.sh [--major|--minor|--patch] [--backend-url URL]
+                                   [--frontend] [--backend]
+
+  --frontend          Build and bundle ONLY the frontend image.
+  --backend           Build and bundle ONLY the backend image.
+                      Omit both to build the whole stack (the default).
+                      A partial bundle records its contents in manifest.json, and the
+                      deploy skips (and re-tags) the service it does not ship, so a
+                      frontend-only release never restarts the backend.
 
   --backend-url URL   Bake an ABSOLUTE backend origin into the frontend image (the
                       browser calls that origin directly). Omit for the default
@@ -39,18 +47,31 @@ BUMP="patch"
 # Same-origin is the default shipped build (empty NEXT_PUBLIC_BACKEND_URL). This is
 # decoupled from frontend/.env.local, which stays absolute for local `next dev`.
 build_backend_url=""
+want_frontend=false
+want_backend=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --help|-h) usage; exit 0 ;;
         --major) BUMP="major"; shift ;;
         --minor) BUMP="minor"; shift ;;
         --patch) BUMP="patch"; shift ;;
+        --frontend) want_frontend=true; shift ;;
+        --backend) want_backend=true; shift ;;
         --backend-url)
             [[ $# -ge 2 ]] || { echo "--backend-url requires a value" >&2; usage >&2; exit 1; }
             build_backend_url="$2"; shift 2 ;;
         *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 1 ;;
     esac
 done
+# Neither flag (or both) means the full stack.
+if [[ "$want_frontend" == false && "$want_backend" == false ]]; then
+    want_frontend=true; want_backend=true
+fi
+SERVICES=()
+[[ "$want_backend" == true ]] && SERVICES+=(backend)
+[[ "$want_frontend" == true ]] && SERVICES+=(frontend)
+PARTIAL=false
+[[ ${#SERVICES[@]} -eq 2 ]] || PARTIAL=true
 
 # Bump version
 app_version="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$ROOT_DIR/backend/app/__init__.py" 2>/dev/null || echo "0.0.0")"
@@ -96,10 +117,18 @@ release_id="v${new_version}"
 backend_image="market-data-dwndr-backend:${release_id}"
 frontend_image="market-data-dwndr-frontend:${release_id}"
 
-if [[ -z "$build_backend_url" ]]; then
-    printf 'Frontend build mode: SAME-ORIGIN (relative /api + window.location WS; reverse-proxy fronted)\n'
+if [[ "$PARTIAL" == true ]]; then
+    printf 'Bundle scope: PARTIAL — %s only (the other service is left untouched on deploy)\n' \
+        "${SERVICES[*]}"
 else
-    printf 'Frontend build mode: ABSOLUTE backend URL = %s\n' "$build_backend_url"
+    printf 'Bundle scope: full stack (backend + frontend)\n'
+fi
+if [[ "$want_frontend" == true ]]; then
+    if [[ -z "$build_backend_url" ]]; then
+        printf 'Frontend build mode: SAME-ORIGIN (relative /api + window.location WS; reverse-proxy fronted)\n'
+    else
+        printf 'Frontend build mode: ABSOLUTE backend URL = %s\n' "$build_backend_url"
+    fi
 fi
 
 printf 'Building images for release %s...\n' "$release_id"
@@ -108,9 +137,13 @@ printf 'Building images for release %s...\n' "$release_id"
 # (empty => same-origin). NEXT_PUBLIC_APP_NAME still comes from the env file.
 NEXT_PUBLIC_BACKEND_URL="$build_backend_url" APP_VERSION="$release_id" "${COMPOSE[@]}" \
     --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" \
-    --env-file "$BACKEND_ENV" --env-file "$FRONTEND_ENV" build --pull
-backend_image_id="$("${DOCKER[@]}" image inspect --format '{{.Id}}' "$backend_image")"
-frontend_image_id="$("${DOCKER[@]}" image inspect --format '{{.Id}}' "$frontend_image")"
+    --env-file "$BACKEND_ENV" --env-file "$FRONTEND_ENV" build --pull "${SERVICES[@]}"
+
+declare -A IMAGE_TAG=([backend]="$backend_image" [frontend]="$frontend_image")
+declare -A IMAGE_ID=()
+for service in "${SERVICES[@]}"; do
+    IMAGE_ID[$service]="$("${DOCKER[@]}" image inspect --format '{{.Id}}' "${IMAGE_TAG[$service]}")"
+done
 
 mkdir -p "$RECENT_DIR"
 TEMP_BUNDLE="$(mktemp -d "$RECENT_DIR/.export-${release_id}.XXXXXX")"
@@ -123,16 +156,17 @@ if command -v pigz >/dev/null 2>&1; then
     COMPRESS=(pigz -n -9)
 fi
 
-"${DOCKER[@]}" image save "$backend_image" | "${COMPRESS[@]}" > "$TEMP_BUNDLE/images/backend.tar.gz" &
-backend_pid=$!
+save_pids=()
+for service in "${SERVICES[@]}"; do
+    "${DOCKER[@]}" image save "${IMAGE_TAG[$service]}" \
+        | "${COMPRESS[@]}" > "$TEMP_BUNDLE/images/${service}.tar.gz" &
+    save_pids+=("$!")
+done
+wait "${save_pids[@]}" || { echo "Failed to save and compress images." >&2; exit 1; }
 
-"${DOCKER[@]}" image save "$frontend_image" | "${COMPRESS[@]}" > "$TEMP_BUNDLE/images/frontend.tar.gz" &
-frontend_pid=$!
-
-wait "$backend_pid" "$frontend_pid" || { echo "Failed to save and compress images." >&2; exit 1; }
-
-validate_image_archive_tag "$TEMP_BUNDLE/images/backend.tar.gz" "$backend_image"
-validate_image_archive_tag "$TEMP_BUNDLE/images/frontend.tar.gz" "$frontend_image"
+for service in "${SERVICES[@]}"; do
+    validate_image_archive_tag "$TEMP_BUNDLE/images/${service}.tar.gz" "${IMAGE_TAG[$service]}"
+done
 
 cp "$DEPLOY_COMPOSE" "$TEMP_BUNDLE/docker-compose.yml"
 cp "$SRC_DIR/.env.example" "$TEMP_BUNDLE/.env.example"
@@ -144,27 +178,38 @@ chmod +x "$TEMP_BUNDLE/deploy.sh" "$TEMP_BUNDLE/rollback.sh"
 created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 compose_sha="$(sha256sum "$TEMP_BUNDLE/docker-compose.yml" | cut -d' ' -f1)"
-backend_sha="$(sha256sum "$TEMP_BUNDLE/images/backend.tar.gz" | cut -d' ' -f1)"
-frontend_sha="$(sha256sum "$TEMP_BUNDLE/images/frontend.tar.gz" | cut -d' ' -f1)"
 
 jq -n --arg version "$release_id" '{version: $version}' > "$TEMP_BUNDLE/version.json"
+
+# Build the images object from the services this bundle actually ships. Consumers read
+# `.services` (see bundle_services in lib/common.sh) instead of assuming both exist.
+images_json='{}'
+for service in "${SERVICES[@]}"; do
+    sha="$(sha256sum "$TEMP_BUNDLE/images/${service}.tar.gz" | cut -d' ' -f1)"
+    images_json="$(jq -n \
+        --argjson acc "$images_json" --arg svc "$service" \
+        --arg tag "${IMAGE_TAG[$service]}" --arg sha "$sha" --arg id "${IMAGE_ID[$service]}" \
+        '$acc + {($svc): {tag: $tag, archive: ("images/" + $svc + ".tar.gz"),
+                          sha256: $sha, image_id: $id}}')"
+done
+services_json="$(printf '%s\n' "${SERVICES[@]}" | jq -R . | jq -s .)"
+
 jq -n \
     --arg release_id "$release_id" --arg created_at "$created_at" \
     --arg git_sha "$git_sha" --arg git_branch "$git_branch" --argjson git_dirty "$git_dirty" \
     --arg build_hash "$build_hash" --arg compose_sha "$compose_sha" \
-    --arg backend_tag "$backend_image" --arg backend_sha "$backend_sha" --arg backend_id "$backend_image_id" \
-    --arg frontend_tag "$frontend_image" --arg frontend_sha "$frontend_sha" --arg frontend_id "$frontend_image_id" \
-    '{schema_version: 2, project: "market_data_dwndr", release_id: $release_id, created_at: $created_at,
-      git_sha: $git_sha, git_branch: $git_branch, git_dirty: $git_dirty, build_config_hash: $build_hash,
+    --argjson services "$services_json" --argjson images "$images_json" \
+    '{schema_version: 3, project: "market_data_dwndr", release_id: $release_id,
+      created_at: $created_at, git_sha: $git_sha, git_branch: $git_branch,
+      git_dirty: $git_dirty, build_config_hash: $build_hash,
+      services: $services,
       compose: {file: "docker-compose.yml", sha256: $compose_sha},
-      images: {
-        backend: {tag: $backend_tag, archive: "images/backend.tar.gz", sha256: $backend_sha, image_id: $backend_id},
-        frontend: {tag: $frontend_tag, archive: "images/frontend.tar.gz", sha256: $frontend_sha, image_id: $frontend_id}
-      }}' > "$TEMP_BUNDLE/manifest.json"
+      images: $images}' > "$TEMP_BUNDLE/manifest.json"
 
 cat > "$TEMP_BUNDLE/README.txt" <<EOF
 DATA_DOWNLOADER release bundle
 Release: $release_id
+Scope:   ${SERVICES[*]}$([[ "$PARTIAL" == true ]] && echo '  (PARTIAL — the service not listed is left running and only re-tagged)')
 Created: $created_at   Commit: ${git_sha:0:12}$([[ "$git_dirty" == true ]] && echo ' (dirty)')
 
 First VPS deploy:

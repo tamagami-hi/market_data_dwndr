@@ -9,6 +9,13 @@
 # data bind-mounts are never touched.
 #
 # Usage:  ./deploy.sh            (invoked automatically by the build machine's ship)
+#         ./deploy.sh --frontend Recreate ONLY the frontend (with --no-deps). It cannot
+#                                touch capture, so the market-window gate, the
+#                                capture-stopped guard and the writer-drain lease are
+#                                all skipped — safe to run during market hours.
+#         ./deploy.sh --backend  Recreate ONLY the backend. This DOES interrupt capture,
+#                                so the guards apply; add --force for an urgent fix
+#                                inside market hours.
 #         ./deploy.sh --force    Force update: bypass the market-window gate and the
 #                                "capture is running" guard, and recreate containers
 #                                even if the release is already active. Capture writers
@@ -16,6 +23,9 @@
 #                                container swap, and health-check + auto-rollback still
 #                                apply. Use when the live stack is stuck and must be
 #                                replaced immediately.
+#
+# With no service flag the scope comes from the bundle's manifest (`services`), so a
+# partial bundle built with export.sh --frontend only ever recreates the frontend.
 
 set -euo pipefail
 
@@ -26,12 +36,17 @@ COMPOSE_FILE="$HERE/docker-compose.yml"
 MANIFEST="$HERE/manifest.json"
 LEASE_ID=""
 FORCE=false
+want_frontend=false
+want_backend=false
 
+USAGE="Usage: ./deploy.sh [--frontend|--backend] [--force]"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --force) FORCE=true; shift ;;
-        --help|-h) echo "Usage: ./deploy.sh [--force]"; exit 0 ;;
-        *) printf 'Unknown argument: %s\n' "$1" >&2; echo "Usage: ./deploy.sh [--force]" >&2; exit 1 ;;
+        --frontend) want_frontend=true; shift ;;
+        --backend) want_backend=true; shift ;;
+        --help|-h) echo "$USAGE"; exit 0 ;;
+        *) printf 'Unknown argument: %s\n' "$1" >&2; echo "$USAGE" >&2; exit 1 ;;
     esac
 done
 
@@ -74,13 +89,35 @@ verify_sha() {
 }
 verify_sha "$COMPOSE_FILE" '.compose.sha256'
 
-backend_tag="$(jq -r '.images.backend.tag' "$MANIFEST")"
-frontend_tag="$(jq -r '.images.frontend.tag' "$MANIFEST")"
-backend_id="$(jq -r '.images.backend.image_id' "$MANIFEST")"
-frontend_id="$(jq -r '.images.frontend.image_id' "$MANIFEST")"
-[[ "$backend_tag" == "market-data-dwndr-backend:${release_id}" \
-    && "$frontend_tag" == "market-data-dwndr-frontend:${release_id}" ]] \
-    || die "manifest image tags do not match release_id"
+# ---- scope: which services this run recreates ----
+# The bundle declares what it ships; a --frontend/--backend flag may narrow it further.
+mapfile -t bundle_svcs < <(jq -r '(.services // ["backend","frontend"]) | .[]' "$MANIFEST")
+[[ ${#bundle_svcs[@]} -gt 0 ]] || die "manifest lists no services"
+SERVICES=()
+if [[ "$want_frontend" == false && "$want_backend" == false ]]; then
+    SERVICES=("${bundle_svcs[@]}")
+else
+    for svc in backend frontend; do
+        [[ "$svc" == backend && "$want_backend" == true ]] || \
+        [[ "$svc" == frontend && "$want_frontend" == true ]] || continue
+        [[ " ${bundle_svcs[*]} " == *" $svc "* ]] \
+            || die "this bundle does not ship the $svc image (it ships: ${bundle_svcs[*]})"
+        SERVICES+=("$svc")
+    done
+fi
+PARTIAL=false
+[[ ${#SERVICES[@]} -eq 2 ]] || PARTIAL=true
+TOUCHES_BACKEND=false
+[[ " ${SERVICES[*]} " == *" backend "* ]] && TOUCHES_BACKEND=true
+log "deploy scope: ${SERVICES[*]}"
+
+declare -A IMAGE_TAG=()
+for svc in "${SERVICES[@]}"; do
+    tag="$(jq -r ".images.${svc}.tag" "$MANIFEST")"
+    [[ "$tag" == "market-data-dwndr-${svc}:${release_id}" ]] \
+        || die "manifest image tag for $svc does not match release_id"
+    IMAGE_TAG[$svc]="$tag"
+done
 
 # ---- required env ----
 for key in APP_UID APP_GID HTTP_PORT PORT HOST_BIND_ADDRESS MARKET_DATA_PATH \
@@ -96,11 +133,10 @@ release_img_root="$(env_get RELEASE_IMAGE_PATH)"
 [[ -d "$(env_get ARCHIVE_DATA_PATH)" ]] || die "ARCHIVE_DATA_PATH does not exist on the host"
 mkdir -p "$rollback_root" "$release_img_root"
 
-for f in "$release_img_root/backend.tar.gz" "$release_img_root/frontend.tar.gz"; do
-    [[ -f "$f" ]] || die "missing bundle file: $f"
+for svc in "${SERVICES[@]}"; do
+    [[ -f "$release_img_root/${svc}.tar.gz" ]] || die "missing bundle file: $release_img_root/${svc}.tar.gz"
+    verify_sha "$release_img_root/${svc}.tar.gz" ".images.${svc}.sha256"
 done
-verify_sha "$release_img_root/backend.tar.gz" '.images.backend.sha256'
-verify_sha "$release_img_root/frontend.tar.gz" '.images.frontend.sha256'
 
 api() { printf 'http://%s:%s%s' "$bind_address" "$backend_port" "$1"; }
 
@@ -112,10 +148,12 @@ now_min=$((10#$(TZ="$tz" date +%H) * 60 + 10#$(TZ="$tz" date +%M)))
 open_min=$((10#${market_open%:*} * 60 + 10#${market_open#*:}))
 close_min=$((10#${market_close%:*} * 60 + 10#${market_close#*:}))
 if (( now_min >= open_min && now_min < close_min )); then
-    if [[ "$FORCE" == true ]]; then
+    if [[ "$TOUCHES_BACKEND" == false ]]; then
+        log "frontend-only deploy inside the capture window: the backend container is not touched (--no-deps), so capture continues uninterrupted"
+    elif [[ "$FORCE" == true ]]; then
         log "FORCE: deploying inside the capture window (${market_open}-${market_close} ${tz})"
     else
-        die "refusing to deploy during the capture window (${market_open}-${market_close} ${tz})"
+        die "refusing to deploy the backend during the capture window (${market_open}-${market_close} ${tz}); use --frontend for a UI-only release, or --force if this is urgent"
     fi
 fi
 
@@ -164,7 +202,12 @@ release_lease() {
 }
 trap release_lease EXIT
 
-if [[ "$existing" == true ]]; then
+if [[ "$existing" == true && "$TOUCHES_BACKEND" == false ]]; then
+    # Frontend-only: the backend container is never recreated, so capture keeps running
+    # and we must NOT take the maintenance lease — acquiring it deliberately STOPS
+    # capture, which would defeat the whole point of a UI-only release.
+    log "frontend-only: leaving capture running (no maintenance lease, no writer drain)"
+elif [[ "$existing" == true ]]; then
     # capture must be stopped before we replace containers (unless forced)
     status="$(curl -fsS --max-time 3 "$(api /api/capture/status)" 2>/dev/null)" \
         || { [[ "$FORCE" == true ]] && log "FORCE: cannot verify capture state; proceeding" \
@@ -179,29 +222,44 @@ if [[ "$existing" == true ]]; then
     # Drain writers before swapping containers. Under --force this is best-effort:
     # a hung/unresponsive backend won't block the replacement.
     acquire_lease || [[ "$FORCE" == true ]]
-
-    # save the CURRENTLY running images so a rollback works even after pruning
-    save_dir="$rollback_root/$current_version"
-    if [[ ! -f "$save_dir/backend.tar.gz" || ! -f "$save_dir/frontend.tar.gz" ]]; then
-        log "saving current images to $save_dir"
-        mkdir -p "$save_dir"
-        "${DOCKER[@]}" image save "market-data-dwndr-backend:${current_version}" \
-            | gzip -n > "$save_dir/backend.tar.gz"
-        "${DOCKER[@]}" image save "market-data-dwndr-frontend:${current_version}" \
-            | gzip -n > "$save_dir/frontend.tar.gz"
-        printf '%s\n' "$current_version" > "$save_dir/version.txt"
-    fi
 fi
 
-# ---- load the new images (idempotent: only load if the tag is absent) ----
-load_image() {
-    local tag=$1 archive=$2
-    # Always load the image archive (it will safely overwrite the tag if it already exists)
-    gzip -dc "$archive" | "${DOCKER[@]}" image load >/dev/null
-}
-log "loading images for $release_id"
-load_image "$backend_tag" "$release_img_root/backend.tar.gz" "$backend_id"
-load_image "$frontend_tag" "$release_img_root/frontend.tar.gz" "$frontend_id"
+# Save the CURRENTLY running images so a rollback works even after pruning. Only the
+# services being replaced are saved — the others are still running untouched.
+if [[ "$existing" == true ]]; then
+    save_dir="$rollback_root/$current_version"
+    mkdir -p "$save_dir"
+    for svc in "${SERVICES[@]}"; do
+        if [[ ! -f "$save_dir/${svc}.tar.gz" ]]; then
+            log "saving current $svc image to $save_dir"
+            "${DOCKER[@]}" image save "market-data-dwndr-${svc}:${current_version}" \
+                | gzip -n > "$save_dir/${svc}.tar.gz"
+        fi
+    done
+    printf '%s\n' "$current_version" > "$save_dir/version.txt"
+fi
+
+# ---- load the new images (only the services in scope) ----
+log "loading images for $release_id (${SERVICES[*]})"
+for svc in "${SERVICES[@]}"; do
+    gzip -dc "$release_img_root/${svc}.tar.gz" | "${DOCKER[@]}" image load >/dev/null
+done
+
+# compose tags BOTH services with ${APP_VERSION}, so any service we are NOT replacing
+# needs its running image re-tagged to the new release id — otherwise a later plain
+# `compose up` would reference an image tag that was never built.
+if [[ "$PARTIAL" == true && -n "$current_version" && "$current_version" != "$release_id" ]]; then
+    for svc in backend frontend; do
+        [[ " ${SERVICES[*]} " == *" $svc "* ]] && continue
+        if "${DOCKER[@]}" image inspect "market-data-dwndr-${svc}:${current_version}" >/dev/null 2>&1; then
+            "${DOCKER[@]}" tag "market-data-dwndr-${svc}:${current_version}" \
+                "market-data-dwndr-${svc}:${release_id}"
+            log "re-tagged unchanged $svc image $current_version -> $release_id"
+        else
+            log "warning: no market-data-dwndr-${svc}:${current_version} image to re-tag"
+        fi
+    done
+fi
 
 wait_http() {
     local url=$1 label=$2 i
@@ -212,14 +270,23 @@ wait_http() {
     printf '%s health check failed: %s\n' "$label" "$url" >&2; return 1
 }
 health() {
-    wait_http "$(api /health)" "backend" || return 1
-    wait_http "http://${bind_address}:${frontend_port}/login" "frontend" || return 1
+    # Only assert on what this run actually replaced.
+    if [[ " ${SERVICES[*]} " == *" backend "* ]]; then
+        wait_http "$(api /health)" "backend" || return 1
+    fi
+    if [[ " ${SERVICES[*]} " == *" frontend "* ]]; then
+        wait_http "http://${bind_address}:${frontend_port}/login" "frontend" || return 1
+    fi
 }
 
 set_env APP_VERSION "$release_id"
-log "starting release $release_id"
+log "starting release $release_id (${SERVICES[*]})"
 up_extra=(--no-build)
 [[ "$FORCE" == true ]] && up_extra+=(--force-recreate)
+if [[ "$PARTIAL" == true ]]; then
+    # --no-deps is what keeps a frontend-only release from restarting the backend.
+    up_extra+=(--no-deps "${SERVICES[@]}")
+fi
 compose "$release_id" up -d "${up_extra[@]}"
 
 if ! health; then
@@ -228,11 +295,14 @@ if ! health; then
         printf 'restoring previous release %s\n' "$current_version" >&2
         set_env APP_VERSION "$current_version"
         # the previous images may still be resident; reload from the rollback store if not
-        "${DOCKER[@]}" image inspect "market-data-dwndr-backend:${current_version}" >/dev/null 2>&1 \
-            || gzip -dc "$rollback_root/$current_version/backend.tar.gz" | "${DOCKER[@]}" image load >/dev/null
-        "${DOCKER[@]}" image inspect "market-data-dwndr-frontend:${current_version}" >/dev/null 2>&1 \
-            || gzip -dc "$rollback_root/$current_version/frontend.tar.gz" | "${DOCKER[@]}" image load >/dev/null
-        compose "$current_version" up -d --no-build
+        for svc in "${SERVICES[@]}"; do
+            "${DOCKER[@]}" image inspect "market-data-dwndr-${svc}:${current_version}" >/dev/null 2>&1 \
+                || gzip -dc "$rollback_root/$current_version/${svc}.tar.gz" \
+                    | "${DOCKER[@]}" image load >/dev/null
+        done
+        restore_extra=(--no-build)
+        [[ "$PARTIAL" == true ]] && restore_extra+=(--no-deps "${SERVICES[@]}")
+        compose "$current_version" up -d "${restore_extra[@]}"
         health || true
     else
         compose "$release_id" down || true
@@ -242,4 +312,7 @@ fi
 
 release_lease
 compose "$release_id" ps
-log "deployed release $release_id (env + data preserved)"
+log "deployed release $release_id — ${SERVICES[*]} (env + data preserved)"
+if [[ "$PARTIAL" == true ]]; then
+    log "the service(s) not listed above were left running untouched"
+fi

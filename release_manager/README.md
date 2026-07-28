@@ -113,6 +113,43 @@ to `ROLLBACK_IMAGE_PATH/<release_id>/`**, loads the new images, `compose up -d
 --no-build`, health-checks, and **auto-rolls-back on failure**. Your `.env`,
 data bind-mounts, and volumes are never touched.
 
+### Releasing ONE service (`--frontend` / `--backend`)
+
+Both scripts take `--frontend` or `--backend`. The flags flow through the whole
+pipeline — same folders, same three steps, same `--ship`:
+
+```bash
+# UI-only change: builds and ships ~82 MB instead of ~170 MB
+./release_manager/export.sh --frontend
+./release_manager/deploy.sh --frontend
+./release_manager/deploy.sh --frontend --ship ~/.ssh/beonedge_vps
+```
+
+A partial bundle records its contents in `manifest.json` (`"services": ["frontend"]`),
+so every consumer knows what it ships. On deploy the untouched service is **re-tagged**
+from the previous version to the new `release_id` — `compose.yaml` tags both services
+with `${APP_VERSION}`, so without that a later plain `compose up` would reference an
+image tag that was never built.
+
+**Market-hours rules** — this is the point of the split:
+
+| Scope | During 09:00–15:30 | Why |
+|---|---|---|
+| `--frontend` | **allowed** | recreated with `--no-deps`; the backend container is never touched, capture keeps running, and no maintenance lease is taken (acquiring one *stops* capture) |
+| `--backend` / full | **refused** | replacing the backend interrupts capture and loses frames |
+
+For an urgent backend fix inside market hours, combine the two — writers are still
+drained via the maintenance lease, and health-check + auto-rollback still apply:
+
+```bash
+./release_manager/export.sh --backend
+./release_manager/deploy.sh --backend --force --ship ~/.ssh/beonedge_vps
+```
+
+Rollback keeps working: a partial deploy snapshots only the service it replaced, and
+`rollback.sh` accepts a save dir with one archive as long as the other service's image
+for that version is still resident.
+
 ## Rollback
 
 ```bash
