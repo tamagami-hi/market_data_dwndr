@@ -42,67 +42,25 @@ source "$RELEASE_DIR/lib/common.sh"
 
 usage() {
     cat <<'USAGE'
-Usage: ./release_manager/deploy.sh [--frontend|--backend] [--bundle DIR]
-       ./release_manager/deploy.sh --ship SSH_KEY [--frontend|--backend] [--bundle DIR]
-       ./release_manager/deploy.sh --force [--ship SSH_KEY] [--frontend|--backend]
+Usage: ./release_manager/deploy.sh [--bundle DIR]
+       ./release_manager/deploy.sh --ship SSH_KEY [--bundle DIR]
+       ./release_manager/deploy.sh --force [--ship SSH_KEY] [--bundle DIR]
 
-  --frontend  Deploy ONLY the frontend service (recreated with --no-deps, so the
-              backend container and any running capture are left completely alone).
-              Because it cannot disturb capture, this is allowed DURING market hours
-              and does not take the writer-drain maintenance lease.
-  --backend   Deploy ONLY the backend service. This DOES interrupt capture, so the
-              market-window and capture-stopped guards still apply — combine with
-              --force for an urgent backend fix inside market hours.
-              Omitting both deploys whatever the bundle contains (the default).
-
-  --force     Force update: bypass the market-window and capture-stopped guards and
-              recreate containers even if the version is unchanged. With --ship it
-              force-deploys locally first, then ships and force-deploys on the VPS.
+  --force   Force update: bypass the market-window and capture-stopped guards and
+            recreate containers even if the version is unchanged. With --ship it
+            force-deploys locally first, then ships and force-deploys on the VPS.
 USAGE
 }
 
-want_frontend=false
-want_backend=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --bundle) BUNDLE_DIR="${2:?--bundle requires a directory}"; shift 2 ;;
         --ship) SHIP_KEY="${2:?--ship requires an SSH key}"; shift 2 ;;
         --force) FORCE=true; shift ;;
-        --frontend) want_frontend=true; shift ;;
-        --backend) want_backend=true; shift ;;
         --help|-h) usage; exit 0 ;;
         *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 1 ;;
     esac
 done
-
-# Services the caller asked for; empty means "whatever the bundle ships".
-REQUESTED=()
-[[ "$want_backend" == true ]] && REQUESTED+=(backend)
-[[ "$want_frontend" == true ]] && REQUESTED+=(frontend)
-
-# Resolved at deploy time against the bundle contents (see resolve_services).
-SERVICES=()
-
-# Intersect what the caller asked for with what the bundle actually contains, so we can
-# never try to deploy a service whose image was not built.
-resolve_services() {
-    local bundle_dir=$1 available=() svc
-    mapfile -t available < <(bundle_services "$bundle_dir")
-    if [[ ${#REQUESTED[@]} -eq 0 ]]; then
-        SERVICES=("${available[@]}")
-        return
-    fi
-    SERVICES=()
-    for svc in "${REQUESTED[@]}"; do
-        if [[ " ${available[*]} " == *" $svc "* ]]; then
-            SERVICES+=("$svc")
-        else
-            printf 'Bundle %s does not contain the %s image (it ships: %s). Re-export with --%s.\n' \
-                "$(basename "$bundle_dir")" "$svc" "${available[*]}" "$svc" >&2
-            exit 1
-        fi
-    done
-}
 
 resolve_bundle() {
     [[ -z "$BUNDLE_DIR" ]] || { BUNDLE_DIR="$(cd "$BUNDLE_DIR" && pwd)"; return; }
@@ -148,10 +106,8 @@ deploy_local() {
     "${DOCKER[@]}" compose version >/dev/null
 
     resolve_bundle
-    resolve_services "$BUNDLE_DIR"
     local active_dir="$RELEASE_DIR/DATA_DOWNLOADER"
     local active_env="$active_dir/.env"
-    printf 'Deploy scope: %s\n' "${SERVICES[*]}"
 
     if [[ ! -f "$active_env" ]]; then
         if [[ -f "$BUNDLE_DIR/.env" ]]; then
@@ -167,18 +123,12 @@ deploy_local() {
         set_env_value "$active_env" RELEASE_IMAGE_PATH "$active_dir/images"
     fi
 
-    # Never disrupt a running local capture — unless forced. A frontend-only deploy is
-    # exempt: it is recreated with --no-deps, so the backend container (and therefore
-    # capture) is never touched, which makes it safe inside market hours.
-    local touches_backend=false
-    [[ " ${SERVICES[*]} " == *" backend "* ]] && touches_backend=true
+    # Never disrupt a running local capture — unless forced.
     local market_open market_close tz
     market_open="$(env_value "$active_env" MARKET_OPEN)"; [[ -n "$market_open" ]] || market_open=09:00
     market_close="$(env_value "$active_env" MARKET_CLOSE)"; [[ -n "$market_close" ]] || market_close=15:30
     tz="$(env_value "$active_env" TIMEZONE)"; [[ -n "$tz" ]] || tz=Asia/Kolkata
-    if [[ "$touches_backend" == false ]]; then
-        printf 'Frontend-only deploy: capture is untouched, skipping the market-window guard.\n'
-    elif [[ "$FORCE" == true ]]; then
+    if [[ "$FORCE" == true ]]; then
         printf 'FORCE: bypassing market-window and capture-stopped guards (local).\n' >&2
     else
         assert_outside_capture_window "$market_open" "$market_close" "$tz"
@@ -190,9 +140,7 @@ deploy_local() {
     copy_active_bundle_to_rollback
 
     printf 'Staging bundle into DATA_DOWNLOADER...\n'
-    # Only a full-stack deploy takes the stack down first; a partial one recreates just
-    # its own service(s) below so the others keep serving.
-    if [[ -f "$active_dir/docker-compose.yml" && ${#SERVICES[@]} -eq 2 ]]; then
+    if [[ -f "$active_dir/docker-compose.yml" ]]; then
         printf 'Stopping existing local stack...\n'
         (cd "$active_dir" && "${DOCKER[@]}" compose down)
     fi
@@ -201,60 +149,24 @@ deploy_local() {
     cp "$BUNDLE_DIR/docker-compose.yml" "$active_dir/docker-compose.yml"
     cp "$BUNDLE_DIR/version.json" "$active_dir/version.json"
     cp "$BUNDLE_DIR/manifest.json" "$active_dir/manifest.json"
-    local service
-    for service in "${SERVICES[@]}"; do
-        cp "$BUNDLE_DIR/images/${service}.tar.gz" "$active_dir/images/${service}.tar.gz"
-    done
+    cp "$BUNDLE_DIR/images/backend.tar.gz" "$active_dir/images/backend.tar.gz"
+    cp "$BUNDLE_DIR/images/frontend.tar.gz" "$active_dir/images/frontend.tar.gz"
 
-    local release_id previous_version
-    release_id="$(jq -r '.version' "$BUNDLE_DIR/version.json")"
-    previous_version="$(env_value "$active_env" APP_VERSION)"
+    set_env_value "$active_env" APP_VERSION "$(jq -r '.version' "$BUNDLE_DIR/version.json")"
 
     printf 'Loading images...\n'
-    for service in "${SERVICES[@]}"; do
-        "${DOCKER[@]}" load -i "$active_dir/images/${service}.tar.gz"
-    done
+    "${DOCKER[@]}" load -i "$active_dir/images/backend.tar.gz"
+    "${DOCKER[@]}" load -i "$active_dir/images/frontend.tar.gz"
 
-    # compose.yaml tags BOTH services with ${APP_VERSION}, so a service we are not
-    # shipping needs its currently-running image re-tagged to the new release id —
-    # otherwise a later plain `compose up` would look for an image that never existed.
-    retag_skipped_services "$release_id" "$previous_version"
-
-    set_env_value "$active_env" APP_VERSION "$release_id"
-
-    printf 'Composing up (%s) in DATA_DOWNLOADER...\n' "${SERVICES[*]}"
+    printf 'Composing up the local stack in DATA_DOWNLOADER...\n'
     local -a up_args=(up -d)
     [[ "$FORCE" == true ]] && up_args+=(--force-recreate --remove-orphans)
-    if [[ ${#SERVICES[@]} -lt 2 ]]; then
-        # --no-deps is what keeps a frontend-only deploy from restarting the backend.
-        up_args+=(--no-deps "${SERVICES[@]}")
-    fi
     (cd "$active_dir" && "${DOCKER[@]}" compose "${up_args[@]}")
 
-    health_check_stack "$active_env" "$active_env" "${SERVICES[*]}" || {
+    health_check_stack "$active_env" "$active_env" || {
         echo "Local stack failed health checks." >&2; exit 1;
     }
-    printf 'Local stack is up and healthy (%s).\n' "${SERVICES[*]}"
-}
-
-# Re-tag the images of services this deploy does NOT ship, from the previously active
-# version to the new release id, so ${APP_VERSION} resolves for every service in the
-# compose file. Best-effort: a missing previous image is reported, not fatal, because
-# the service may simply never have been deployed here.
-retag_skipped_services() {
-    local release_id=$1 previous_version=$2 svc image
-    [[ -n "$previous_version" && "$previous_version" != "$release_id" ]] || return 0
-    for svc in backend frontend; do
-        [[ " ${SERVICES[*]} " == *" $svc "* ]] && continue
-        image="market-data-dwndr-${svc}"
-        if "${DOCKER[@]}" image inspect "${image}:${previous_version}" >/dev/null 2>&1; then
-            "${DOCKER[@]}" tag "${image}:${previous_version}" "${image}:${release_id}"
-            printf 'Re-tagged unchanged %s image %s -> %s\n' "$svc" "$previous_version" "$release_id"
-        else
-            printf 'Note: no %s:%s image to re-tag; %s is not part of this release.\n' \
-                "$image" "$previous_version" "$svc" >&2
-        fi
-    done
+    printf 'Local stack is up and healthy.\n'
 }
 
 ship_bundle() {
@@ -289,17 +201,10 @@ ship_bundle() {
 
     printf 'Running the remote deploy...\n'
     local remote_flags=""
-    [[ "$FORCE" == true ]] && remote_flags+=" --force"
-    # Forward the scope so the VPS recreates only what we shipped. Without this a
-    # frontend-only release would still restart the backend there.
-    if [[ ${#SERVICES[@]} -lt 2 ]]; then
-        local svc
-        for svc in "${SERVICES[@]}"; do remote_flags+=" --$svc"; done
-    fi
+    [[ "$FORCE" == true ]] && remote_flags=" --force"
     "${ssh_cmd[@]}" "$remote" \
         "cd $(printf '%q' "$deploy_dir") && chmod +x deploy.sh rollback.sh && ./deploy.sh${remote_flags}"
-    printf 'Shipped and deployed %s (%s) on %s.\n' \
-        "$(release_bundle_version "$bundle_dir")" "${SERVICES[*]}" "$remote"
+    printf 'Shipped and deployed %s on %s.\n' "$(release_bundle_version "$bundle_dir")" "$remote"
 }
 
 acquire_release_lock "$(global_release_lock_file)"
@@ -312,8 +217,6 @@ if [[ "$FORCE" == true && -n "$SHIP_KEY" ]]; then
 elif [[ -n "$SHIP_KEY" ]]; then
     active_dir="$RELEASE_DIR/DATA_DOWNLOADER"
     [[ -f "$active_dir/manifest.json" ]] || { echo "Nothing staged in DATA_DOWNLOADER to ship. Run local deploy first." >&2; exit 1; }
-    # Ship-only: scope comes from what was staged locally, narrowed by any flag given.
-    resolve_services "$active_dir"
     ship_bundle "$active_dir"
 else
     deploy_local

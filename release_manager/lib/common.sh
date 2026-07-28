@@ -70,21 +70,11 @@ validate_image_archive_tag() {
 }
 
 # Verify a bundle's compose + image archives against the sha256 in its manifest.
-# Which services a bundle actually ships. A PARTIAL bundle (built with export.sh
-# --frontend / --backend) contains only the selected image archives, so every consumer
-# must read this list rather than assuming both are present. Falls back to both for
-# bundles produced before partial exports existed.
-bundle_services() {
-    local bundle_dir=$1 services
-    services="$(jq -r '(.services // ["backend","frontend"]) | .[]' \
-        "$bundle_dir/manifest.json" 2>/dev/null)" || return 1
-    [[ -n "$services" ]] || { echo "backend"; echo "frontend"; return; }
-    printf '%s\n' "$services"
-}
-
 verify_bundle_sha256() {
-    local bundle_dir=$1 rel expected actual service
-    for pair in "docker-compose.yml:.compose.sha256"; do
+    local bundle_dir=$1 rel expected actual
+    for pair in "docker-compose.yml:.compose.sha256" \
+        "images/backend.tar.gz:.images.backend.sha256" \
+        "images/frontend.tar.gz:.images.frontend.sha256"; do
         rel="${pair%%:*}"
         expected="$(jq -r "${pair#*:}" "$bundle_dir/manifest.json")"
         [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || { echo "Missing checksum for $rel." >&2; return 1; }
@@ -92,16 +82,6 @@ verify_bundle_sha256() {
         actual="$(sha256sum "$bundle_dir/$rel" | cut -d' ' -f1)"
         [[ "$actual" == "$expected" ]] || { echo "Checksum mismatch: $rel." >&2; return 1; }
     done
-    # Only the services this bundle ships are expected on disk.
-    while read -r service; do
-        [[ -n "$service" ]] || continue
-        rel="images/${service}.tar.gz"
-        expected="$(jq -r ".images.${service}.sha256" "$bundle_dir/manifest.json")"
-        [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || { echo "Missing checksum for $rel." >&2; return 1; }
-        [[ -f "$bundle_dir/$rel" ]] || { echo "Missing bundle artifact: $rel." >&2; return 1; }
-        actual="$(sha256sum "$bundle_dir/$rel" | cut -d' ' -f1)"
-        [[ "$actual" == "$expected" ]] || { echo "Checksum mismatch: $rel." >&2; return 1; }
-    done < <(bundle_services "$bundle_dir")
 }
 
 docker_engine_command() {
@@ -159,21 +139,13 @@ wait_for_http() {
 }
 
 health_check_stack() {
-    # Optional 3rd arg: space-separated services to check ("backend frontend" default).
-    # A frontend-only deploy must not fail because the backend is mid-capture, and a
-    # backend-only deploy should not wait on a frontend it never touched.
-    local backend_env=$1 frontend_env=$2 services=${3:-"backend frontend"}
-    local bind_address backend_port frontend_port
+    local backend_env=$1 frontend_env=$2 bind_address backend_port frontend_port
     bind_address="$(env_value "$backend_env" HOST_BIND_ADDRESS)"
     backend_port="$(env_value "$backend_env" HTTP_PORT)"
     frontend_port="$(env_value "$frontend_env" PORT)"
     [[ "$bind_address" == "0.0.0.0" || -z "$bind_address" ]] && bind_address=127.0.0.1
-    if [[ " $services " == *" backend "* ]]; then
-        wait_for_http "http://${bind_address}:${backend_port}/health" "Backend" || return 1
-    fi
-    if [[ " $services " == *" frontend "* ]]; then
-        wait_for_http "http://${bind_address}:${frontend_port}/login" "Frontend" || return 1
-    fi
+    wait_for_http "http://${bind_address}:${backend_port}/health" "Backend" || return 1
+    wait_for_http "http://${bind_address}:${frontend_port}/login" "Frontend" || return 1
 }
 
 assert_capture_stopped() {

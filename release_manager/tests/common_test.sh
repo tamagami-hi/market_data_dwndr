@@ -57,65 +57,11 @@ if validate_image_archive_tag "$BUNDLE/images/backend.tar.gz" "wrong:tag" >/dev/
 bsha="$(sha256sum "$BUNDLE/images/backend.tar.gz" | cut -d' ' -f1)"
 fsha="$(sha256sum "$BUNDLE/images/frontend.tar.gz" | cut -d' ' -f1)"
 csha="$(sha256sum "$BUNDLE/docker-compose.yml" | cut -d' ' -f1)"
-printf '%s\n' "$rid" > "$BUNDLE/version.txt" 2>/dev/null || true
 printf '{"version":"%s"}\n' "$rid" > "$BUNDLE/version.json"
 jq -n --arg c "$csha" --arg b "$bsha" --arg f "$fsha" \
-    '{services:["backend","frontend"], compose:{sha256:$c},
-      images:{backend:{sha256:$b}, frontend:{sha256:$f}}}' > "$BUNDLE/manifest.json"
+    '{compose:{sha256:$c}, images:{backend:{sha256:$b}, frontend:{sha256:$f}}}' > "$BUNDLE/manifest.json"
 verify_bundle_sha256 "$BUNDLE"
 [[ "$(release_bundle_version "$BUNDLE")" == "$rid" ]]
-
-# --- bundle_services + PARTIAL bundle verification --------------------------
-# Full bundle reports both services.
-mapfile -t svcs < <(bundle_services "$BUNDLE")
-[[ "${svcs[*]}" == "backend frontend" ]] || { echo "expected both services, got: ${svcs[*]}" >&2; exit 1; }
-
-# A bundle with no `services` key (pre-partial format) must default to both.
-jq -n --arg c "$csha" --arg b "$bsha" --arg f "$fsha" \
-    '{compose:{sha256:$c}, images:{backend:{sha256:$b}, frontend:{sha256:$f}}}' > "$BUNDLE/manifest.json"
-mapfile -t svcs < <(bundle_services "$BUNDLE")
-[[ "${svcs[*]}" == "backend frontend" ]] || { echo "legacy manifest must default to both" >&2; exit 1; }
-
-# FRONTEND-ONLY bundle: no backend archive on disk, and the manifest says so. Verifying
-# must succeed — the whole point of a partial bundle.
-PARTIAL_B="$TEST_DIR/partial"; mkdir -p "$PARTIAL_B/images"
-fake_image "market-data-dwndr-frontend:$rid" "$PARTIAL_B/images/frontend.tar.gz"
-printf 'services: {}\n' > "$PARTIAL_B/docker-compose.yml"
-pcsha="$(sha256sum "$PARTIAL_B/docker-compose.yml" | cut -d' ' -f1)"
-pfsha="$(sha256sum "$PARTIAL_B/images/frontend.tar.gz" | cut -d' ' -f1)"
-printf '{"version":"%s"}\n' "$rid" > "$PARTIAL_B/version.json"
-jq -n --arg c "$pcsha" --arg f "$pfsha" \
-    '{services:["frontend"], compose:{sha256:$c}, images:{frontend:{sha256:$f}}}' \
-    > "$PARTIAL_B/manifest.json"
-verify_bundle_sha256 "$PARTIAL_B" \
-    || { echo "a frontend-only bundle must verify without a backend archive" >&2; exit 1; }
-mapfile -t svcs < <(bundle_services "$PARTIAL_B")
-[[ "${svcs[*]}" == "frontend" ]] || { echo "expected frontend only, got: ${svcs[*]}" >&2; exit 1; }
-# ...and tampering with the one archive it does ship must still be caught.
-printf 'tamper\n' >> "$PARTIAL_B/images/frontend.tar.gz"
-if verify_bundle_sha256 "$PARTIAL_B" >/dev/null 2>&1; then
-    echo "tampered partial archive must fail checksum" >&2; exit 1; fi
-
-# --- health_check_stack service scoping -------------------------------------
-printf 'HOST_BIND_ADDRESS=127.0.0.1\nHTTP_PORT=9000\nPORT=3789\n' > "$BACKEND_ENV"
-# Stub wait_for_http to record which endpoints were probed.
-( probed=""
-  wait_for_http() { probed="$probed $1"; return 0; }
-  health_check_stack "$BACKEND_ENV" "$BACKEND_ENV" "frontend" >/dev/null
-  [[ "$probed" == *":3789/login"* ]] || { echo "frontend scope must probe the frontend" >&2; exit 1; }
-  [[ "$probed" != *":9000/health"* ]] || { echo "frontend scope must NOT probe the backend" >&2; exit 1; }
-)
-( probed=""
-  wait_for_http() { probed="$probed $1"; return 0; }
-  health_check_stack "$BACKEND_ENV" "$BACKEND_ENV" "backend" >/dev/null
-  [[ "$probed" == *":9000/health"* ]] || { echo "backend scope must probe the backend" >&2; exit 1; }
-  [[ "$probed" != *":3789/login"* ]] || { echo "backend scope must NOT probe the frontend" >&2; exit 1; }
-)
-
-# restore the full bundle manifest for the remaining tests
-jq -n --arg c "$csha" --arg b "$bsha" --arg f "$fsha" \
-    '{services:["backend","frontend"], compose:{sha256:$c},
-      images:{backend:{sha256:$b}, frontend:{sha256:$f}}}' > "$BUNDLE/manifest.json"
 printf 'tamper\n' >> "$BUNDLE/images/backend.tar.gz"
 if verify_bundle_sha256 "$BUNDLE" >/dev/null 2>&1; then
     echo "tampered archive must fail checksum" >&2; exit 1; fi

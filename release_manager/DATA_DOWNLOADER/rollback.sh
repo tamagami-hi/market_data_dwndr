@@ -46,16 +46,8 @@ if [[ -z "$TARGET" ]]; then
     [[ -n "$TARGET" ]] || die "no saved previous release found under $rollback_root"
 fi
 save_dir="$rollback_root/$TARGET"
-[[ -d "$save_dir" ]] || die "no saved release directory: $save_dir"
-# A PARTIAL deploy only snapshots the service(s) it replaced, so a save dir may hold
-# just one archive. That is fine as long as the other service's image for this version
-# is still resident (a partial deploy re-tags it rather than rebuilding it).
-for svc in backend frontend; do
-    if ! "${DOCKER[@]}" image inspect "market-data-dwndr-${svc}:${TARGET}" >/dev/null 2>&1 \
-        && [[ ! -f "$save_dir/${svc}.tar.gz" ]]; then
-        die "cannot restore $svc for $TARGET: no resident image and no $save_dir/${svc}.tar.gz"
-    fi
-done
+[[ -f "$save_dir/backend.tar.gz" && -f "$save_dir/frontend.tar.gz" ]] \
+    || die "saved images for $TARGET are missing under $save_dir"
 [[ "$TARGET" != "$current_version" ]] || die "release $TARGET is already active"
 
 # capture must be stopped
@@ -68,10 +60,10 @@ compose() { APP_VERSION="$1" "${DOCKER[@]}" compose --env-file "$ENV_FILE" -f "$
 wait_http() { local u=$1 l=$2 i; for i in $(seq 1 30); do curl -fsS --max-time 3 "$u" >/dev/null 2>&1 && { log "$l healthy"; return 0; }; sleep 2; done; printf '%s health failed: %s\n' "$l" "$u" >&2; return 1; }
 
 log "loading images for $TARGET"
-for svc in backend frontend; do
-    "${DOCKER[@]}" image inspect "market-data-dwndr-${svc}:${TARGET}" >/dev/null 2>&1 \
-        || gzip -dc "$save_dir/${svc}.tar.gz" | "${DOCKER[@]}" image load >/dev/null
-done
+"${DOCKER[@]}" image inspect "market-data-dwndr-backend:${TARGET}" >/dev/null 2>&1 \
+    || gzip -dc "$save_dir/backend.tar.gz" | "${DOCKER[@]}" image load >/dev/null
+"${DOCKER[@]}" image inspect "market-data-dwndr-frontend:${TARGET}" >/dev/null 2>&1 \
+    || gzip -dc "$save_dir/frontend.tar.gz" | "${DOCKER[@]}" image load >/dev/null
 
 set_env APP_VERSION "$TARGET"
 log "rolling back $current_version -> $TARGET"
