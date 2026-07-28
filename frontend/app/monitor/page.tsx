@@ -323,29 +323,63 @@ function DataLossPanel({ globals }: { globals: GlobalStatus | null }) {
       subtitle={`vs ${formatIndianNumber(sessionExpected, 0)} elapsed grid seconds`}
     >
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-        <Stat label="Seconds lost" value={formatIndianNumber(lost, 0)} />
-        <Stat label="Gap events" value={formatIndianNumber(gaps, 0)} />
-        <Stat label="Frozen secs" value={formatIndianNumber(frozen, 0)} />
-        <Stat label="Elapsed loss" value={formatPercent(sessionLoss, 3)} />
+        {/* Severity lives on the fields themselves. A separate red banner underneath was
+            only restating "Seconds lost" and "Gap events", so the same number appeared
+            twice in one panel. */}
+        <Stat
+          label="Seconds lost"
+          value={formatIndianNumber(lost, 0)}
+          tone={lost > 0 ? "bad" : "normal"}
+          title={
+            lost > 0
+              ? `${formatIndianNumber(lost, 0)} grid second(s) permanently lost — these ` +
+                `seconds were never written and cannot be recovered.`
+              : "No grid seconds lost this session."
+          }
+        />
+        <Stat
+          label="Gap events"
+          value={formatIndianNumber(gaps, 0)}
+          tone={gaps > 0 ? "bad" : "normal"}
+          title={
+            gaps > 0
+              ? `${formatIndianNumber(gaps, 0)} resync event(s): the capture fell far ` +
+                `enough behind that whole grid seconds could not be written. A restart ` +
+                `counts as one gap covering its downtime.`
+              : "No resync events this session."
+          }
+        />
+        <Stat
+          label="Frozen secs"
+          value={formatIndianNumber(frozen, 0)}
+          tone={frozen > 0 ? "warn" : "normal"}
+          title={
+            frozen > 0
+              ? `${formatIndianNumber(frozen, 0)} second(s) written while the feed was ` +
+                `known stale, so they hold duplicate values. The frames exist — the ` +
+                `contents just did not change.`
+              : "No frozen seconds: every written second carried fresh data."
+          }
+        />
+        <Stat
+          label="Elapsed loss"
+          value={formatPercent(sessionLoss, 3)}
+          tone={sessionLoss >= 1 ? "bad" : sessionLoss > 0 ? "warn" : "normal"}
+          title="Missing frames vs the grid seconds that have actually elapsed — the real health signal, unaffected by how much of the day remains."
+        />
         <Stat label="Unmatched ticks" value={formatIndianNumber(globals.unmatched_ticks ?? 0, 0)} />
         <Stat label="Dropped batches" value={formatIndianNumber(globals.dropped_batches, 0)} />
-        <Stat label="Ticks / sec" value={formatIndianNumber(globals.ticks_per_sec ?? 0, 1)} />
+        <Stat
+          label="Ticks / sec"
+          value={formatIndianNumber(globals.ticks_per_sec ?? 0, 1)}
+          title="Current ingest rate over a trailing window (not a session average)."
+        />
         <Stat label="Writer lag" value={formatIndianNumber(globals.writer_lag_max ?? 0, 0)} />
         <Stat
           label="Disk runway"
           value={runway > 0 ? `${formatIndianNumber(runway, 1)} h` : "–"}
         />
       </div>
-      {(lost > 0 || gaps > 0) && (
-        <div className="mt-2 rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-[0.6875rem] text-red-300">
-          {formatIndianNumber(lost, 0)} grid second(s) permanently lost across {gaps} gap event(s).
-        </div>
-      )}
-      {frozen > 0 && lost === 0 && (
-        <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[0.6875rem] text-amber-300">
-          {formatIndianNumber(frozen, 0)} second(s) written with duplicate (frozen) values.
-        </div>
-      )}
     </Panel>
   );
 }
@@ -959,11 +993,34 @@ function Panel({
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+/**
+ * One metric tile. `tone` carries severity on the value itself, so a panel can signal a
+ * problem in place instead of appending a separate coloured banner that repeats the same
+ * number.
+ */
+function Stat({
+  label,
+  value,
+  tone = "normal",
+  title,
+}: {
+  label: string;
+  value: string;
+  tone?: "normal" | "warn" | "bad";
+  title?: string;
+}) {
+  const toneClass =
+    tone === "bad" ? "text-red-400" : tone === "warn" ? "text-amber-400" : "text-zinc-100";
+  const borderClass =
+    tone === "bad"
+      ? "border-red-500/40 bg-red-500/5"
+      : tone === "warn"
+        ? "border-amber-500/40 bg-amber-500/5"
+        : "border-zinc-800/80 bg-zinc-950/40";
   return (
-    <div className="rounded border border-zinc-800/80 bg-zinc-950/40 px-2 py-1">
+    <div className={`rounded border px-2 py-1 ${borderClass}`} title={title}>
       <div className="text-[0.5625rem] uppercase tracking-wide text-zinc-500">{label}</div>
-      <div className="text-sm font-semibold tabular-nums text-zinc-100">{value}</div>
+      <div className={`text-sm font-semibold tabular-nums ${toneClass}`}>{value}</div>
     </div>
   );
 }
