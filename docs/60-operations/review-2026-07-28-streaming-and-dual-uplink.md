@@ -364,7 +364,7 @@ http://192.168.1.2/                      → "BeUs · Beonedge workspace"  (461 
 Host: tickvault.beonedge.internal        → "TickVault" Next.js app      (11,937 B)
 ```
 
-### The IPv6 quirk
+### The IPv6 quirk (real, but NOT how clients actually reach the app)
 
 The vhosts declare different sockets:
 
@@ -381,19 +381,48 @@ v4 (0.0.0.0:80) → BeUs
 v6 ([::]:80)    → TickVault
 ```
 
-**This is why TickVault is reachable from a PC over Tailscale.** Tailscale assigns every
-node both a `100.x` IPv4 and an `fd7a:115c:a1e0::` IPv6 address, MagicDNS publishes both A
-and AAAA, and per RFC 6724 clients prefer IPv6. The connection lands on `[::]:80`, where
-TickVault is the default — regardless of Host header. Confirmed directly:
+That asymmetry is worth removing, because the same URL can serve different sites to
+different clients. But it is **not** the mechanism by which the workstation reaches
+TickVault — see the next section. An earlier version of this document claimed it was; that
+was wrong.
+
+## 2.4a How clients actually reach TickVault — by name, via `/etc/hosts`
+
+The workstation has a static mapping:
 
 ```
-Tailscale IPv4  100.122.85.101      → BeUs
-Tailscale IPv6  [fd7a:115c:a1e0::…] → TickVault
+/etc/hosts:  100.122.85.101 tickvault.beonedge.internal
 ```
 
-It works **by accident**. It would break if IPv6 were disabled or forced off, if anything
-pinned the `100.x` address, or if a future vhost added `listen [::]:80` and sorted before
-`tickvault`. The same URL can serve different sites to different clients.
+So no DNS is involved at all — not AdGuard, not MagicDNS, not split DNS. The browser
+connects to the **Tailscale IPv4** address on `0.0.0.0:80` and sends
+`Host: tickvault.beonedge.internal`, which nginx matches against `server_name`, selecting
+the vhost correctly. Entirely deliberate.
+
+This is also why dashboard access survived the whole network upheaval: `100.122.85.101` is
+the tailnet address, independent of both ISPs and both LAN subnets.
+
+**Two claims in an earlier draft were wrong and are corrected here:**
+
+1. *"Tailscale access works by accident via the IPv6 default server."* False for this
+   workstation — the hosts entry is IPv4-only and carries the correct Host header.
+2. *"Tailscale split-DNS forwards `.internal` to the Jio router."* Unfounded.
+   `tailscale dns status` reports **no Split DNS routes** and no custom resolvers. The VPS's
+   earlier `192.168.29.2` answer came from its own `/etc/hosts` line — since commented out
+   (`# 192.168.29.2 tickvault.beonedge.internal`), and the same query now returns
+   *not found*. The first answer was a resolved cache hit, not the router.
+
+### DNS does not forward HTTP
+
+Worth stating precisely, because the loose phrasing invites a wrong mental model. AdGuard's
+rewrite only **answers a name lookup** with `192.168.29.2`. The *browser* then opens its own
+TCP connection to that address and sends `Host: tickvault.beonedge.internal`; nginx selects
+the vhost from that header. Nothing is proxied or forwarded by DNS.
+
+The consequence is the useful part: the vhost is reachable from **any** address that lands
+on the box — LAN IP, Tailscale IP, or hosts-file entry — provided the Host header is right.
+`default_server` only governs requests whose Host matches nothing. The vhost's own comment
+puts it exactly: *"this vhost is only reachable by NAME."*
 
 Fix, when wanted — make it explicit in the `tickvault` vhost:
 
@@ -484,8 +513,10 @@ Airtel is due a static public IP; Jio stays dynamic. Relevant facts:
   DNS fails silently otherwise.
 - Confirm AdGuard's config files actually survived (`confdir` is root-only `drwx------`, so
   a non-root `du` reported only the directory inode).
-- Decide whether `tickvault` should be an explicit `default_server`, removing the accidental
-  IPv6-only reachability.
+- Decide whether `tickvault` should be an explicit `default_server`. This is now a
+  tidiness/robustness question rather than an access one — clients reach the app by name
+  (hosts file today, AdGuard rewrite when it returns), so the only thing `default_server`
+  changes is which site answers an unmatched Host, and it would remove the v4/v6 asymmetry.
 - Deploy the frontend changes from `89e363b` onward (aligned grid, expanded session
   history) — built but not yet shipped.
 - Confirm the first clean capture stop records the day's true totals in session history,
