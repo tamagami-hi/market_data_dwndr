@@ -11,6 +11,7 @@ from app.capture.monitor import (
     expected_frames_elapsed,
 )
 from app.ops import stats_store
+from tests.test_capture import _nifty_table
 
 # --- pure helpers -------------------------------------------------------------
 
@@ -202,3 +203,54 @@ def test_session_summary_payload_shape():
     assert summary["grid_seconds_lost"] == 4
     for key in ("session_loss_pct", "frozen_seconds", "captures", "streams"):
         assert key in summary
+
+
+# --- per-stream loss: elapsed vs whole-day baselines --------------------------
+
+
+def test_per_underlying_reports_elapsed_loss_not_day_progress(tmp_path):
+    """A healthy mid-morning session must not look like 75% data loss.
+
+    The per-underlying row used only the whole-day baseline, so at 10:30 a perfect
+    capture reported ~75% "loss". Elapsed-based loss is the health signal; day progress
+    is reported separately.
+    """
+    from app.bin_codec.writer import IndexBinWriter
+    from app.capture.writer_thread import FileWriterThread
+
+    table = _nifty_table()
+    path = tmp_path / "NIFTY.bin"
+    writer = FileWriterThread(IndexBinWriter(path), table.header(), name="idx")
+    writer.start()
+    writer.wait_until_ready()
+
+    engine = CaptureEngine({"NIFTY": table}, None, {"NIFTY": writer}, None, stale_after_ms=5_000)
+    engine.freshness.start(0)
+    # 10 consecutive grid seconds captured, all written.
+    for ts in range(1_000, 11_000, 1_000):
+        engine.capture_snapshot(ts)
+    writer.stop(join=True)
+
+    monitor = CaptureMonitor(
+        {"NIFTY": table}, None, {"NIFTY": writer}, None,
+        engine=engine, clock=lambda: 11_000, expected_frames=23_700, capture_start_ms=0,
+    )
+    row = monitor.per_underlying()[0]
+
+    assert row["frames_written"] == 10
+    # Health: 10 frames over 10 elapsed grid seconds -> no loss.
+    assert row["session_frames_expected"] == 10
+    assert row["session_loss_pct"] == 0.0
+    # Progress: only 10 of 23,700 frames of the full day so far.
+    assert row["frame_loss_pct"] > 99          # the old, alarming-looking number
+    assert row["day_complete_pct"] < 1         # ...is really just day progress
+
+
+def test_broadcast_messages_carry_pipeline_latency():
+    """Every streamed message gets a server-measured pipeline_ms (no clock skew)."""
+    from app.ws import protocol
+
+    msg = protocol.envelope("X", {"a": 1}, {"pipeline_ms": 12})
+    assert msg == {"type": "X", "payload": {"a": 1}, "meta": {"pipeline_ms": 12}}
+    # No meta key at all when none is supplied (keeps existing messages byte-identical).
+    assert protocol.envelope("X", {"a": 1}) == {"type": "X", "payload": {"a": 1}}

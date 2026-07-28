@@ -51,8 +51,18 @@ def paise_to_rupees(value: int) -> float:
     return value / 100.0
 
 
-def envelope(type_: str, payload: Any) -> dict:
-    return {"type": type_, "payload": payload}
+def envelope(type_: str, payload: Any, meta: dict | None = None) -> dict:
+    """Tagged message. ``meta`` carries transport diagnostics (not market data).
+
+    Currently ``pipeline_ms``: milliseconds from the capture grid timestamp to the moment
+    this message was serialised — i.e. the server-side cost of snapshot -> Greeks ->
+    encode. It is deliberately server-measured: comparing a server timestamp against the
+    browser's clock would report clock skew, not latency.
+    """
+    msg = {"type": type_, "payload": payload}
+    if meta:
+        msg["meta"] = meta
+    return msg
 
 
 # --- GridBlock ---------------------------------------------------------------

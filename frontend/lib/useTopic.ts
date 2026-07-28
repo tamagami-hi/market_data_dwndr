@@ -22,7 +22,13 @@ export function useTopicEnvelopes(
   }, [connection]);
 }
 
-const SERVER_STATE: WsConnectionState = { connected: false, error: null };
+const SERVER_STATE: WsConnectionState = {
+  connected: false,
+  error: null,
+  pipelineMs: null,
+  bytesPerSec: 0,
+  ageMs: null,
+};
 
 /** Reactive connection state for a topic (SSR-safe). */
 export function useConnectionState(connection: TopicConnection): WsConnectionState {

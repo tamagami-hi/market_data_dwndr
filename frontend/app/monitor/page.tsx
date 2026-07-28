@@ -693,7 +693,18 @@ function PerUnderlyingPanel({ rows }: { rows: PerUnderlyingStatus[] }) {
               <tr>
                 <th className="px-2 py-1.5">Stream</th>
                 <th className="px-2 py-1.5 text-right">Frames</th>
-                <th className="px-2 py-1.5 text-right">Loss</th>
+                <th
+                  className="px-2 py-1.5 text-right"
+                  title="Missing frames vs the grid seconds that have ACTUALLY elapsed — the real health signal. Above ~0 means genuine data loss."
+                >
+                  Loss
+                </th>
+                <th
+                  className="px-2 py-1.5 text-right"
+                  title="Share of the full session captured so far. Low early in the day by definition — progress, not a fault."
+                >
+                  Day
+                </th>
                 <th className="px-2 py-1.5 text-right">B/frame</th>
                 <th className="px-2 py-1.5 text-right">Proj EOD</th>
                 <th className="px-2 py-1.5 text-right">File</th>
@@ -715,8 +726,18 @@ function PerUnderlyingPanel({ rows }: { rows: PerUnderlyingStatus[] }) {
                     </span>
                   </td>
                   <td className="px-2 py-1.5 text-right">{formatIndianNumber(r.frames_written, 0)}</td>
-                  <td className={`px-2 py-1.5 text-right ${r.frame_loss_pct > 50 ? "text-amber-400" : "text-zinc-300"}`}>
-                    {formatPercent(r.frame_loss_pct, 1)}
+                  {/* Elapsed-based loss: the real health signal. The old column divided by
+                      the whole-day baseline, so a perfect 10:30 session read ~75% "loss". */}
+                  <td
+                    className={`px-2 py-1.5 text-right ${
+                      (r.session_loss_pct ?? 0) > 0.5 ? "text-amber-400" : "text-zinc-300"
+                    }`}
+                    title="vs grid seconds actually elapsed"
+                  >
+                    {formatPercent(r.session_loss_pct ?? 0, 2)}
+                  </td>
+                  <td className="px-2 py-1.5 text-right text-zinc-500" title="share of the full session captured">
+                    {formatPercent(r.day_complete_pct ?? 100 - r.frame_loss_pct, 1)}
                   </td>
                   <td className="px-2 py-1.5 text-right text-zinc-400">{formatBytes(r.avg_bytes_per_frame)}</td>
                   <td className="px-2 py-1.5 text-right text-zinc-400">{formatBytes(r.projected_eod_bytes)}</td>

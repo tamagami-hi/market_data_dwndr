@@ -3,6 +3,11 @@
 export interface WsEnvelope {
   type: string;
   payload?: unknown;
+  /** Transport diagnostics, not market data (see backend app/ws/protocol.py envelope). */
+  meta?: {
+    /** Server-side ms from the capture grid timestamp to the encoded message. */
+    pipeline_ms?: number;
+  };
 }
 
 export const MSG = {
@@ -108,7 +113,14 @@ export interface PerUnderlyingStatus {
   last_tick_ms: number | null;
   frames_written: number;
   frames_expected: number;
+  /** Loss vs the WHOLE-DAY baseline — a completeness figure, low early in the session. */
   frame_loss_pct: number;
+  /** Frames the grid should have produced over the elapsed span (health baseline). */
+  session_frames_expected?: number;
+  /** Loss vs elapsed grid seconds — the real health signal (above ~0 = genuine loss). */
+  session_loss_pct?: number;
+  /** Share of the full session captured so far. */
+  day_complete_pct?: number;
   file_bytes: number;
   avg_bytes_per_frame: number;
   projected_eod_bytes: number;

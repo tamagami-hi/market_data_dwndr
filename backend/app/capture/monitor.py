@@ -224,6 +224,16 @@ class CaptureMonitor:
         heartbeat_age_ms = (now - last_write) if last_write is not None else None
         last_tick_ms = self.engine.stall.last_message_ms if self.engine is not None else None
         connected = bool(self.bridge.connected) if self.bridge is not None else False
+        # Two DIFFERENT loss figures, previously conflated into one alarming number:
+        #   frame_loss_pct   – vs the whole-day baseline. At 10:30 a perfect session still
+        #                      reads ~75%, because most of the day has not happened yet.
+        #                      It is a completeness/progress measure, not a fault.
+        #   session_loss_pct – vs the grid seconds that have ACTUALLY elapsed. This is the
+        #                      health signal: anything above ~0 means real missing frames.
+        session_expected = expected_frames_elapsed(
+            getattr(self.engine, "first_capture_ms", None),
+            getattr(self.engine, "last_capture_ms", None),
+        )
         return {
             "underlying": underlying,
             "connected": connected,
@@ -231,6 +241,12 @@ class CaptureMonitor:
             "frames_written": frames,
             "frames_expected": self.expected_frames,
             "frame_loss_pct": round(frame_loss_pct(frames, self.expected_frames), 3),
+            "session_frames_expected": session_expected,
+            "session_loss_pct": round(frame_loss_pct(frames, session_expected), 3),
+            "day_complete_pct": round(
+                min(100.0, frames / self.expected_frames * 100.0) if self.expected_frames else 0.0,
+                2,
+            ),
             "file_bytes": file_bytes,
             "avg_bytes_per_frame": round(avg_bytes_per_frame(file_bytes, frames), 1),
             "projected_eod_bytes": projected_eod_bytes(file_bytes, frames, self.expected_frames),

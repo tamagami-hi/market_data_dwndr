@@ -131,6 +131,9 @@ class Broadcaster:
         )
         self._latest_snapshot: CaptureSnapshot | None = None
         self._publish_task: asyncio.Task[None] | None = None
+        # Server-side latency of the most recent publish (grid timestamp -> encoded),
+        # also surfaced on every message's `meta.pipeline_ms`.
+        self.last_pipeline_ms = 0
         # Throttled visibility for recurring best-effort broadcast failures (the
         # publish fires at the capture cadence, so we must not log a traceback every
         # tick — but we must not swallow them silently either).
@@ -329,6 +332,18 @@ class Broadcaster:
             messages.append(("capture-status", status))
             self._maybe_persist_snapshot(status.get("payload"))
         messages.append(("session", protocol.heartbeat(snapshot.timestamp_unix_ms)))
+
+        # Stamp the server-side pipeline latency on every message: the elapsed time from
+        # this frame's grid timestamp through Greeks reconstruction and encoding. Measured
+        # here (after the work, before the send) so it covers the whole build cost.
+        pipeline_ms = max(0, self._clock() - snapshot.timestamp_unix_ms)
+        self.last_pipeline_ms = pipeline_ms
+        for _topic, message in messages:
+            meta = message.get("meta")
+            if meta is None:
+                message["meta"] = {"pipeline_ms": pipeline_ms}
+            else:
+                meta["pipeline_ms"] = pipeline_ms
         return tuple(messages)
 
     def _maybe_persist_snapshot(self, payload: dict | None, *, force: bool = False) -> None:
