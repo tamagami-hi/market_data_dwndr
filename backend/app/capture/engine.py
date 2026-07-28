@@ -16,6 +16,7 @@ import asyncio
 import logging
 import time
 
+from app.bin_codec.scan import scan_frames
 from app.capture.reconnect import FreshnessMonitor, ReconnectPolicy, StallDetector
 from app.capture.snapshot import CaptureSnapshot
 from app.capture.writer_thread import (
@@ -65,6 +66,8 @@ class CaptureEngine:
         self._clock = clock
         self.unmatched = 0
         self.captures = 0
+        # Frames already on disk when this process started (set by resume_from_disk).
+        self.resumed_frames = 0
         # --- data-loss accounting (the 1 Hz grid is the ground truth) ----------- #
         # A "gap" is a resync event: we fell so far behind that whole grid seconds
         # could not be written. These were previously log-only, so a session's real
@@ -137,6 +140,70 @@ class CaptureEngine:
         )
         stock_writes = int(snapshot.stock_frame is not None and self.stock_writer is not None)
         return index_writes + stock_writes
+
+    def resume_from_disk(self, carried: dict | None = None) -> dict:
+        """Restore day-level counters after a mid-session restart.
+
+        Captured data already survives a restart (writers append, and the header is only
+        written when the file is empty), but every counter lives in process memory.
+        Without this, a restart at 12:30 reports ~0 frames against a full-session
+        baseline, so a healthy resumed session looks like catastrophic data loss.
+
+        Two sources, in order of authority:
+          * the ``.bin`` files themselves — frame counts and the session's true first
+            timestamp. Authoritative, being the data that actually landed.
+          * ``carried`` — counters that leave no trace on disk (grid gaps, seconds lost,
+            frozen seconds) from the last persisted monitor snapshot. Best-effort: that
+            snapshot is written periodically, so the final few seconds may be missing.
+        """
+        writers = [*self.index_writers.values()]
+        if self.stock_writer is not None:
+            writers.append(self.stock_writer)
+
+        scans = []
+        for writer in writers:
+            path = getattr(getattr(writer, "_writer", None), "path", None)
+            if path is not None:
+                scans.append(scan_frames(path))
+
+        frames = max((int(getattr(w, "frames_on_disk", 0)) for w in writers), default=0)
+        first_candidates = [s.first_timestamp_ms for s in scans if s.first_timestamp_ms]
+        if frames <= 0 or not first_candidates:
+            return {"resumed": False, "frames_on_disk": 0}
+
+        self.captures = frames
+        self.first_capture_ms = min(first_candidates)
+        self.resumed_frames = frames
+
+        if carried:
+            self.grid_gaps = int(carried.get("grid_gaps") or 0)
+            self.grid_seconds_lost = int(carried.get("grid_seconds_lost") or 0)
+            self.frozen_seconds = int(carried.get("frozen_seconds") or 0)
+
+        # The restart is itself a hole in the grid. Count the wall-clock seconds between
+        # the last frame on disk and now as lost, so the resumed session's loss figure
+        # reflects the downtime instead of pretending the feed was continuous.
+        last_candidates = [s.last_timestamp_ms for s in scans if s.last_timestamp_ms]
+        downtime_s = 0
+        if last_candidates:
+            downtime_s = max(0, (self._clock() - max(last_candidates)) // 1000 - 1)
+            if downtime_s > 0:
+                self.grid_gaps += 1
+                self.grid_seconds_lost += downtime_s
+
+        logger.info(
+            "resumed mid-session: %d frames already on disk, session first frame %s, "
+            "%ds downtime counted as lost",
+            frames,
+            self.first_capture_ms,
+            downtime_s,
+        )
+        return {
+            "resumed": True,
+            "frames_on_disk": frames,
+            "first_capture_ms": self.first_capture_ms,
+            "downtime_seconds": downtime_s,
+        }
 
     def capture_snapshot(self, timestamp_unix_ms: int | None = None) -> CaptureSnapshot:
         """Copy and enqueue frames, returning the same immutable display hand-off."""
@@ -457,7 +524,10 @@ def build_index_writer(table: IndexTable, path) -> FileWriterThread:
     from app.bin_codec.writer import IndexBinWriter
 
     return FileWriterThread(
-        IndexBinWriter(path, sync=True), table.header(), name=f"idx-{table.chain.underlying}"
+        IndexBinWriter(path, sync=True),
+        table.header(),
+        name=f"idx-{table.chain.underlying}",
+        frames_on_disk=scan_frames(path).frames,
     )
 
 
@@ -465,7 +535,12 @@ def build_stock_writer(matrix: StockMatrix, path) -> FileWriterThread:
     """Convenience: a writer thread for the stock matrix file (fsync per frame)."""
     from app.bin_codec.writer import StockBinWriter
 
-    return FileWriterThread(StockBinWriter(path, sync=True), matrix.header(), name="stocks")
+    return FileWriterThread(
+        StockBinWriter(path, sync=True),
+        matrix.header(),
+        name="stocks",
+        frames_on_disk=scan_frames(path).frames,
+    )
 
 
 __all__ = [

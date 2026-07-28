@@ -32,18 +32,36 @@ class FileWriterThread(threading.Thread):
 
     ``bin_writer`` is an unopened ``IndexBinWriter`` / ``StockBinWriter``. The header is
     written once on startup (header-once semantics make restart safe).
+
+    ``frames_on_disk`` is the number of data frames the file already held when this
+    process started. It is included in ``frames_written`` so the monitor reports the
+    DAY's progress rather than this process's progress — without it, a mid-session
+    restart resets the count to zero and a healthy resumed session is reported as
+    near-total data loss. ``frames_appended`` keeps the process-local figure.
     """
 
-    def __init__(self, bin_writer: Any, header: Any, name: str | None = None) -> None:
+    def __init__(
+        self,
+        bin_writer: Any,
+        header: Any,
+        name: str | None = None,
+        frames_on_disk: int = 0,
+    ) -> None:
         super().__init__(name=name or f"writer-{id(self):x}", daemon=True)
         self._writer = bin_writer
         self._header = header
         self._queue: queue.Queue = queue.Queue()
-        self.frames_written = 0
+        self.frames_on_disk = max(0, int(frames_on_disk))
+        self.frames_appended = 0
         self.last_write_ms: int | None = None
         self._started_ok = threading.Event()
         self._error: BaseException | None = None
         self._stop_requested = False
+
+    @property
+    def frames_written(self) -> int:
+        """Total data frames in the file for the day: pre-existing + appended here."""
+        return self.frames_on_disk + self.frames_appended
 
     def run(self) -> None:  # pragma: no cover - exercised via integration test
         try:
@@ -60,7 +78,7 @@ class FileWriterThread(threading.Thread):
                 if item is _STOP:
                     break
                 self._writer.append_frame(item)
-                self.frames_written += 1
+                self.frames_appended += 1
                 self.last_write_ms = now_ms()
         except BaseException as exc:  # noqa: BLE001 - propagate through health checks
             self._error = exc

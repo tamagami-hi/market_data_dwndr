@@ -27,6 +27,7 @@ from app.chain.table import IndexTable
 from app.kite.errors import KiteAuthenticationError, is_authentication_error
 from app.kite.instruments import InstrumentStore
 from app.ops.calendar import TradingCalendar
+from app.ops.stats_store import load_capture_snapshot
 from app.session import now_ms
 from app.stocks.board import discover_fno_board
 from app.stocks.matrix import StockMatrix
@@ -149,6 +150,30 @@ def bootstrap_capture(
             round(getattr(settings, "capture_token_max_age_seconds", 0.0) * 1000)
         ),
     )
+    # --- resume a mid-session restart ------------------------------------------ #
+    # The .bin files append, so data written before the restart is intact; the counters
+    # are not. Seed them from disk (authoritative) plus the last persisted monitor
+    # snapshot (for counters that leave no trace in the files) so the dashboard shows
+    # the day's totals instead of restarting from zero.
+    carried: dict | None = None
+    try:
+        prior = load_capture_snapshot(settings.state_dir, trading_date)
+        if prior:
+            streams = prior.get("streams") or []
+            carried = {
+                "grid_gaps": prior.get("grid_gaps"),
+                "grid_seconds_lost": prior.get("grid_seconds_lost"),
+                "frozen_seconds": prior.get("frozen_seconds"),
+            }
+            logger.info(
+                "found today's persisted telemetry (%d streams) to carry over",
+                len(streams),
+            )
+    except Exception as exc:  # noqa: BLE001 - telemetry carry-over must never block start
+        logger.warning("could not read prior capture snapshot: %s", exc)
+
+    resume = engine.resume_from_disk(carried)
+
     monitor = CaptureMonitor(
         index_tables,
         stock_matrix,
@@ -158,8 +183,14 @@ def bootstrap_capture(
         market_data_path=settings.market_data_path,
         clock=clock,
         expected_frames=getattr(settings, "expected_frames_per_session", 23_400),
-        capture_start_ms=clock(),
+        capture_start_ms=engine.first_capture_ms or clock(),
     )
+    if resume.get("resumed"):
+        logger.info(
+            "capture resumed: day total starts at %d frames (downtime %ds)",
+            resume["frames_on_disk"],
+            resume["downtime_seconds"],
+        )
     broadcaster = None
     if hub is not None:
         from app.capture.broadcaster import Broadcaster
