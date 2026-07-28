@@ -5,8 +5,9 @@ several conclusions correct earlier assumptions and are easy to re-derive wrongl
 
 - **Part 1 — application**: stream everything the capture records, and fix three monitor
   metrics that were measuring the wrong thing.
-- **Part 2 — infrastructure**: the VPS gained a second ISP, lost its LAN address, and
-  along the way revealed that reaching TickVault by IP has been working by accident.
+- **Part 2 — infrastructure**: the VPS gained a second ISP, lost its LAN address, and along
+  the way revealed that TickVault is reachable only **by name** — never by bare IP — plus a
+  v4/v6 default-server asymmetry that is real but is not the path any client uses.
 
 Related: [[lan-and-public-domain-routing]], [[nginx-vhost-guide]], [[config-and-env]].
 
