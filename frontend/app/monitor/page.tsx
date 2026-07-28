@@ -397,6 +397,15 @@ function DataLossPanel({ globals }: { globals: GlobalStatus | null }) {
 /* Session history (cross-session data loss)                                  */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Per-day capture quality, one row per trading date.
+ *
+ * Carries the same measures as the Data loss panel, but frozen at each session's end
+ * instead of live — that panel goes blank the moment capture stops, so this table is the
+ * only place a past day's health survives. Columns mirror the panel's order (lost / gaps
+ * / frozen, then drops / unmatched / ticks) so the two read the same way, and share its
+ * colour rules: red for anything permanently lost, amber for degraded but recoverable.
+ */
 function SessionHistoryPanel({ sessions }: { sessions: SessionSummary[] }) {
   return (
     <Panel title="Session history" subtitle={`${sessions.length} recorded sessions`}>
@@ -407,57 +416,131 @@ function SessionHistoryPanel({ sessions }: { sessions: SessionSummary[] }) {
           <table className="w-full text-left text-xs tabular-nums">
             <thead className="sticky top-0 bg-zinc-900 text-[0.625rem] uppercase tracking-wide text-zinc-500">
               <tr>
-                <th className="px-2 py-1.5">Session</th>
-                <th className="px-2 py-1.5 text-right">Frames</th>
-                <th className="px-2 py-1.5 text-right">Loss</th>
-                <th className="px-2 py-1.5 text-right">Lost s</th>
-                <th className="px-2 py-1.5 text-right">Gaps</th>
-                <th className="px-2 py-1.5 text-right">Frozen s</th>
-                <th className="px-2 py-1.5 text-right">Recon</th>
+                <th className="px-1.5 py-1.5">Session</th>
+                <th className="px-1.5 py-1.5 text-right" title="Grid seconds captured">
+                  Frames
+                </th>
+                <th
+                  className="px-1.5 py-1.5 text-right"
+                  title="Missing frames vs the grid seconds that actually elapsed"
+                >
+                  Loss
+                </th>
+                <th
+                  className="px-1.5 py-1.5 text-right"
+                  title="Grid seconds permanently lost — never written, unrecoverable"
+                >
+                  Lost s
+                </th>
+                <th
+                  className="px-1.5 py-1.5 text-right"
+                  title="Resync events that cost whole grid seconds"
+                >
+                  Gaps
+                </th>
+                <th
+                  className="px-1.5 py-1.5 text-right"
+                  title="Seconds written while the feed was stale: frames exist but hold duplicate values"
+                >
+                  Frozen
+                </th>
+                <th
+                  className="px-1.5 py-1.5 text-right"
+                  title="Tick batches dropped before reaching the grid"
+                >
+                  Drop
+                </th>
+                <th
+                  className="px-1.5 py-1.5 text-right"
+                  title="Ticks that matched no instrument in the captured universe"
+                >
+                  Unmatch
+                </th>
+                <th
+                  className="px-1.5 py-1.5 text-right"
+                  title="Average ingest rate across the session (total ticks / uptime)"
+                >
+                  Ticks/s
+                </th>
+                <th className="px-1.5 py-1.5 text-right" title="Ticker reconnects">
+                  Recon
+                </th>
+                <th className="px-1.5 py-1.5 text-right" title="Capture uptime for the session">
+                  Uptime
+                </th>
+                <th className="px-1.5 py-1.5 text-right" title="Bytes on disk for the day">
+                  Disk
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800/70">
-              {sessions.map((s) => (
-                <tr key={s.trading_date} className="hover:bg-zinc-800/40">
-                  <td className="px-2 py-1.5 font-medium text-zinc-200">
-                    {s.trading_date}
-                    {s.exhausted && (
-                      <span className="ml-1.5 rounded-full bg-red-500/15 px-1.5 py-0.5 text-[0.5625rem] text-red-400">
-                        stalled
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-2 py-1.5 text-right">{formatIndianNumber(s.captures, 0)}</td>
-                  <td
-                    className={`px-2 py-1.5 text-right ${
-                      s.session_loss_pct > 1 ? "text-amber-400" : "text-zinc-300"
-                    }`}
-                  >
-                    {formatPercent(s.session_loss_pct, 2)}
-                  </td>
-                  <td
-                    className={`px-2 py-1.5 text-right ${
-                      s.grid_seconds_lost > 0 ? "text-red-400" : "text-zinc-500"
-                    }`}
-                  >
-                    {formatIndianNumber(s.grid_seconds_lost, 0)}
-                  </td>
-                  <td className="px-2 py-1.5 text-right text-zinc-500">
-                    {formatIndianNumber(s.grid_gaps, 0)}
-                  </td>
-                  <td className="px-2 py-1.5 text-right text-zinc-500">
-                    {formatIndianNumber(s.frozen_seconds, 0)}
-                  </td>
-                  <td className="px-2 py-1.5 text-right text-zinc-500">
-                    {formatIndianNumber(s.reconnects, 0)}
-                  </td>
-                </tr>
-              ))}
+              {sessions.map((s) => {
+                const uptimeS = (s.uptime_ms ?? 0) / 1000;
+                const avgTicks = uptimeS >= 1 ? (s.ticks_received ?? 0) / uptimeS : 0;
+                return (
+                  <tr key={s.trading_date} className="hover:bg-zinc-800/40">
+                    <td className="whitespace-nowrap px-1.5 py-1.5 font-medium text-zinc-200">
+                      {s.trading_date}
+                      {s.exhausted && (
+                        <span
+                          className="ml-1.5 rounded-full bg-red-500/15 px-1.5 py-0.5 text-[0.5625rem] text-red-400"
+                          title="Reconnect attempts were exhausted — the session stopped early"
+                        >
+                          stalled
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-1.5 py-1.5 text-right text-zinc-300">
+                      {formatIndianNumber(s.captures, 0)}
+                    </td>
+                    <Num value={s.session_loss_pct} tone={s.session_loss_pct > 1 ? "warn" : "none"}>
+                      {formatPercent(s.session_loss_pct, 2)}
+                    </Num>
+                    <Num value={s.grid_seconds_lost} tone="bad" />
+                    <Num value={s.grid_gaps} tone="bad" />
+                    <Num value={s.frozen_seconds} tone="warn" />
+                    <Num value={s.dropped_batches} tone="bad" />
+                    <Num value={s.unmatched_ticks} tone="warn" />
+                    <td className="px-1.5 py-1.5 text-right text-zinc-400">
+                      {formatIndianNumber(avgTicks, 0)}
+                    </td>
+                    <Num value={s.reconnects} tone="warn" />
+                    <td className="whitespace-nowrap px-1.5 py-1.5 text-right text-zinc-400">
+                      {formatUptime(s.uptime_ms)}
+                    </td>
+                    <td className="whitespace-nowrap px-1.5 py-1.5 text-right text-zinc-400">
+                      {formatBytes(s.disk_bytes ?? 0)}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
     </Panel>
+  );
+}
+
+/**
+ * Numeric history cell. Zero stays muted and only a non-zero value takes the severity
+ * colour, so a clean session reads as a quiet row and real problems stand out.
+ */
+function Num({
+  value,
+  tone,
+  children,
+}: {
+  value: number;
+  tone: "bad" | "warn" | "none";
+  children?: React.ReactNode;
+}) {
+  const active = value > 0 && tone !== "none";
+  const cls = active ? (tone === "bad" ? "text-red-400" : "text-amber-400") : "text-zinc-500";
+  return (
+    <td className={`px-1.5 py-1.5 text-right ${cls}`}>
+      {children ?? formatIndianNumber(value, 0)}
+    </td>
   );
 }
 
