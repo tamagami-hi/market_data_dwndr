@@ -289,8 +289,11 @@ function TopBar({
         >
           {live ? "live" : refreshing ? "refreshing" : "idle · retained"}
         </span>
+        {/* Build latency is one server-wide measurement stamped on the whole batch, so
+            it is shown on the capture dot only — repeating it on the session heartbeat
+            dot would read as two independent latencies. Throughput stays per-topic. */}
         <ConnectionDot connection={captureStatusConnection} label="capture" />
-        <ConnectionDot connection={sessionConnection} label="session" />
+        <ConnectionDot connection={sessionConnection} label="session" showLatency={false} />
       </div>
     </header>
   );
