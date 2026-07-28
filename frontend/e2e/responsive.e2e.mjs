@@ -148,6 +148,64 @@ describe("responsive layout", () => {
     }
   });
 
+  it("monitor dashboard panels align into rows on a desktop viewport", async () => {
+    // The panels used to live in two independent flex columns, so each stacked at its own
+    // natural height and nothing lined up across the gutter. They are one grid now, so
+    // each left/right pair must share a top edge and a height.
+    const page = await browser.newPage();
+    try {
+      await page.setViewport({ width: 1600, height: 1000 });
+      await page.goto(`${BASE}/monitor`, { waitUntil: "networkidle2", timeout: 30_000 });
+      await new Promise((r) => setTimeout(r, 600));
+
+      const panels = await page.evaluate(() => {
+        const grid = document.querySelector("main .grid.lg\\:grid-cols-\\[1fr_1\\.25fr\\]")
+          ?? [...document.querySelectorAll("div.grid")].find(
+            (d) => d.querySelectorAll(":scope > section").length >= 6,
+          );
+        if (!grid) return null;
+        return [...grid.querySelectorAll(":scope > section")].map((s) => {
+          const r = s.getBoundingClientRect();
+          return {
+            title: s.querySelector("h2")?.textContent?.trim() ?? "?",
+            top: Math.round(r.top),
+            left: Math.round(r.left),
+            height: Math.round(r.height),
+          };
+        });
+      });
+
+      assert.ok(panels, "could not find the dashboard panel grid");
+      assert.equal(panels.length, 6, `expected 6 dashboard panels, got ${panels.length}`);
+
+      // Walk the pairs in DOM (row) order: [0,1], [2,3], [4,5].
+      for (let i = 0; i < panels.length; i += 2) {
+        const a = panels[i];
+        const b = panels[i + 1];
+        assert.ok(
+          Math.abs(a.top - b.top) <= 1,
+          `row ${i / 2 + 1} not aligned: "${a.title}" top=${a.top} vs "${b.title}" top=${b.top}`,
+        );
+        assert.ok(
+          Math.abs(a.height - b.height) <= 1,
+          `row ${i / 2 + 1} heights differ: "${a.title}" ${a.height}px vs "${b.title}" ${b.height}px`,
+        );
+        assert.ok(
+          b.left > a.left,
+          `row ${i / 2 + 1}: expected "${b.title}" to sit right of "${a.title}"`,
+        );
+      }
+      // And the three rows must be distinct (not all collapsed onto one line).
+      const rowTops = [panels[0].top, panels[2].top, panels[4].top];
+      assert.ok(
+        rowTops[0] < rowTops[1] && rowTops[1] < rowTops[2],
+        `rows are not stacked in order: ${rowTops.join(", ")}`,
+      );
+    } finally {
+      await page.close();
+    }
+  });
+
   it("monitor scroll containers have room for multiple rows on a desktop viewport", async () => {
     const page = await browser.newPage();
     try {

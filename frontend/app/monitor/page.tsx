@@ -167,7 +167,7 @@ export default function MonitorPage() {
   return (
     // The dashboard flows naturally and the PAGE scrolls, at every breakpoint. It used
     // to be pinned to the viewport (h-[calc(100dvh-5.25rem)] + overflow-hidden), but
-    // with three panels per column each scroll area collapsed to ~40px — unreadable.
+    // with three panel rows each scroll area collapsed to ~40px — unreadable.
     // Panels keep a minimum height instead, so nothing is ever crushed.
     //
     // On a TALL viewport we additionally set a min-height so the columns stretch and
@@ -189,17 +189,26 @@ export default function MonitorPage() {
 
       <KpiStrip globals={globals} fpsHistory={fpsHistory} />
 
-      <div className="grid grid-cols-1 gap-2 lg:grid-cols-[1fr_1.25fr] [@media(min-height:1000px)]:flex-1">
-        <div className="flex flex-col gap-2">
-          <DataLossPanel globals={globals} />
-          <FrameIntegrityPanel rows={rows} globals={globals} expectedFrames={expectedFrames} />
-          <HistoryPanel />
-        </div>
-        <div className="flex flex-col gap-2">
-          <PerUnderlyingPanel rows={rows} />
-          <SessionHistoryPanel sessions={sessionHistory} />
-          <CompressionPanel current={compression} history={history} />
-        </div>
+      {/* ONE grid, not two independent columns. Previously each column was its own flex
+          stack, so every panel sat at its own natural height and nothing lined up across
+          the gutter: Frame integrity started part-way down Per underlying, Session
+          history part-way down Download history, and the two columns ended at different
+          depths. Grid auto-placement puts the panels on shared rows instead, so each
+          pair sits on one baseline and each row is as tall as its taller panel.
+
+          Children are therefore in ROW order (left, right, left, right, ...), which is
+          also the order the single-column mobile layout reads in.
+
+          On a tall viewport auto-rows-fr additionally makes the three rows split the
+          spare height equally, so the dashboard fills the screen with even bands rather
+          than leaving a ragged gap at the bottom. */}
+      <div className="grid grid-cols-1 gap-2 lg:grid-cols-[1fr_1.25fr] [@media(min-height:1000px)]:flex-1 [@media(min-height:1000px)]:lg:auto-rows-fr">
+        <DataLossPanel globals={globals} />
+        <PerUnderlyingPanel rows={rows} />
+        <FrameIntegrityPanel rows={rows} globals={globals} expectedFrames={expectedFrames} />
+        <SessionHistoryPanel sessions={sessionHistory} />
+        <HistoryPanel />
+        <CompressionPanel current={compression} history={history} />
       </div>
 
       <LogStrip logs={logs} onExpand={() => setOverlay("logs")} />
@@ -981,9 +990,10 @@ function Panel({
   return (
     // A real minimum height at every breakpoint: the panel's scroll regions must stay
     // tall enough to show a header plus several rows, which is what broke when the
-    // dashboard was pinned to the viewport. On a tall viewport the panels additionally
-    // share the column's spare height (flex-1) so the page fills the screen.
-    <section className="flex min-h-[14rem] flex-col rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 [@media(min-height:1000px)]:flex-1">
+    // dashboard was pinned to the viewport. The panel is a grid item, so it stretches to
+    // its row's height automatically (h-full makes that explicit) — that is what keeps
+    // the two panels in a row aligned even when one has more content than the other.
+    <section className="flex h-full min-h-[14rem] flex-col rounded-lg border border-zinc-800 bg-zinc-900/60 p-3">
       <div className="mb-2 flex flex-shrink-0 flex-wrap items-baseline justify-between gap-x-2">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">{title}</h2>
         {subtitle && <span className="text-[0.625rem] lowercase text-zinc-600">{subtitle}</span>}
