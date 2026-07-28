@@ -3,6 +3,7 @@
 import type { TopicConnection } from "@/lib/wsTopicConnection";
 import { useConnectionState } from "@/lib/useTopic";
 import { formatBytes } from "@/lib/numberFormat";
+import { Explanation } from "@/components/ui/Explanation";
 
 /**
  * Live connection indicator with transport health.
@@ -39,43 +40,40 @@ export default function ConnectionDot({
   const state = useConnectionState(connection);
   const stale = state.ageMs != null && state.ageMs > 5_000;
   const latencyMs = showLatency ? state.pipelineMs : null;
+  const connectionLabel = state.connected ? (stale ? "stale" : "connected") : "offline";
 
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400">
+    <span className="inline-flex items-center gap-1.5 text-xs text-secondary">
       <span
         className={`inline-block h-2 w-2 shrink-0 rounded-full ${
           state.connected
             ? stale
-              ? "bg-amber-500 shadow-[0_0_6px] shadow-amber-500"
-              : "bg-green-500 shadow-[0_0_6px] shadow-green-500"
-            : "bg-red-500"
+              ? "bg-warning"
+              : "bg-success"
+            : "bg-danger"
         }`}
+        aria-hidden="true"
       />
-      <span className="whitespace-nowrap">{label}</span>
+      <span className="whitespace-nowrap">{label}: {connectionLabel}</span>
       {detailed && state.connected && (
-        <span
-          className="whitespace-nowrap font-mono text-[0.6875rem] text-zinc-500"
-          title={
-            (showLatency
-              ? `build latency: ${state.pipelineMs ?? "–"} ms — measured from just before the first\n` +
-                `Greeks reconstruction until the 1s batch is encoded and ready to stream.\n` +
-                (state.greeksMs != null ? `  · IV/Greeks (all chains): ${state.greeksMs} ms\n` : "") +
-                (state.stocksMs != null ? `  · stock board (L1–L5):   ${state.stocksMs} ms\n` : "")
-              : "") +
-            `payload rate: ${formatBytes(state.bytesPerSec)}/s decompressed ` +
-            `(~1/3 that on the wire — permessage-deflate)\n` +
-            `last message: ${state.ageMs == null ? "–" : `${(state.ageMs / 1000).toFixed(1)}s ago`}`
-          }
-        >
-          {latencyMs != null && (
-            <span className={latencyMs > 500 ? "text-amber-400" : ""}>{latencyMs}ms</span>
-          )}
-          {state.bytesPerSec > 0 && (
-            <>
-              {latencyMs != null && <span className="text-zinc-700"> · </span>}
-              {formatBytes(state.bytesPerSec)}/s
-            </>
-          )}
+        <span className="inline-flex items-center gap-1 whitespace-nowrap font-mono text-xs text-muted">
+          <span className={latencyMs !== null && latencyMs > 500 ? "text-warning" : ""}>
+            {latencyMs !== null ? `${latencyMs}ms` : ""}
+            {latencyMs !== null && state.bytesPerSec > 0 ? " / " : ""}
+            {state.bytesPerSec > 0 ? `${formatBytes(state.bytesPerSec)}/s` : ""}
+          </span>
+          <Explanation label={`Explain ${label} connection metrics`}>
+            {showLatency && (
+              <span className="block">
+                Build latency: {state.pipelineMs ?? "--"}ms. Greeks: {state.greeksMs ?? "--"}ms.
+                Stocks: {state.stocksMs ?? "--"}ms.
+              </span>
+            )}
+            <span className="mt-1 block">
+              Payload rate: {formatBytes(state.bytesPerSec)}/s decompressed. Last message:{" "}
+              {state.ageMs === null ? "--" : `${(state.ageMs / 1000).toFixed(1)}s ago`}.
+            </span>
+          </Explanation>
         </span>
       )}
     </span>

@@ -35,6 +35,95 @@ export class ApiError extends Error {
   }
 }
 
+type UnknownRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): UnknownRecord | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as UnknownRecord
+    : null;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function optionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function nullableNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? [...value]
+    : undefined;
+}
+
+function normalizeCaptureStatus(value: unknown): CaptureStatus | undefined {
+  const capture = asRecord(value);
+  if (
+    !capture ||
+    typeof capture.available !== "boolean" ||
+    typeof capture.running !== "boolean"
+  ) {
+    return undefined;
+  }
+  return {
+    available: capture.available,
+    running: capture.running,
+    trading_date: nullableString(capture.trading_date),
+    indices: stringArray(capture.indices),
+    stocks: nullableNumber(capture.stocks) ?? undefined,
+    tokens: nullableNumber(capture.tokens) ?? undefined,
+    skipped_indices: stringArray(capture.skipped_indices),
+    error: nullableString(capture.error),
+  };
+}
+
+function normalizeAutomation(value: unknown): AutomationStateView | undefined {
+  const automation = asRecord(value);
+  if (!automation) return undefined;
+  return {
+    phase: optionalString(automation.phase),
+    last_action: nullableString(automation.last_action),
+    last_error: nullableString(automation.last_error),
+    last_broker_poll_at: nullableNumber(automation.last_broker_poll_at),
+    eod_completed_date: nullableString(automation.eod_completed_date),
+    eod_in_progress_date: nullableString(automation.eod_in_progress_date),
+  };
+}
+
+export function normalizeAuthStatus(value: unknown): AuthStatus | null {
+  const status = asRecord(value);
+  if (
+    !status ||
+    typeof status.configured !== "boolean" ||
+    typeof status.authenticated !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    configured: status.configured,
+    authenticated: status.authenticated,
+    trading_date: optionalString(status.trading_date),
+    market_phase: optionalString(status.market_phase),
+    credentials_present: optionalBoolean(status.credentials_present),
+    external_token_source_configured: optionalBoolean(status.external_token_source_configured),
+    risk_free_rate: nullableNumber(status.risk_free_rate),
+    access_token_at: nullableNumber(status.access_token_at),
+    risk_free_rate_as_of: nullableString(status.risk_free_rate_as_of),
+    capture_ready: optionalBoolean(status.capture_ready),
+    capture: normalizeCaptureStatus(status.capture),
+    automation: normalizeAutomation(status.automation),
+  };
+}
+
 async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   return fetch(`${getBackendUrl()}${path}`, init);
 }
@@ -53,9 +142,11 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function getAuthStatus(): Promise<AuthStatus> {
-  const res = await apiFetch("/api/auth/status", { cache: "no-store" });
-  return jsonOrThrow<AuthStatus>(res);
+export async function getAuthStatus(signal?: AbortSignal): Promise<AuthStatus> {
+  const res = await apiFetch("/api/auth/status", { cache: "no-store", signal });
+  const status = normalizeAuthStatus(await jsonOrThrow<unknown>(res));
+  if (!status) throw new ApiError(502, "Auth status response was malformed.");
+  return status;
 }
 
 // --- capture status ----------------------------------------------------------
@@ -98,8 +189,8 @@ export interface CaptureHistory {
   sessions: CaptureHistorySession[];
 }
 
-export async function getCaptureHistory(): Promise<CaptureHistory> {
-  const res = await apiFetch("/api/capture/history", { cache: "no-store" });
+export async function getCaptureHistory(signal?: AbortSignal): Promise<CaptureHistory> {
+  const res = await apiFetch("/api/capture/history", { cache: "no-store", signal });
   return jsonOrThrow<CaptureHistory>(res);
 }
 
@@ -188,8 +279,8 @@ export interface DashboardStats {
   compression_history: CompressionHistory;
 }
 
-export async function getStats(): Promise<DashboardStats> {
-  const res = await apiFetch("/api/stats", { cache: "no-store" });
+export async function getStats(signal?: AbortSignal): Promise<DashboardStats> {
+  const res = await apiFetch("/api/stats", { cache: "no-store", signal });
   return jsonOrThrow<DashboardStats>(res);
 }
 

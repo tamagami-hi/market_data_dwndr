@@ -1,71 +1,437 @@
 @import "tailwindcss";
 
 :root {
-  --background: #18181b;
-  --foreground: #f4f4f5;
+  color-scheme: dark;
+  --canvas: #080b0e;
+  --surface-1: #0d1116;
+  --surface-2: #12171d;
+  --surface-3: #182028;
+  --border: #27313a;
+  --border-strong: #3a4651;
+  --text-primary: #eef4f7;
+  --text-secondary: #aebbc3;
+  --text-muted: #788790;
+  --focus: #38c8e8;
+  --accent: #31b9d8;
+  --success: #45c77a;
+  --warning: #e3a83b;
+  --danger: #ef6262;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-canvas: var(--canvas);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-muted: var(--text-muted);
+  --color-focus: var(--focus);
+  --color-accent: var(--accent);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+}
+
+* {
+  box-sizing: border-box;
 }
 
 html {
-  background:
-    radial-gradient(circle at top left, rgba(56, 189, 248, 0.08), transparent 28%),
-    radial-gradient(circle at bottom right, rgba(34, 197, 94, 0.06), transparent 24%),
-    #09090b;
+  background: var(--canvas);
+  scrollbar-gutter: stable;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  min-width: 320px;
+  margin: 0;
+  overflow-x: clip;
+  background: var(--canvas);
+  color: var(--text-primary);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 
-/*
- * Scale the whole UI on large / high-resolution displays.
- *
- * Every size in this app is rem-based (Tailwind's spacing, text and radius scales all
- * derive from the root font size), so bumping `html { font-size }` grows text, padding
- * and gaps together — proportionally, without touching a single component.
- *
- * Why it is needed: at 100% zoom a 3200px-wide panel renders the same 16px text as a
- * 1366px laptop, so the interface looks postage-stamp small even though there is plenty
- * of room. Tailwind's own breakpoints are px-based and therefore unaffected by this,
- * so the responsive layout rules keep behaving exactly as before.
- *
- * Kept modest on purpose: too aggressive and dense tables start wrapping.
- */
+button,
+input {
+  font: inherit;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--surface-1);
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: var(--border-strong);
+}
+
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 100;
+  transform: translateY(-160%);
+  border-radius: 8px;
+  background: var(--accent);
+  padding: 10px 14px;
+  color: #061014;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+.workspace-shell {
+  width: min(100%, 1600px);
+  margin-inline: auto;
+}
+
+.page-shell {
+  padding: 12px;
+}
+
+.page-frame {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.page-header {
+  display: grid;
+  min-width: 0;
+  align-items: start;
+  gap: 8px 24px;
+  min-height: 48px;
+}
+
+.page-header-actions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.page-toolbar {
+  display: flex;
+  min-height: 60px;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px;
+}
+
+/* A panel fills its grid cell, which is what keeps the two panels in a dashboard row
+   sharing one baseline and one height. Without `height: 100%` the grid stretches the
+   cell but the section inside keeps its content height, so paired panels end at
+   different depths and everything below them drifts out of alignment. */
+.panel {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  overflow: clip;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-1);
+}
+
+/* MOBILE vs DESKTOP height policy.
+   On a phone the dashboard is a single column, so there is no pairing to align and a
+   minimum height only produces tall part-empty boxes and more scrolling. Panels there
+   size to their content — which on mobile is the compact card list, not the table.
+   From `md` up the panels sit side by side, so they need a floor tall enough for a
+   heading plus several rows; that floor is also what stops a short panel from crushing
+   its partner's scroll region. */
+@media (min-width: 768px) {
+  .panel {
+    min-height: 14rem;
+  }
+}
+
+/* Panels that are deliberately a compact strip rather than a data surface. */
+.panel-compact {
+  min-height: 0;
+}
+
+.panel-heading {
+  display: flex;
+  min-height: 34px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+}
+
+/* The body absorbs the panel's spare height so a child scroll region grows with the
+   panel instead of collapsing. `min-height: 0` is required: a flex item's default
+   `min-height: auto` refuses to shrink below its content, which is what makes nested
+   `overflow: auto` regions stop scrolling. */
+.panel-body {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.metric {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-1);
+  padding: 10px 12px;
+}
+
+/* Dashboard density, matching the v0.1.26 layout: the monitor grid packs 6 KPI tiles
+   and 8 diagnostic tiles above three panel rows, so tile chrome is the difference
+   between fitting one screen and scrolling. Used only on those dense strips — the
+   roomier default still applies elsewhere. */
+.metric-compact {
+  border-radius: 8px;
+  padding: 5px 8px;
+}
+
+.label {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: 0.035em;
+}
+
+.control {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease,
+    transform 120ms ease;
+}
+
+.control:active {
+  transform: translateY(1px);
+}
+
+.status-indicator {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 9px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.status-compact {
+  min-height: 22px;
+  padding: 2px 7px;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.status-neutral {
+  color: var(--text-muted);
+}
+
+.status-success {
+  color: var(--success);
+}
+
+.status-warning {
+  color: var(--warning);
+}
+
+.status-danger {
+  color: var(--danger);
+}
+
+.state-message {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-1);
+  padding: 12px;
+}
+
+.state-warning {
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+}
+
+.state-danger {
+  border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
+}
+
+.state-success {
+  border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+}
+
+.disclosure {
+  overflow: clip;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-1);
+}
+
+.explanation-trigger {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.explanation-content {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  width: min(280px, calc(100vw - 32px));
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-3);
+  padding: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.skeleton {
+  display: block;
+  min-height: 14px;
+  border-radius: 6px;
+  background: var(--surface-3);
+}
+
+.operator-dialog {
+  width: min(960px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.operator-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.operator-dialog::backdrop {
+  background: rgb(2 5 7 / 78%);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.data-table th {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.data-table th,
+.data-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 7px 9px;
+  /* One line per row, as in the v0.1.26 dashboard. Without this, values like
+     "528.4 MB" and "3:34:45 PM" wrap and every row doubles in height — which then
+     propagates outward, because the dashboard equalises its rows to the tallest panel,
+     so a wrapped table made all six panels ~90px taller. The table wrapper is
+     overflow-auto, so wide tables scroll horizontally inside their panel instead. */
+  white-space: nowrap;
+}
+
+.data-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+@media (min-width: 640px) {
+  .page-shell {
+    padding: 16px;
+  }
+}
+
+@media (min-width: 768px) {
+  .page-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+}
+
 @media (min-width: 1920px) {
-  html {
-    font-size: 17px;
+  .workspace-shell {
+    width: min(100%, 1800px);
   }
 }
 
 @media (min-width: 2400px) {
-  html {
-    font-size: 19px;
+  .workspace-shell {
+    width: min(100%, 2200px);
   }
 }
 
 @media (min-width: 3000px) {
-  html {
-    font-size: 21px;
+  .workspace-shell {
+    width: min(100%, 2680px);
   }
 }
 
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+@media (hover: none) and (pointer: coarse) {
+  button,
+  a,
+  input {
+    min-height: 44px;
+    min-width: 44px;
+  }
 }
-::-webkit-scrollbar-track {
-  background: #27272a;
-}
-::-webkit-scrollbar-thumb {
-  background: #52525b;
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #71717a;
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }

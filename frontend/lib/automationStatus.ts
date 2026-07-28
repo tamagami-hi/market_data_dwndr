@@ -13,7 +13,7 @@ export function automationMessage(
 ): string {
   if (automation?.phase === "auth_window") {
     if (automation.last_error) {
-      return "Shared token is not ready yet. The server will retry during the 08:30–09:00 IST window.";
+      return "Shared token is not ready yet. The server will retry during the 08:30-09:00 IST window.";
     }
     return "The server is checking calspread.online for today's shared Kite token.";
   }

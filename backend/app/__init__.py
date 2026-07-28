@@ -1,3 +1,3 @@
 """market_data_dwndr backend package."""
 
-__version__ = "0.1.26"
+__version__ = "0.1.36"

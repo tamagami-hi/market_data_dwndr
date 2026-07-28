@@ -2,6 +2,8 @@
 /.next
 /out
 /build
+/coverage
+/e2e/diffs
 next-env.d.ts.tmp
 *.tsbuildinfo
 .env*.local

@@ -1,199 +1,227 @@
 "use client";
 
-import React from "react";
+import React, { useRef, useSyncExternalStore } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
+import { ResponsiveDisclosure } from "@/components/ui/ResponsiveDisclosure";
+import {
+  areOptionRowsEqual,
+  GRID_KEYS,
+  optionGridToRows,
+  type OptionGrid,
+  type OptionRowModel,
+} from "@/lib/options/updates";
 import { fmtCell, formatIndianNumber } from "@/lib/numberFormat";
 import type { GridBlock } from "@/lib/wsTypes";
 
-export interface OptionChainData {
-  strikes: number[];
-  calls: GridBlock;
-  puts: GridBlock;
-  spot: number;
-  marketAtm: number;
-  maxPain: number;
-  spotAtm: number;
+export type OptionChainData = OptionGrid;
+
+type Column = { key: keyof GridBlock; label: string };
+
+const CALL_COLUMNS: Column[] = [
+  { key: "oi", label: "OI" },
+  { key: "change_in_oi", label: "Chg OI" },
+  { key: "volume", label: "Vol" },
+  { key: "iv", label: "IV" },
+  { key: "delta", label: "Delta" },
+  { key: "gamma", label: "Gamma" },
+  { key: "theta", label: "Theta/day" },
+  { key: "vega", label: "Vega/1%" },
+  { key: "rho", label: "Rho/1%" },
+  { key: "bid", label: "Bid" },
+  { key: "ask", label: "Ask" },
+  { key: "ltp", label: "LTP" },
+  { key: "change", label: "Chg" },
+];
+const PUT_COLUMNS = [...CALL_COLUMNS].reverse();
+const WHOLE = new Set<keyof GridBlock>(["oi", "change_in_oi", "volume"]);
+const DESKTOP_QUERY = "(min-width: 1024px)";
+const TABLE_COLUMN_COUNT = CALL_COLUMNS.length + PUT_COLUMNS.length + 1;
+
+function subscribeToDesktopLayout(onChange: () => void): () => void {
+  const query = window.matchMedia(DESKTOP_QUERY);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
 }
 
-type Col = { key: keyof GridBlock; label: string };
+function isDesktopLayout(): boolean {
+  return window.matchMedia(DESKTOP_QUERY).matches;
+}
 
-const CALL_COLS: Col[] = [
-  { key: "oi", label: "OI" },
-  { key: "change_in_oi", label: "Chg OI" },
-  { key: "volume", label: "Vol" },
-  { key: "iv", label: "IV" },
-  { key: "delta", label: "Delta" },
-  { key: "gamma", label: "Gamma" },
-  { key: "theta", label: "Theta/day" },
-  { key: "vega", label: "Vega/1%" },
-  { key: "rho", label: "Rho/1%" },
-  { key: "bid", label: "Bid" },
-  { key: "ask", label: "Ask" },
-  { key: "ltp", label: "LTP" },
-  { key: "change", label: "Chg" },
-];
+function useDesktopLayout(): boolean {
+  return useSyncExternalStore(subscribeToDesktopLayout, isDesktopLayout, () => true);
+}
 
-const PUT_COLS: Col[] = [
-  { key: "change", label: "Chg" },
-  { key: "ltp", label: "LTP" },
-  { key: "bid", label: "Bid" },
-  { key: "ask", label: "Ask" },
-  { key: "rho", label: "Rho/1%" },
-  { key: "vega", label: "Vega/1%" },
-  { key: "theta", label: "Theta/day" },
-  { key: "gamma", label: "Gamma" },
-  { key: "delta", label: "Delta" },
-  { key: "iv", label: "IV" },
-  { key: "volume", label: "Vol" },
-  { key: "change_in_oi", label: "Chg OI" },
-  { key: "oi", label: "OI" },
-];
-
-const WHOLE = new Set<keyof GridBlock>(["oi", "change_in_oi", "volume"]);
-
-function decimalsFor(key: keyof GridBlock): number {
+function decimals(key: keyof GridBlock): number {
   if (WHOLE.has(key)) return 0;
   if (key === "gamma") return 6;
-  if (key === "delta" || key === "theta" || key === "vega" || key === "rho") return 4;
+  if (["delta", "theta", "vega", "rho"].includes(key)) return 4;
   return 2;
 }
 
-function cell(block: GridBlock, key: keyof GridBlock, i: number): string {
-  return fmtCell(block[key][i] ?? 0, decimalsFor(key));
+function valueClass(key: keyof GridBlock, value: number): string {
+  if (key !== "change" && key !== "change_in_oi") return "text-secondary";
+  return value > 0 ? "text-success" : value < 0 ? "text-danger" : "text-muted";
 }
 
-function changeClass(key: keyof GridBlock, val: number): string {
-  if (key !== "change" && key !== "change_in_oi") return "text-zinc-300";
-  if (val > 0) return "text-green-400";
-  if (val < 0) return "text-red-400";
-  return "text-zinc-300";
-}
-
-function Marker({ isSpot, isAtm, isMaxPain }: { isSpot: boolean; isAtm: boolean; isMaxPain: boolean }) {
+function Markers({ row }: { row: OptionRowModel }) {
   return (
-    <span className="inline-flex gap-0.5">
-      {isSpot && <Badge tone="sky">S</Badge>}
-      {isAtm && <Badge tone="yellow">A</Badge>}
-      {isMaxPain && <Badge tone="red">MP</Badge>}
+    <span className="inline-flex flex-wrap justify-center gap-1">
+      {row.isSpotAtm && <span className="rounded border border-accent/50 px-1 text-[10px] text-accent">SPOT</span>}
+      {row.isAtm && <span className="rounded border border-border-strong px-1 text-[10px] text-primary">ATM</span>}
+      {row.isMaxPain && <span className="rounded border border-border-strong px-1 text-[10px] text-secondary">PAIN</span>}
     </span>
   );
 }
 
-function Badge({ tone, children }: { tone: "sky" | "yellow" | "red"; children: React.ReactNode }) {
-  const tones = {
-    sky: "bg-sky-500/20 text-sky-300",
-    yellow: "bg-yellow-500/20 text-yellow-300",
-    red: "bg-red-500/20 text-red-300",
-  } as const;
+function DetailGroup({
+  title,
+  keys,
+  row,
+}: {
+  title: string;
+  keys: (keyof GridBlock)[];
+  row: OptionRowModel;
+}) {
   return (
-    <span className={`rounded px-1 text-[0.625rem] font-semibold ${tones[tone]}`}>{children}</span>
+    <section>
+      <h3 className="label mb-2 text-secondary">{title}</h3>
+      <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 gap-y-1 text-xs">
+        <span className="text-muted">Field</span><span className="text-accent">Call</span><span className="text-secondary">Put</span>
+        {keys.map((key) => (
+          <React.Fragment key={key}>
+            <span className="text-muted">{CALL_COLUMNS.find((column) => column.key === key)?.label ?? key}</span>
+            <span className={`text-right font-mono ${valueClass(key, row.call[key])}`}>{fmtCell(row.call[key], decimals(key))}</span>
+            <span className={`text-right font-mono ${valueClass(key, row.put[key])}`}>{fmtCell(row.put[key], decimals(key))}</span>
+          </React.Fragment>
+        ))}
+      </div>
+    </section>
   );
 }
 
-const OptionChainRow = React.memo(function OptionChainRow({
-  data,
-  i,
-}: {
-  data: OptionChainData;
-  i: number;
-}) {
-  const strike = data.strikes[i];
-  const isAtm = Math.abs(strike - data.marketAtm) < 1;
-  const isMaxPain = Math.abs(strike - data.maxPain) < 1;
-  const isSpotAtm = Math.abs(strike - data.spotAtm) < 1;
-  const itmCall = strike < data.spot;
-  const itmPut = strike > data.spot;
-
-  const rowBg =
-    isAtm && isMaxPain
-      ? "bg-lime-900/20"
-      : isAtm
-        ? "bg-yellow-900/20"
-        : isMaxPain
-          ? "bg-red-900/20"
-          : isSpotAtm
-            ? "bg-sky-950/30"
-            : i % 2 === 0
-              ? "bg-zinc-900"
-              : "bg-zinc-900/50";
-
+const MobileOptionRow = React.memo(function MobileOptionRow({ row }: { row: OptionRowModel }) {
   return (
-    <tr className={`${rowBg} hover:bg-zinc-700/30`}>
-      {CALL_COLS.map((col) => (
-        <td
-          key={`c-${col.key}`}
-          className={`px-1 py-1 text-right font-mono whitespace-nowrap ${
-            itmCall ? "bg-green-900/10" : ""
-          } ${changeClass(col.key, data.calls[col.key][i] ?? 0)}`}
-        >
-          {cell(data.calls, col.key, i)}
+    <ResponsiveDisclosure
+      id={`option-${row.strike}`}
+      label={`Strike ${row.strike} details`}
+      summary={
+        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-xs">
+          <div>
+            <div className="label text-accent">CALL</div>
+            <div className="mt-1 font-mono text-primary">{fmtCell(row.call.ltp, 2)} LTP</div>
+            <div className="font-mono text-muted">{fmtCell(row.call.oi, 0)} OI / {fmtCell(row.call.iv, 2)} IV</div>
+          </div>
+          <div className="text-center">
+            <div className="font-mono text-sm font-semibold text-primary">{formatIndianNumber(row.strike, 0)}</div>
+            <Markers row={row} />
+          </div>
+          <div className="text-right">
+            <div className="label text-secondary">PUT</div>
+            <div className="mt-1 font-mono text-primary">{fmtCell(row.put.ltp, 2)} LTP</div>
+            <div className="font-mono text-muted">{fmtCell(row.put.oi, 0)} OI / {fmtCell(row.put.iv, 2)} IV</div>
+          </div>
+        </div>
+      }
+    >
+      <div className="grid gap-4 sm:grid-cols-3">
+        <DetailGroup title="Price" keys={["bid", "ask", "ltp", "change"]} row={row} />
+        <DetailGroup title="Flow" keys={["oi", "change_in_oi", "volume"]} row={row} />
+        <DetailGroup title="Greeks" keys={["iv", "delta", "gamma", "theta", "vega", "rho"]} row={row} />
+      </div>
+    </ResponsiveDisclosure>
+  );
+}, (previous, next) => previous.row === next.row || areOptionRowsEqual(previous.row, next.row));
+
+const DesktopOptionRow = React.memo(function DesktopOptionRow({ row, index }: { row: OptionRowModel; index: number }) {
+  const rowTone = row.isAtm ? "bg-surface-3" : row.isMaxPain ? "bg-surface-2" : index % 2 ? "bg-surface-1" : "bg-canvas";
+  return (
+    <tr className={rowTone}>
+      {CALL_COLUMNS.map((column) => (
+        <td key={`call-${column.key}`} className={`whitespace-nowrap text-right font-mono ${row.isCallInTheMoney ? "bg-accent/[0.04]" : ""} ${valueClass(column.key, row.call[column.key])}`}>
+          {fmtCell(row.call[column.key], decimals(column.key))}
         </td>
       ))}
-      <td className="w-24 px-1.5 py-1 text-center font-mono font-semibold whitespace-nowrap text-zinc-100">
-        {formatIndianNumber(strike, 0)}
+      <td className="sticky left-0 z-20 whitespace-nowrap border-x border-border-strong bg-surface-3 text-center font-mono font-semibold text-primary">
+        <div className="flex items-center justify-center gap-1">
+          <span>{formatIndianNumber(row.strike, 0)}</span>
+          <Markers row={row} />
+        </div>
       </td>
-      <td className="w-14 px-0.5 py-1 text-center whitespace-nowrap">
-        <Marker isSpot={isSpotAtm} isAtm={isAtm} isMaxPain={isMaxPain} />
-      </td>
-      {PUT_COLS.map((col) => (
-        <td
-          key={`p-${col.key}`}
-          className={`px-1 py-1 text-right font-mono whitespace-nowrap ${
-            itmPut ? "bg-red-900/10" : ""
-          } ${changeClass(col.key, data.puts[col.key][i] ?? 0)}`}
-        >
-          {cell(data.puts, col.key, i)}
+      {PUT_COLUMNS.map((column) => (
+        <td key={`put-${column.key}`} className={`whitespace-nowrap text-right font-mono ${row.isPutInTheMoney ? "bg-white/[0.025]" : ""} ${valueClass(column.key, row.put[column.key])}`}>
+          {fmtCell(row.put[column.key], decimals(column.key))}
         </td>
       ))}
     </tr>
   );
-});
+}, (previous, next) => previous.index === next.index && (previous.row === next.row || areOptionRowsEqual(previous.row, next.row)));
 
-export default function OptionChainTable({ data }: { data: OptionChainData }) {
+function DesktopOptionTable({ rows }: { rows: OptionRowModel[] }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // TanStack Virtual manages mutable measurements internally; row inputs remain immutable.
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 30,
+    overscan: 10,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const beforeHeight = virtualRows[0]?.start ?? 0;
+  const afterHeight = virtualRows.length > 0
+    ? rowVirtualizer.getTotalSize() - (virtualRows.at(-1)?.end ?? 0)
+    : 0;
+
   return (
-    <>
-      {/* The grid is intentionally dense (13 columns per side); on a phone it scrolls
-          sideways rather than being compressed into illegibility. */}
-      <p className="mb-1 text-[0.6875rem] text-zinc-500 lg:hidden" aria-hidden="true">
-        Swipe sideways to see all call / put columns →
-      </p>
-      {/* Responsive max height: svh avoids the mobile URL-bar resize jitter that vh has,
-          and the old hardcoded `calc(100vh - 230px)` assumed a single-row navbar. */}
-      <div className="max-h-[68svh] overflow-auto overscroll-x-contain rounded-lg border border-zinc-800 lg:max-h-[calc(100dvh-15rem)]">
-        <table className="w-full border-collapse text-[0.6875rem] sm:text-xs">
-        <thead className="sticky top-0 z-10 bg-zinc-900/95 backdrop-blur">
+    <div ref={scrollRef} className="max-h-[calc(100dvh-15rem)] overflow-auto rounded-[10px] border border-border">
+      <table className="data-table min-w-max">
+        <thead className="sticky top-0 z-30">
           <tr>
-            <th colSpan={CALL_COLS.length} className="border-b border-zinc-700 px-1 py-2 text-center font-semibold text-green-400">
-              CALLS
+            <th colSpan={CALL_COLUMNS.length} className="border-r border-border-strong text-center text-accent">CALLS</th>
+            <th rowSpan={2} className="sticky left-0 z-40 border-x border-border-strong text-center text-primary">
+              <span className="block">STRIKE</span>
+              <span className="mt-1 block text-[10px] font-normal text-muted">MARKERS</span>
             </th>
-            <th className="border-b border-zinc-700 px-1 py-2 text-center font-semibold text-zinc-300">STRIKE</th>
-            <th className="border-b border-zinc-700 px-0.5 py-2">&nbsp;</th>
-            <th colSpan={PUT_COLS.length} className="border-b border-zinc-700 px-1 py-2 text-center font-semibold text-red-400">
-              PUTS
-            </th>
+            <th colSpan={PUT_COLUMNS.length} className="border-l border-border-strong text-center text-secondary">PUTS</th>
           </tr>
           <tr>
-            {CALL_COLS.map((col) => (
-              <th key={`ch-${col.key}`} className="border-b border-zinc-700 px-1 py-1.5 text-right font-normal text-zinc-400 whitespace-nowrap">
-                {col.label}
-              </th>
-            ))}
-            <th className="border-b border-zinc-700 px-1 py-1.5 text-center font-medium text-zinc-300">Strike</th>
-            <th className="border-b border-zinc-700 px-0.5 py-1.5">&nbsp;</th>
-            {PUT_COLS.map((col) => (
-              <th key={`ph-${col.key}`} className="border-b border-zinc-700 px-1 py-1.5 text-right font-normal text-zinc-400 whitespace-nowrap">
-                {col.label}
-              </th>
-            ))}
+            {CALL_COLUMNS.map((column) => <th key={`call-h-${column.key}`} className="text-right">{column.label}</th>)}
+            {PUT_COLUMNS.map((column) => <th key={`put-h-${column.key}`} className="text-right">{column.label}</th>)}
           </tr>
         </thead>
         <tbody>
-          {data.strikes.map((strike, i) => (
-            <OptionChainRow key={strike} data={data} i={i} />
+          {beforeHeight > 0 && <tr aria-hidden="true"><td colSpan={TABLE_COLUMN_COUNT} style={{ height: beforeHeight, padding: 0 }} /></tr>}
+          {virtualRows.map((virtualRow) => (
+            <DesktopOptionRow
+              key={rows[virtualRow.index].strike}
+              row={rows[virtualRow.index]}
+              index={virtualRow.index}
+            />
           ))}
+          {afterHeight > 0 && <tr aria-hidden="true"><td colSpan={TABLE_COLUMN_COUNT} style={{ height: afterHeight, padding: 0 }} /></tr>}
         </tbody>
       </table>
-      </div>
-    </>
+    </div>
   );
 }
+
+export default function OptionChainTable({
+  data,
+  rows = optionGridToRows(data),
+}: {
+  data: OptionChainData;
+  rows?: OptionRowModel[];
+}) {
+  const isDesktop = useDesktopLayout();
+
+  return isDesktop ? (
+    <DesktopOptionTable rows={rows} />
+  ) : (
+      <div className="space-y-2">
+        {rows.map((row) => <MobileOptionRow key={row.strike} row={row} />)}
+      </div>
+  );
+}
+
+export const OPTION_FIELD_COUNT = GRID_KEYS.length;

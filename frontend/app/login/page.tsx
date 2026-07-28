@@ -1,263 +1,138 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 
+import { Metric } from "@/components/ui/Metric";
+import { PageFrame } from "@/components/ui/PageFrame";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { Panel } from "@/components/ui/Panel";
+import { StateMessage } from "@/components/ui/StateMessage";
+import { StatusIndicator } from "@/components/ui/StatusIndicator";
+import { createPollController } from "@/hooks/polling";
 import { getAuthStatus, type AuthStatus } from "@/lib/api";
 import { automationMessage } from "@/lib/automationStatus";
+import {
+  downloaderInitialization,
+  type InitializationStage,
+  type StageState,
+} from "@/lib/downloader/initialization";
+import type { Severity } from "@/lib/monitor/severity";
 
-const STATUS_REFRESH_MS = 5_000;
+const STAGE_SEVERITY: Record<StageState, Severity> = {
+  pending: "neutral",
+  active: "warning",
+  complete: "success",
+  error: "danger",
+};
 
-type StageState = "pending" | "active" | "complete" | "error";
-
-interface InitializationStage {
-  label: string;
-  detail: string;
-  state: StageState;
-}
-
-export default function LoginPage() {
+export default function DownloaderPage() {
   const [status, setStatus] = useState<AuthStatus | null | undefined>(undefined);
 
   useEffect(() => {
-    let isActive = true;
-    const poll = async () => {
-      try {
-        const nextStatus = await getAuthStatus();
-        if (isActive) setStatus(nextStatus);
-      } catch {
-        if (isActive) setStatus(null);
-      }
+    let isMounted = true;
+    const controller = createPollController({
+      intervalMs: () => 5_000,
+      isPaused: () => document.hidden,
+      task: async (signal) => {
+        try {
+          const next = await getAuthStatus(signal);
+          if (isMounted) setStatus(next);
+        } catch (error) {
+          if (isMounted && !(error instanceof DOMException && error.name === "AbortError")) {
+            setStatus(null);
+          }
+        }
+      },
+    });
+    const handleVisibility = () => {
+      if (!document.hidden) controller.resume();
     };
-    void poll();
-    const refreshTimer = window.setInterval(() => void poll(), STATUS_REFRESH_MS);
+    controller.start();
+    document.addEventListener("visibilitychange", handleVisibility);
     return () => {
-      isActive = false;
-      window.clearInterval(refreshTimer);
+      isMounted = false;
+      document.removeEventListener("visibilitychange", handleVisibility);
+      controller.stop();
     };
   }, []);
 
+  const initialization = downloaderInitialization(status);
   return (
-    <div className="mx-auto max-w-3xl space-y-6 py-4">
-      <header>
-        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-sky-400">
-          Unattended VPS service
-        </p>
-        <h1 className="mt-2 text-xl font-semibold text-zinc-100">Initializing downloader</h1>
-        <p className="mt-1 text-sm text-zinc-400">
-          The backend fetches the daily Kite token from the configured secure token broker,
-          validates it, and starts capture automatically inside the market window.
-        </p>
-      </header>
+    <PageFrame>
+      <PageHeader
+        title="Downloader"
+        eyebrow="Unattended VPS service"
+        description="Daily token validation, capture prerequisites, market-window automation, and end-of-day compression."
+        actions={<StatusIndicator label={initialization.headline} severity={initialization.tone} />}
+      />
 
-      <InitializationProgress status={status} />
-      <StatusCard status={status} />
-
-      {status && <AutomationCard status={status} />}
-    </div>
-  );
-}
-
-function InitializationProgress({ status }: { status: AuthStatus | null | undefined }) {
-  const { progress, headline, stages } = initializationState(status);
-  const hasError = stages.some((stage) => stage.state === "error");
-
-  return (
-    <section
-      className={`rounded-xl border p-5 ${
-        hasError
-          ? "border-red-900/60 bg-red-950/20"
-          : "border-sky-900/60 bg-sky-950/20"
-      }`}
-      aria-live="polite"
-    >
-      <div className="flex items-center justify-between gap-4">
-        <p className="text-sm font-medium text-zinc-100">{headline}</p>
-        <span className="font-mono text-sm text-sky-300">{progress}%</span>
-      </div>
-      <div
-        className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-800"
-        role="progressbar"
-        aria-label="Downloader initialization"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={progress}
-      >
-        <div
-          className={`h-full rounded-full transition-[width] duration-500 ${
-            hasError ? "bg-red-500" : "bg-sky-400"
-          }`}
-          style={{ width: `${progress}%` }}
-        />
-      </div>
-      <ol className="mt-5 grid gap-3 sm:grid-cols-2">
-        {stages.map((stage) => (
-          <li key={stage.label} className="flex gap-3 rounded-lg border border-zinc-800/80 bg-zinc-950/40 p-3">
-            <StageDot state={stage.state} />
-            <div>
-              <p className="text-sm font-medium text-zinc-200">{stage.label}</p>
-              <p className="mt-0.5 text-xs leading-relaxed text-zinc-500">{stage.detail}</p>
+      <div className="mx-auto w-full max-w-5xl space-y-3">
+        <Panel title="Automation progress" subtitle={`${initialization.progress}% complete`}>
+          <div className="grid gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_16rem]">
+            <ol className="space-y-2">
+              {initialization.stages.map((stage, index) => (
+                <Stage key={stage.label} stage={stage} index={index} />
+              ))}
+            </ol>
+            <div className="space-y-2">
+              <Metric label="Current action" value={status?.automation?.last_action ?? initialization.headline} severity={initialization.tone} />
+              <Metric label="Market phase" value={status?.market_phase ?? "--"} />
+              <Metric label="Trading date" value={status?.trading_date ?? "--"} />
             </div>
-          </li>
-        ))}
-      </ol>
-    </section>
+          </div>
+        </Panel>
+
+        {status === null && (
+          <StateMessage title="Backend unreachable" severity="danger" role="alert">
+            Check the backend service and NEXT_PUBLIC_BACKEND_URL. This page will retry when it becomes visible.
+          </StateMessage>
+        )}
+        {status && !status.configured && (
+          <StateMessage title="Backend configuration required" severity="danger" role="alert">
+            Add the required backend environment values before downloader initialization can continue.
+          </StateMessage>
+        )}
+        {status && <AutomationStatus status={status} />}
+      </div>
+    </PageFrame>
   );
 }
 
-function initializationState(status: AuthStatus | null | undefined): {
-  progress: number;
-  headline: string;
-  stages: InitializationStage[];
-} {
-  if (status === undefined) {
-    return {
-      progress: 8,
-      headline: "Connecting to the downloader service…",
-      stages: baseStages("active", "pending", "pending", "pending"),
-    };
-  }
-  if (status === null) {
-    return {
-      progress: 0,
-      headline: "Backend is unreachable",
-      stages: baseStages("error", "pending", "pending", "pending"),
-    };
-  }
-  if (!status.configured) {
-    return {
-      progress: 15,
-      headline: "Backend environment is incomplete",
-      stages: baseStages("error", "pending", "pending", "pending"),
-    };
-  }
-  if (!status.external_token_source_configured && !status.authenticated) {
-    const stages = baseStages("complete", "error", "pending", "pending");
-    stages[1].detail = "Configure KITE_TOKEN_BROKER_URL and its passcode in backend/.env.";
-    return { progress: 25, headline: "Secure token broker is not configured", stages };
-  }
-  if (!status.authenticated) {
-    const attempted = Boolean(status.automation?.last_broker_poll_at);
-    const stages = baseStages("complete", "complete", attempted ? "active" : "pending", "pending");
-    stages[2].detail = status.automation?.last_error
-      ? status.automation.last_error
-      : attempted
-        ? "Token received or pending; the backend validates it directly with Kite before saving it."
-        : "Waiting for the configured trading-day token polling window.";
-    return {
-      progress: attempted ? 55 : 40,
-      headline: attempted ? "Fetching and validating the daily token…" : "Waiting to fetch the daily token",
-      stages,
-    };
-  }
-  if (!status.capture_ready) {
-    const brokerConfigured = Boolean(status.external_token_source_configured);
-    const stages = baseStages("complete", brokerConfigured ? "complete" : "pending", "complete", "active");
-    if (!brokerConfigured) {
-      stages[1].detail = "Not configured; this validated session came from the retained fallback flow.";
-    }
-    stages[2].detail = "Kite accepted the token and the daily session is saved.";
-    stages[3].detail = "Waiting for the daily risk-free rate before capture can initialize.";
-    return { progress: 75, headline: "Token validated; capture prerequisites pending", stages };
-  }
-
-  const running = Boolean(status.capture?.running);
-  const brokerConfigured = Boolean(status.external_token_source_configured);
-  const stages = baseStages("complete", brokerConfigured ? "complete" : "pending", "complete", "complete");
-  if (!brokerConfigured) {
-    stages[1].detail = "Not configured; this validated session came from the retained fallback flow.";
-  }
-  stages[2].detail = "Kite accepted the token and the daily session is saved.";
-  stages[3].detail = running
-    ? `Capturing ${status.capture?.tokens ?? 0} subscribed instruments for ${status.capture?.trading_date ?? "today"}.`
-    : "Downloader is ready and the scheduler is waiting for the configured market window.";
-  return {
-    progress: 100,
-    headline: running ? "Downloader is running" : "Downloader initialized",
-    stages,
-  };
-}
-
-function baseStages(
-  backend: StageState,
-  broker: StageState,
-  token: StageState,
-  downloader: StageState,
-): InitializationStage[] {
-  return [
-    { label: "Backend configuration", detail: "Environment and storage paths loaded.", state: backend },
-    { label: "Secure token broker", detail: "HTTPS token source and passcode configured.", state: broker },
-    { label: "Token fetch and validation", detail: "Waiting for a validated daily Kite session.", state: token },
-    { label: "Downloader", detail: "Waiting for capture prerequisites and market hours.", state: downloader },
-  ];
-}
-
-function StageDot({ state }: { state: StageState }) {
-  const color = {
-    pending: "bg-zinc-600",
-    active: "bg-sky-400 shadow-[0_0_8px] shadow-sky-400",
-    complete: "bg-green-500",
-    error: "bg-red-500",
-  }[state];
-  return <span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${color}`} aria-hidden="true" />;
-}
-
-function AutomationCard({ status }: { status: AuthStatus }) {
-  const message = automationMessage(
-    status.automation,
-    Boolean(status.capture_ready),
-  );
-  const tone = status.automation?.last_error
-    ? "border-amber-900/60 bg-amber-950/20 text-amber-300"
-    : "border-cyan-900/60 bg-cyan-950/20 text-cyan-200";
+function Stage({ stage, index }: { stage: InitializationStage; index: number }) {
   return (
-    <section className={`rounded-xl border p-4 text-sm ${tone}`} aria-live="polite">
-      <p className="font-medium">Daily downloader automation</p>
-      <p className="mt-1">{message}</p>
-      {status.risk_free_rate != null && (
-        <p className="mt-2 text-xs opacity-80">
-          Risk-free rate {status.risk_free_rate} · valid from {status.risk_free_rate_as_of ?? "today"}
-        </p>
-      )}
-    </section>
+    <li className="grid grid-cols-[2rem_1fr] gap-3 rounded-lg border border-border bg-surface-2 p-3">
+      <span className={`grid h-8 w-8 place-items-center rounded-lg border border-border font-mono text-xs status-${STAGE_SEVERITY[stage.state]}`}>
+        {stage.state === "complete" ? "OK" : index + 1}
+      </span>
+      <div>
+        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+          <p className="text-sm font-semibold text-primary">{stage.label}</p>
+          <span className="justify-self-start sm:justify-self-end">
+            <StatusIndicator compact label={stage.state} severity={STAGE_SEVERITY[stage.state]} />
+          </span>
+        </div>
+        <p className="mt-1 text-xs leading-relaxed text-secondary">{stage.detail}</p>
+      </div>
+    </li>
   );
 }
 
-function StatusCard({ status }: { status: AuthStatus | null | undefined }) {
-  if (status === undefined) {
-    return <Notice tone="neutral">Checking backend connection…</Notice>;
-  }
-  if (status === null) {
-    return <Notice tone="error">Backend unreachable. Check the backend service and NEXT_PUBLIC_BACKEND_URL.</Notice>;
-  }
-  if (!status.configured) {
-    return <Notice tone="warning">Backend is online but not configured. Check its required environment variables.</Notice>;
-  }
+function AutomationStatus({ status }: { status: AuthStatus }) {
+  const hasError = Boolean(status.automation?.last_error);
   return (
-    <div className="grid grid-cols-2 gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 text-sm sm:grid-cols-3">
-      <Stat label="Trading date" value={status.trading_date ?? "–"} />
-      <Stat label="Market phase" value={status.market_phase ?? "–"} />
-      <Stat label="Kite token" value={status.authenticated ? "validated" : "pending"} tone={status.authenticated ? "green" : "amber"} />
-      <Stat label="Token broker" value={status.external_token_source_configured ? "configured" : "missing"} />
-      <Stat label="Capture" value={status.capture?.running ? "running" : status.capture_ready ? "ready" : "waiting"} />
-    </div>
-  );
-}
-
-function Notice({ tone, children }: { tone: "neutral" | "warning" | "error"; children: ReactNode }) {
-  const style = {
-    neutral: "border-zinc-800 bg-zinc-900/60 text-zinc-300",
-    warning: "border-amber-900/50 bg-amber-950/20 text-amber-300",
-    error: "border-red-900/50 bg-red-950/20 text-red-300",
-  }[tone];
-  return <div className={`rounded-xl border p-4 text-sm ${style}`} role="status">{children}</div>;
-}
-
-function Stat({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "green" | "amber" }) {
-  const color = tone === "green" ? "text-green-400" : tone === "amber" ? "text-amber-400" : "text-zinc-200";
-  return (
-    <div className="flex flex-col">
-      <span className="text-[0.6875rem] uppercase tracking-wide text-zinc-500">{label}</span>
-      <span className={`font-semibold ${color}`}>{value}</span>
-    </div>
+    <Panel title="Daily automation" subtitle="server-owned schedule">
+      <div className="grid gap-3 p-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Metric label="Kite token" value={status.authenticated ? "validated" : "pending"} severity={status.authenticated ? "success" : "warning"} />
+        <Metric label="Token broker" value={status.external_token_source_configured ? "configured" : "missing"} severity={status.external_token_source_configured ? "success" : "danger"} />
+        <Metric label="Capture" value={status.capture?.running ? "running" : status.capture_ready ? "ready" : "waiting"} severity={status.capture?.running ? "success" : "neutral"} />
+        <Metric label="Risk-free rate" value={status.risk_free_rate == null ? "pending" : String(status.risk_free_rate)} />
+      </div>
+      <div className="border-t border-border p-3">
+        <StateMessage title={hasError ? "Automation needs attention" : "Automation status"} severity={hasError ? "warning" : "neutral"}>
+          {automationMessage(status.automation, Boolean(status.capture_ready))}
+          {status.automation?.last_error ? ` ${status.automation.last_error}` : ""}
+        </StateMessage>
+      </div>
+    </Panel>
   );
 }

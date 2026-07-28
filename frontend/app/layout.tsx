@@ -4,7 +4,10 @@ import { APP_NAME, APP_TAGLINE } from "@/lib/branding";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: APP_NAME,
+  title: {
+    default: APP_NAME,
+    template: `%s | ${APP_NAME}`,
+  },
   description: APP_TAGLINE,
 };
 
@@ -22,13 +25,11 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className="antialiased">
+        <a href="#main-content" className="skip-link">
+          Skip to main content
+        </a>
         <NavBar />
-        {/*
-          Progressive width cap. A flat max-w-[1600px] left ~800px of dead space on each
-          side of a 3200px display; these arbitrary min-[…] breakpoints let the layout
-          keep growing on large monitors while still capping line length on a normal one.
-        */}
-        <main className="mx-auto max-w-[1600px] px-3 py-3 sm:px-4 sm:py-4 min-[1920px]:max-w-[1800px] min-[2400px]:max-w-[2200px] min-[3000px]:max-w-[2600px]">
+        <main id="main-content" tabIndex={-1} className="workspace-shell page-shell">
           {children}
         </main>
       </body>

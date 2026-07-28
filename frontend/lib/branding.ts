@@ -6,4 +6,4 @@
 export const APP_NAME = process.env.NEXT_PUBLIC_APP_NAME?.trim() || "TickVault";
 
 export const APP_TAGLINE =
-  "Zerodha Kite market-data capture — live monitor and read-time reconstruction.";
+  "Zerodha Kite market-data capture: live monitor and read-time reconstruction.";

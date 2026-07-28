@@ -8,92 +8,46 @@ export default function StockDepthPanel({
   depth: StockDepthSnapshot | null;
   id: string;
 }) {
-  // No loading or error state: depth arrives on the live /ws/stocks board, so it is
-  // either already here or capture is not streaming yet.
   if (!depth) {
-    return <DepthState id={id} message="Waiting for the live order book…" />;
+    return <div id={id} role="status" className="p-3 text-sm text-muted">Waiting for the live order book.</div>;
   }
   const legs = [
     { label: "Spot", depth: depth.spot_depth },
-    ...depth.futures.map((future) => ({
-      label: future.label,
-      depth: future.depth,
-    })),
+    ...depth.futures.map((future) => ({ label: future.label, depth: future.depth })),
   ];
-
   return (
-    <div
-      id={id}
-      role="region"
-      aria-label={`${depth.name} L5 market depth`}
-      className="grid gap-3 border-y border-zinc-700/70 bg-zinc-950/70 p-3 lg:grid-cols-2 2xl:grid-cols-4"
-    >
-      <p className="text-[0.6875rem] text-zinc-500 lg:col-span-2 2xl:col-span-4">
-        Live L1–L5 order book, updating every second from the stream — no refresh needed.
-      </p>
-      {legs.map((leg) => (
-        <DepthTable key={leg.label} label={leg.label} depth={leg.depth} />
-      ))}
+    <div id={id} role="region" aria-label={`${depth.name} L5 market depth`} className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-4">
+      {legs.map((leg) => <DepthTable key={leg.label} label={leg.label} depth={leg.depth} />)}
     </div>
   );
 }
 
 function DepthTable({ label, depth }: { label: string; depth: DepthLevel[] }) {
   return (
-    // The old `min-w-[25rem]` (400px) was wider than a phone viewport and forced the
-    // whole row to overflow. Let it shrink, and scroll the table itself if needed.
-    <section className="min-w-0 rounded-md border border-zinc-800 bg-zinc-900/70 p-2">
-      <h3 className="mb-2 text-xs font-medium text-zinc-300">{label} order book</h3>
-      <div className="overflow-x-auto">
-      <table className="w-full min-w-[20rem] border-collapse text-[0.625rem] font-mono">
-        <caption className="sr-only">{label} order book</caption>
-        <thead>
-          <tr className="border-b border-zinc-800 text-zinc-500">
-            <DepthHeading>Level</DepthHeading>
-            <DepthHeading>Bid orders</DepthHeading>
-            <DepthHeading>Bid qty</DepthHeading>
-            <DepthHeading>Bid</DepthHeading>
-            <DepthHeading>Ask</DepthHeading>
-            <DepthHeading>Ask qty</DepthHeading>
-            <DepthHeading>Ask orders</DepthHeading>
-          </tr>
-        </thead>
-        <tbody>
-          {depth.slice(0, 5).map((level) => (
-            <tr key={level.level} className="border-b border-zinc-800/50 last:border-0">
-              <DepthCell value={level.level} />
-              <DepthCell value={level.bid_orders} />
-              <DepthCell value={level.bid_qty} />
-              <DepthPrice value={level.bid_price} tone="text-emerald-400" />
-              <DepthPrice value={level.ask_price} tone="text-rose-400" />
-              <DepthCell value={level.ask_qty} />
-              <DepthCell value={level.ask_orders} />
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <section className="min-w-0 rounded-lg border border-border bg-surface-1 p-2">
+      <h3 className="mb-2 text-xs font-semibold text-primary">{label} L1-L5</h3>
+      <div className="grid grid-cols-[auto_1fr_1fr] gap-x-2 gap-y-1 text-xs">
+        <span className="text-muted">L</span>
+        <span className="text-right text-secondary">Bid price / qty / orders</span>
+        <span className="text-right text-secondary">Ask price / qty / orders</span>
+        {depth.slice(0, 5).map((level) => (
+          <DepthRow key={level.level} level={level} />
+        ))}
       </div>
     </section>
   );
 }
 
-function DepthState({ id, message, isError = false }: { id: string; message: string; isError?: boolean }) {
+function DepthRow({ level }: { level: DepthLevel }) {
   return (
-    <div id={id} role={isError ? "alert" : "status"} className={`border-y border-zinc-700/70 bg-zinc-950/70 p-4 text-sm ${isError ? "text-red-300" : "text-zinc-400"}`}>
-      {message}
-    </div>
+    <>
+      <span data-depth-level className="font-mono text-muted">{level.level}</span>
+      <span className="text-right font-mono text-success">
+        {formatIndianNumber(level.bid_price, 2)} / {formatIndianNumber(level.bid_qty, 0)} / {formatIndianNumber(level.bid_orders, 0)}
+      </span>
+      <span className="text-right font-mono text-danger">
+        {formatIndianNumber(level.ask_price, 2)} / {formatIndianNumber(level.ask_qty, 0)} / {formatIndianNumber(level.ask_orders, 0)}
+      </span>
+    </>
   );
-}
-
-function DepthHeading({ children }: { children: React.ReactNode }) {
-  return <th className="px-1 py-1 text-right font-normal first:text-center">{children}</th>;
-}
-
-function DepthCell({ value }: { value: number }) {
-  return <td className="px-1 py-1 text-right text-zinc-400 first:text-center">{formatIndianNumber(value, 0)}</td>;
-}
-
-function DepthPrice({ value, tone }: { value: number; tone: string }) {
-  const display = value === 0 ? "-" : formatIndianNumber(value, 2);
-  return <td className={`px-1 py-1 text-right ${tone}`}>{display}</td>;
 }

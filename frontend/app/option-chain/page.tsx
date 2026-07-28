@@ -4,12 +4,22 @@ import { useCallback, useMemo, useState } from "react";
 
 import ConnectionDot from "@/components/ConnectionDot";
 import OptionChainTable, { type OptionChainData } from "@/components/OptionChainTable";
+import { PageFrame } from "@/components/ui/PageFrame";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { StateMessage } from "@/components/ui/StateMessage";
 import { formatIndianNumber } from "@/lib/numberFormat";
+import {
+  applyOptionDelta,
+  normalizeMarketHeader,
+  normalizeOptionDeltaPayload,
+  normalizeOptionGridPayload,
+  optionGridToRows,
+  type OptionRowModel,
+} from "@/lib/options/updates";
 import { useTopicEnvelopes } from "@/lib/useTopic";
 import { marketDataConnection } from "@/lib/wsTopicConnection";
 import {
   MSG,
-  type GridBlock,
   type MarketHeaderPayload,
   type OptionGridPayload,
   type WsEnvelope,
@@ -18,6 +28,7 @@ import {
 interface UnderlyingState {
   header?: MarketHeaderPayload;
   data?: OptionChainData;
+  rows?: OptionRowModel[];
 }
 
 const PREFERRED_ORDER = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"];
@@ -34,53 +45,48 @@ function gridToData(p: OptionGridPayload): OptionChainData {
   };
 }
 
-function patchBlock(base: GridBlock, patch: Partial<GridBlock>, indices: number[]): GridBlock {
-  const next: GridBlock = { ...base };
-  (Object.keys(patch) as (keyof GridBlock)[]).forEach((key) => {
-    const col = [...base[key]];
-    const patchCol = patch[key] as number[] | undefined;
-    if (patchCol) {
-      indices.forEach((strikeIdx, j) => {
-        col[strikeIdx] = patchCol[j];
-      });
-    }
-    next[key] = col;
-  });
-  return next;
-}
-
 export default function OptionChainPage() {
   const [bySymbol, setBySymbol] = useState<Record<string, UnderlyingState>>({});
   const [selected, setSelected] = useState<string | null>(null);
 
   const onEnvelope = useCallback((env: WsEnvelope) => {
     if (env.type === MSG.MARKET_HEADER) {
-      const h = env.payload as MarketHeaderPayload;
+      const h = normalizeMarketHeader(env.payload);
+      if (!h) return;
       setBySymbol((prev) => ({ ...prev, [h.underlying]: { ...prev[h.underlying], header: h } }));
       setSelected((cur) => cur ?? h.underlying);
     } else if (env.type === MSG.OPTION_GRID) {
-      const p = env.payload as OptionGridPayload;
-      setBySymbol((prev) => ({ ...prev, [p.underlying]: { ...prev[p.underlying], data: gridToData(p) } }));
-      setSelected((cur) => cur ?? p.underlying);
-    } else if (env.type === MSG.OPTION_GRID_DELTA) {
-      const p = env.payload as {
-        underlying: string;
-        changed_indices: number[];
-        calls: Partial<GridBlock>;
-        puts: Partial<GridBlock>;
-      };
+      const p = normalizeOptionGridPayload(env.payload);
+      if (!p) return;
       setBySymbol((prev) => {
-        const cur = prev[p.underlying]?.data;
-        if (!cur) return prev;
+        const data = gridToData(p);
         return {
           ...prev,
           [p.underlying]: {
             ...prev[p.underlying],
-            data: {
-              ...cur,
-              calls: patchBlock(cur.calls, p.calls, p.changed_indices),
-              puts: patchBlock(cur.puts, p.puts, p.changed_indices),
-            },
+            data,
+            rows: optionGridToRows(data, prev[p.underlying]?.rows),
+          },
+        };
+      });
+      setSelected((cur) => cur ?? p.underlying);
+    } else if (env.type === MSG.OPTION_GRID_DELTA) {
+      const p = normalizeOptionDeltaPayload(env.payload);
+      if (!p) return;
+      setBySymbol((prev) => {
+        const cur = prev[p.underlying]?.data;
+        if (!cur) return prev;
+        const data = applyOptionDelta(cur, {
+          changedIndices: p.changed_indices,
+          calls: p.calls,
+          puts: p.puts,
+        });
+        return {
+          ...prev,
+          [p.underlying]: {
+            ...prev[p.underlying],
+            data,
+            rows: optionGridToRows(data, prev[p.underlying]?.rows),
           },
         };
       });
@@ -101,42 +107,46 @@ export default function OptionChainPage() {
   const current = selected ? bySymbol[selected] : undefined;
 
   return (
-    <div className="space-y-4">
-      <header className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h1 className="text-lg font-semibold text-zinc-100 sm:text-xl">Option Chain</h1>
-        {/* Symbol tabs scroll sideways on narrow screens rather than wrapping oddly. */}
-        <div className="-mx-1 flex gap-1 overflow-x-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <PageFrame>
+      <PageHeader
+        title="Option Chain"
+        description="Complete live calls, strikes, puts, price, flow, and reconstructed Greeks."
+        actions={<ConnectionDot connection={marketDataConnection} label="market data" />}
+      />
+      <div className="panel page-toolbar">
+        <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
           {symbols.map((sym) => (
             <button
               key={sym}
               onClick={() => setSelected(sym)}
               aria-pressed={selected === sym}
-              className={`shrink-0 whitespace-nowrap rounded px-3 py-1 text-sm ${
+              className={`control min-h-11 shrink-0 whitespace-nowrap px-3 text-sm ${
                 selected === sym
-                  ? "bg-sky-500/15 text-sky-300"
-                  : "text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200"
+                  ? "border-border bg-surface-3 text-accent"
+                  : "text-secondary hover:bg-surface-2 hover:text-primary"
               }`}
             >
               {sym}
             </button>
           ))}
+          {symbols.length === 0 && (
+            <span className="flex min-h-11 items-center px-2 text-xs text-muted">
+              Awaiting underlyings
+            </span>
+          )}
         </div>
-        <div className="sm:ml-auto">
-          <ConnectionDot connection={marketDataConnection} label="market-data" />
-        </div>
-      </header>
+      </div>
 
       {current?.header && <HeaderRibbon header={current.header} data={current.data} />}
 
       {current?.data ? (
-        <OptionChainTable data={current.data} />
+        <OptionChainTable data={current.data} rows={current.rows} />
       ) : (
-        <div className="rounded-xl border border-dashed border-zinc-800 bg-zinc-900/30 p-10 text-center text-sm text-zinc-500">
-          Waiting for option-chain data on <code className="text-zinc-400">/ws/market-data</code>…
-          start the backend capture to stream live chains.
-        </div>
+        <StateMessage title="Waiting for option-chain data">
+          Start backend capture to publish live chains on <code>/ws/market-data</code>.
+        </StateMessage>
       )}
-    </div>
+    </PageFrame>
   );
 }
 
@@ -150,23 +160,35 @@ function HeaderRibbon({
   return (
     // A 7-item flex row with gap-6 overflowed on phones; a grid wraps cleanly and
     // becomes the original single row from `md` up.
-    <div className="grid grid-cols-3 gap-x-4 gap-y-2 rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-sm sm:grid-cols-4 md:flex md:flex-wrap md:gap-6 md:px-4">
+    <div className="panel grid grid-cols-2 gap-x-4 gap-y-2 px-3 py-2.5 text-sm md:grid-cols-7 md:px-4">
       <Stat label="Expiry" value={header.expiry} />
       <Stat label="Spot" value={formatIndianNumber(header.spot, 2)} />
       <Stat label="ATM" value={formatIndianNumber(header.atm, 0)} />
       <Stat label="VIX" value={formatIndianNumber(header.vix, 2)} />
       <Stat label="Risk-Free" value={`${formatIndianNumber(header.risk_free_rate * 100, 2)}%`} />
-      {data && <Stat label="Max Pain" value={formatIndianNumber(data.maxPain, 0)} />}
-      <Stat label="Seq" value={formatIndianNumber(header.sequence, 0)} />
+      <Stat label="Max Pain" value={data ? formatIndianNumber(data.maxPain, 0) : "--"} />
+      <Stat
+        label="Seq"
+        value={formatIndianNumber(header.sequence, 0)}
+        className="col-span-2 text-center md:col-span-1 md:text-left"
+      />
     </div>
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({
+  label,
+  value,
+  className = "",
+}: {
+  label: string;
+  value: string;
+  className?: string;
+}) {
   return (
-    <div className="flex flex-col">
-      <span className="text-[0.6875rem] uppercase tracking-wide text-zinc-500">{label}</span>
-      <span className="font-semibold text-zinc-100">{value}</span>
+    <div className={`flex min-w-0 flex-col ${className}`}>
+      <span className="label text-muted">{label}</span>
+      <span className="font-mono font-semibold text-primary">{value}</span>
     </div>
   );
 }

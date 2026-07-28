@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test, { after, before } from "node:test";
 
-import puppeteer from "puppeteer-core";
+import puppeteer from "puppeteer";
 
 const FRONTEND_PORT = requirePort("E2E_FRONTEND_PORT");
 const FRONTEND_URL = `http://127.0.0.1:${FRONTEND_PORT}`;
@@ -41,7 +41,7 @@ test("shows validated automatic initialization and running capture", async () =>
   const seenRequests = await mockBackend(page);
 
   await page.goto(`${FRONTEND_URL}/login`, { waitUntil: "networkidle0" });
-  await waitForText(page, "Initializing downloader", seenRequests);
+  await waitForText(page, "Downloader", seenRequests);
   await waitForText(page, "Downloader is running", seenRequests);
   await waitForText(page, "Token fetch and validation", seenRequests);
   await waitForText(page, "100%", seenRequests);
@@ -53,7 +53,6 @@ test("shows validated automatic initialization and running capture", async () =>
 test("expands a stock row to show all five market-depth levels", async () => {
   const page = await browser.newPage();
   await installMockWebSocket(page);
-  await mockStockDepth(page);
   await page.goto(`${FRONTEND_URL}/stocks`, { waitUntil: "networkidle0" });
   await page.waitForFunction(() => Boolean(window.__stockSocket));
 
@@ -62,20 +61,22 @@ test("expands a stock row to show all five market-depth levels", async () => {
   }, stockBoardMessage());
 
   await waitForText(page, "RELIANCE");
-  const toggle = await page.$('button[aria-label="Show L5 depth for RELIANCE"]');
+  const toggle = await page.$('button[aria-controls^="desktop-stock-RELIANCE"]');
   assert.ok(toggle, "stock depth toggle should be accessible by name");
   await toggle.focus();
   await page.keyboard.press("Enter");
 
-  await waitForText(page, "Spot order book");
-  await waitForText(page, "Current future order book");
+  await waitForText(page, "Spot L1-L5");
+  await waitForText(page, "Current future L1-L5");
   await waitForText(page, "2,459.70");
   await waitForText(page, "2,460.30");
-  const depthRowCounts = await page.$$eval(
-    '[aria-label="RELIANCE L5 market depth"] tbody',
-    (bodies) => bodies.map((body) => body.querySelectorAll("tr").length),
+  const depthLevelCounts = await page.$$eval(
+    '[aria-label="RELIANCE L5 market depth"] section',
+    (sections) => sections
+      .filter((section) => section.getBoundingClientRect().width > 0)
+      .map((section) => section.querySelectorAll("[data-depth-level]").length),
   );
-  assert.deepEqual(depthRowCounts, [5, 5, 5, 5]);
+  assert.deepEqual(depthLevelCounts, [5, 5, 5, 5]);
   assert.equal(await toggle.evaluate((element) => element.getAttribute("aria-expanded")), "true");
   await page.close();
 });
@@ -95,60 +96,45 @@ async function installMockWebSocket(page) {
 }
 
 function stockBoardMessage() {
+  const scalar = (value) => ({
+    ltp: [value],
+    oi: [8000],
+    volume: [1200],
+    buy_quantity: [500],
+    sell_quantity: [450],
+    oi_day_high: [9000],
+    oi_day_low: [7000],
+    ohlc_open: [value - 2],
+    ohlc_high: [value + 5],
+    ohlc_low: [value - 5],
+    ohlc_close: [value - 1],
+  });
+  const depth = (base) => Array.from({ length: 5 }, (_, index) => ({
+    bid_price: [base - 0.1 - index * 0.05],
+    bid_qty: [100 + index],
+    bid_orders: [index + 1],
+    ask_price: [base + 0.1 + index * 0.05],
+    ask_qty: [200 + index],
+    ask_orders: [index + 2],
+  }));
   return {
     type: "StockBoard",
     payload: {
       timestamp: Date.now(),
-      stocks: [
-        {
-          tradingsymbol: "RELIANCE",
-          name: "RELIANCE",
-          spot_ltp: 2455.5,
-          futures: [
-            { expiry: "2026-07-30", ltp: 2460, oi: 8000 },
-            { expiry: "2026-08-27", ltp: 2475, oi: 6000 },
-            { expiry: "2026-09-24", ltp: 2488, oi: 4000 },
-          ],
-          live_spread: 15,
-          daily_spread: 13,
-        },
-      ],
+      count: 1,
+      tradingsymbols: ["RELIANCE"],
+      names: ["RELIANCE"],
+      future_expiries: [["2026-07-30", "2026-08-27", "2026-09-24"]],
+      legs: {
+        spot: { scalars: scalar(2455.5), depth: depth(2455.5) },
+        fut_current: { scalars: scalar(2460), depth: depth(2460) },
+        fut_mid: { scalars: scalar(2475), depth: depth(2475) },
+        fut_far: { scalars: scalar(2488), depth: depth(2488) },
+      },
+      live_spread: [15],
+      daily_spread: [13],
     },
   };
-}
-
-function depthLevels() {
-  return Array.from({ length: 5 }, (_, index) => ({
-    level: index + 1,
-    bid_price: 2459.9 - index * 0.05,
-    bid_qty: 100 + index,
-    bid_orders: index + 1,
-    ask_price: 2460.1 + index * 0.05,
-    ask_qty: 200 + index,
-    ask_orders: index + 2,
-  }));
-}
-
-async function mockStockDepth(page) {
-  await page.setRequestInterception(true);
-  page.on("request", (request) => {
-    const url = new URL(request.url());
-    if (url.origin !== BACKEND_ORIGIN || url.pathname !== "/api/capture/stocks/RELIANCE/depth") {
-      request.continue();
-      return;
-    }
-    const depth = depthLevels();
-    respondJson(request, {
-      tradingsymbol: "RELIANCE",
-      name: "RELIANCE",
-      spot_depth: depth,
-      futures: [
-        { label: "Current future", expiry: "2026-07-30", depth },
-        { label: "Mid future", expiry: "2026-08-27", depth },
-        { label: "Far future", expiry: "2026-09-24", depth },
-      ],
-    });
-  });
 }
 
 async function mockBackend(page) {

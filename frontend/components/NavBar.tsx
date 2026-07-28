@@ -7,64 +7,76 @@ import SessionBadge from "@/components/SessionBadge";
 import { APP_NAME } from "@/lib/branding";
 
 const LINKS = [
-  { href: "/monitor", label: "Capture Monitor" },
-  { href: "/option-chain", label: "Option Chain" },
-  { href: "/stocks", label: "Stocks" },
-  { href: "/login", label: "Downloader" },
+  { href: "/monitor", label: "Capture Monitor", mobileLabel: "Monitor" },
+  { href: "/option-chain", label: "Option Chain", mobileLabel: "Options" },
+  { href: "/stocks", label: "Stocks", mobileLabel: "Stocks" },
+  { href: "/login", label: "Downloader", mobileLabel: "Setup" },
 ];
 
 export default function NavBar() {
   const pathname = usePathname();
   return (
-    // Mobile: two rows (brand + session badge, then a horizontally scrollable link
-    // rail). From `sm` up it collapses to the original single row. The old layout was
-    // one non-wrapping flex row of 6 items, which overflowed and overlapped on phones.
-    <nav className="sticky top-0 z-40 flex flex-col gap-1 border-b border-zinc-800 bg-zinc-950/90 px-3 py-2 backdrop-blur sm:flex-row sm:items-center sm:gap-1 sm:px-4">
-      <div className="flex items-center justify-between gap-2 sm:justify-start">
+    <nav
+      aria-label="Primary"
+      className="sticky top-0 z-40 border-b border-border bg-canvas"
+    >
+      <div className="workspace-shell flex h-12 items-center justify-between gap-2 px-3 sm:h-14 sm:px-4">
         <Link
           href="/"
-          className="flex shrink-0 items-center gap-2 text-sm font-semibold text-zinc-100 sm:mr-4"
+          className="flex min-h-11 shrink-0 items-center gap-2 text-sm font-semibold text-primary sm:mr-4"
         >
           <span
             aria-hidden="true"
-            className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-gradient-to-br from-sky-400 to-indigo-500"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-accent/60 bg-surface-2 font-mono text-[10px] text-accent"
           >
-            <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="#05121f" strokeWidth="2.4" strokeLinecap="round">
-              <line x1="7" y1="15" x2="7" y2="19" /><line x1="12" y1="5" x2="12" y2="19" /><line x1="17" y1="11" x2="17" y2="19" />
-            </svg>
+            TV
           </span>
           {APP_NAME}
         </Link>
-        {/* Badge sits beside the brand on mobile, and moves to the far right on sm+. */}
-        <span className="sm:hidden">
+        <span className="shrink-0 sm:hidden">
           <SessionBadge />
         </span>
+        <div className="ml-auto hidden h-full items-center gap-1 sm:flex">
+          {LINKS.map((link) => {
+            const active = pathname === link.href;
+            return (
+              <Link
+                key={link.href}
+                href={link.href}
+                aria-current={active ? "page" : undefined}
+                className={`control inline-flex min-h-10 items-center whitespace-nowrap px-3 text-sm ${
+                  active
+                    ? "border-border bg-surface-2 text-accent"
+                    : "text-secondary hover:bg-surface-1 hover:text-primary"
+                }`}
+              >
+                {link.label}
+              </Link>
+            );
+          })}
+          <span className="ml-3">
+            <SessionBadge />
+          </span>
+        </div>
       </div>
-
-      {/* Link rail: scrolls sideways on narrow screens instead of squeezing. */}
-      <div className="-mx-1 flex gap-1 overflow-x-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:mx-0 sm:overflow-visible sm:px-0">
+      <div className="grid h-12 grid-cols-4 border-t border-border sm:hidden">
         {LINKS.map((link) => {
           const active = pathname === link.href;
           return (
             <Link
               key={link.href}
               href={link.href}
+              aria-label={link.label}
               aria-current={active ? "page" : undefined}
-              className={`shrink-0 whitespace-nowrap rounded px-3 py-1.5 text-sm transition-colors ${
-                active
-                  ? "bg-sky-500/15 text-sky-300"
-                  : "text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200"
+              className={`grid min-h-11 min-w-0 place-items-center border-r border-border px-1 text-xs last:border-r-0 ${
+                active ? "bg-surface-2 font-semibold text-accent" : "text-secondary"
               }`}
             >
-              {link.label}
+              {link.mobileLabel}
             </Link>
           );
         })}
       </div>
-
-      <span className="ml-auto hidden sm:inline-flex">
-        <SessionBadge />
-      </span>
     </nav>
   );
 }

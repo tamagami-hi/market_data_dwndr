@@ -48,3 +48,8 @@ release_manager/DATA_DOWNLOADER/images/*
 # Obsidian workspace (keep notes, ignore local UI state)
 .obsidian/workspace*
 .obsidian/cache
+
+# Layout audit screenshots (regenerate with layout-audit/shot.mjs)
+/layout-audit/*.png
+/layout-audit/*.json
+/layout-audit/node_modules
