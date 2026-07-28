@@ -64,12 +64,6 @@ export interface OptionGridPayload {
   vix: number;
 }
 
-export interface StockFutureRow {
-  expiry: string;
-  ltp: number;
-  oi: number;
-}
-
 export interface DepthLevel {
   level: number;
   bid_price: number;
@@ -80,13 +74,72 @@ export interface DepthLevel {
   ask_orders: number;
 }
 
+/** One depth level, columnar: each array is indexed by stock row. */
+export interface DepthLevelColumns {
+  bid_price: number[];
+  bid_qty: number[];
+  bid_orders: number[];
+  ask_price: number[];
+  ask_qty: number[];
+  ask_orders: number[];
+}
+
+/** Every captured scalar for one leg, columnar (indexed by stock row). */
+export interface LegScalarColumns {
+  ltp: number[];
+  oi: number[];
+  volume: number[];
+  buy_quantity: number[];
+  sell_quantity: number[];
+  oi_day_high: number[];
+  oi_day_low: number[];
+  ohlc_open: number[];
+  ohlc_high: number[];
+  ohlc_low: number[];
+  ohlc_close: number[];
+}
+
+export interface LegColumns {
+  scalars: LegScalarColumns;
+  /** Exactly 5 entries: index 0 = L1 (best) … index 4 = L5. */
+  depth: DepthLevelColumns[];
+}
+
+export type StockLegName = "spot" | "fut_current" | "fut_mid" | "fut_far";
+
+/**
+ * Full stock board, streamed every second.
+ *
+ * Columnar: one array per field rather than an object per stock, which is what makes
+ * shipping all 4 legs x (11 scalars + 5 depth levels x 6 fields) affordable. Read a
+ * stock by its row index — `names[i]`, `legs.spot.scalars.ltp[i]`, etc.
+ */
+export interface StockBoardPayload {
+  timestamp: number;
+  count: number;
+  tradingsymbols: string[];
+  names: string[];
+  future_expiries: string[][];
+  legs: Record<StockLegName, LegColumns>;
+  live_spread: number[];
+  daily_spread: number[];
+}
+
+/** A single stock projected out of the columnar board for rendering. */
 export interface StockRow {
+  row: number;
   tradingsymbol: string;
   name: string;
   spot_ltp: number;
   futures: StockFutureRow[];
   live_spread: number;
   daily_spread: number;
+}
+
+export interface StockFutureRow {
+  expiry: string;
+  ltp: number;
+  oi: number;
 }
 
 export interface StockDepthFuture {
@@ -100,11 +153,6 @@ export interface StockDepthSnapshot {
   name: string;
   spot_depth: DepthLevel[];
   futures: StockDepthFuture[];
-}
-
-export interface StockBoardPayload {
-  timestamp: number;
-  stocks: StockRow[];
 }
 
 export interface PerUnderlyingStatus {

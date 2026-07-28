@@ -4,19 +4,16 @@ import { Fragment, useCallback, useMemo, useState } from "react";
 
 import ConnectionDot from "@/components/ConnectionDot";
 import StockDepthPanel from "@/components/StockDepthPanel";
-import { getStockDepth } from "@/lib/api";
+import { depthFromBoard, stockRows } from "@/lib/stockBoard";
 import { fmtCell, formatClockTime, formatIndianNumber } from "@/lib/numberFormat";
 import { useTopicEnvelopes } from "@/lib/useTopic";
 import { stocksConnection } from "@/lib/wsTopicConnection";
-import { MSG, type StockBoardPayload, type StockDepthSnapshot, type StockRow, type WsEnvelope } from "@/lib/wsTypes";
+import { MSG, type StockBoardPayload, type StockRow, type WsEnvelope } from "@/lib/wsTypes";
 
 export default function StocksPage() {
   const [board, setBoard] = useState<StockBoardPayload | null>(null);
   const [query, setQuery] = useState("");
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
-  const [depthBySymbol, setDepthBySymbol] = useState<Record<string, StockDepthSnapshot>>({});
-  const [depthLoading, setDepthLoading] = useState<string | null>(null);
-  const [depthError, setDepthError] = useState<Record<string, string>>({});
 
   const onEnvelope = useCallback((env: WsEnvelope) => {
     if (env.type !== MSG.STOCK_BOARD) return;
@@ -26,30 +23,18 @@ export default function StocksPage() {
   useTopicEnvelopes(stocksConnection, onEnvelope);
 
   const rows = useMemo(() => {
-    const all = board?.stocks ?? [];
+    const all = stockRows(board);
     const q = query.trim().toUpperCase();
     const filtered = q ? all.filter((s) => s.name.toUpperCase().includes(q)) : all;
     return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
   }, [board, query]);
 
-  const toggleDepth = useCallback(async (row: StockRow) => {
-    if (expandedSymbol === row.tradingsymbol) {
-      setExpandedSymbol(null);
-      return;
-    }
-    setExpandedSymbol(row.tradingsymbol);
-    setDepthLoading(row.tradingsymbol);
-    setDepthError((current) => ({ ...current, [row.tradingsymbol]: "" }));
-    try {
-      const depth = await getStockDepth(row.tradingsymbol);
-      setDepthBySymbol((current) => ({ ...current, [row.tradingsymbol]: depth }));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "L5 order book is unavailable.";
-      setDepthError((current) => ({ ...current, [row.tradingsymbol]: message }));
-    } finally {
-      setDepthLoading((current) => current === row.tradingsymbol ? null : current);
-    }
-  }, [expandedSymbol]);
+  // Expanding a row is now purely local: L1-L5 depth for every leg is already in the
+  // live board, so there is no fetch, no loading state, and the book keeps updating
+  // every second instead of freezing until the row is collapsed and reopened.
+  const toggleDepth = useCallback((row: StockRow) => {
+    setExpandedSymbol((cur) => (cur === row.tradingsymbol ? null : row.tradingsymbol));
+  }, []);
 
   return (
     <div className="space-y-4">
@@ -63,7 +48,7 @@ export default function StocksPage() {
           className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200 placeholder:text-zinc-600 sm:max-w-56 sm:flex-none"
         />
         <span className="text-xs text-zinc-500">
-          {board ? `${rows.length} / ${board.stocks.length} stocks` : ""}
+          {board ? `${rows.length} / ${board.count} stocks` : ""}
         </span>
         <div className="flex w-full items-center gap-3 sm:ml-auto sm:w-auto sm:gap-4">
           {board && (
@@ -105,10 +90,12 @@ export default function StocksPage() {
                   row={row}
                   zebra={i % 2 === 0}
                   isExpanded={expandedSymbol === row.tradingsymbol}
-                  depth={depthBySymbol[row.tradingsymbol] ?? null}
-                  isDepthLoading={depthLoading === row.tradingsymbol}
-                  depthError={depthError[row.tradingsymbol] || null}
-                  onToggle={() => void toggleDepth(row)}
+                  depth={
+                    expandedSymbol === row.tradingsymbol
+                      ? depthFromBoard(board, row.row)
+                      : null
+                  }
+                  onToggle={() => toggleDepth(row)}
                 />
               ))}
             </tbody>
@@ -125,12 +112,10 @@ interface StockRowViewProps {
   zebra: boolean;
   isExpanded: boolean;
   onToggle: () => void;
-  depth: StockDepthSnapshot | null;
-  isDepthLoading: boolean;
-  depthError: string | null;
+  depth: import("@/lib/wsTypes").StockDepthSnapshot | null;
 }
 
-function StockRowView({ row, zebra, isExpanded, onToggle, depth, isDepthLoading, depthError }: StockRowViewProps) {
+function StockRowView({ row, zebra, isExpanded, onToggle, depth }: StockRowViewProps) {
   const fut = (i: number) => row.futures[i];
   const panelId = `depth-${row.tradingsymbol.replace(/[^A-Za-z0-9_-]/g, "-")}`;
   return (
@@ -163,12 +148,7 @@ function StockRowView({ row, zebra, isExpanded, onToggle, depth, isDepthLoading,
       {isExpanded && (
         <tr>
           <td colSpan={7} className="p-0">
-            <StockDepthPanel
-              depth={depth}
-              id={panelId}
-              isLoading={isDepthLoading}
-              error={depthError}
-            />
+            <StockDepthPanel depth={depth} id={panelId} />
           </td>
         </tr>
       )}

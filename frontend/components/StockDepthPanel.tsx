@@ -4,19 +4,14 @@ import type { DepthLevel, StockDepthSnapshot } from "@/lib/wsTypes";
 export default function StockDepthPanel({
   depth,
   id,
-  isLoading,
-  error,
 }: {
   depth: StockDepthSnapshot | null;
   id: string;
-  isLoading: boolean;
-  error: string | null;
 }) {
-  if (isLoading) {
-    return <DepthState id={id} message="Loading the latest L5 order book…" />;
-  }
-  if (error || !depth) {
-    return <DepthState id={id} message={error ?? "L5 order book is unavailable."} isError />;
+  // No loading or error state: depth arrives on the live /ws/stocks board, so it is
+  // either already here or capture is not streaming yet.
+  if (!depth) {
+    return <DepthState id={id} message="Waiting for the live order book…" />;
   }
   const legs = [
     { label: "Spot", depth: depth.spot_depth },
@@ -34,7 +29,7 @@ export default function StockDepthPanel({
       className="grid gap-3 border-y border-zinc-700/70 bg-zinc-950/70 p-3 lg:grid-cols-2 2xl:grid-cols-4"
     >
       <p className="text-[0.6875rem] text-zinc-500 lg:col-span-2 2xl:col-span-4">
-        On-demand snapshot loaded when this row was expanded. Collapse and reopen to refresh.
+        Live L1–L5 order book, updating every second from the stream — no refresh needed.
       </p>
       {legs.map((leg) => (
         <DepthTable key={leg.label} label={leg.label} depth={leg.depth} />

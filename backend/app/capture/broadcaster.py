@@ -20,7 +20,14 @@ import logging
 import math
 from dataclasses import dataclass
 
-from app.bin_codec.layout import IndexFrame, IndexHeader, RawBlock, StockFrame
+from app.bin_codec.layout import (
+    DEPTH_LEVEL_COLUMNS,
+    INSTR_SCALAR_COLUMNS,
+    IndexFrame,
+    IndexHeader,
+    RawBlock,
+    StockFrame,
+)
 from app.capture.snapshot import CaptureSnapshot
 from app.chain.table import IndexTable
 from app.reconstruct.greeks import reconstruct_greeks
@@ -201,42 +208,68 @@ class Broadcaster:
         return self._stock_frame_message(frame)
 
     def _stock_frame_message(self, frame: StockFrame) -> dict:
-        rows = []
-        for row, ref in enumerate(self._stock_refs):
-            legs = {
-                "spot": frame.spot,
-                "fut_current": frame.fut_current,
-                "fut_mid": frame.fut_mid,
-                "fut_far": frame.fut_far,
-            }
-            futures = []
-            leg_names = ["fut_current", "fut_mid", "fut_far"]
-            for i, expiry in enumerate(ref.future_expiries):
-                leg = legs[leg_names[i]]
-                futures.append(
-                    {
-                        "expiry": expiry,
-                        "ltp": _rupees(leg.scalars["ltp"][row]),
-                        "oi": int(leg.scalars["oi"][row]),
-                    }
+        """Full stock board: every captured scalar + all 5 depth levels, per leg.
+
+        COLUMNAR on purpose. A row-per-stock object would repeat ~41 JSON keys 210 times
+        per leg; emitting one array per field instead (indexed by stock row) removes that
+        duplication entirely. Combined with permessage-deflate this keeps the full L1-L5
+        board comfortably small, so the UI never has to fetch depth on demand.
+
+        Column metadata comes from the BIN schema (`is_price` decides paise -> rupees), so
+        adding a column to the format automatically streams it.
+        """
+        legs = {
+            "spot": frame.spot,
+            "fut_current": frame.fut_current,
+            "fut_mid": frame.fut_mid,
+            "fut_far": frame.fut_far,
+        }
+        n = len(self._stock_refs)
+        rows = range(n)
+
+        leg_payloads: dict[str, dict] = {}
+        for leg_name, leg in legs.items():
+            scalars = {
+                col.name: (
+                    [_rupees(int(leg.scalars[col.name][i])) for i in rows]
+                    if col.is_price
+                    else [int(leg.scalars[col.name][i]) for i in rows]
                 )
-            rows.append(
+                for col in INSTR_SCALAR_COLUMNS
+            }
+            depth = [
                 {
-                    "tradingsymbol": ref.tradingsymbol,
-                    "name": ref.name,
-                    "spot_ltp": _rupees(frame.spot.scalars["ltp"][row]),
-                    "futures": futures,
-                    "live_spread": (
-                        live_spread(frame, row) if len(ref.future_expiries) >= 2 else 0.0
-                    ),
-                    "daily_spread": (
-                        daily_spread(frame, row) if len(ref.future_expiries) >= 2 else 0.0
-                    ),
+                    col.name: (
+                        [_rupees(int(level[col.name][i])) for i in rows]
+                        if col.is_price
+                        else [int(level[col.name][i]) for i in rows]
+                    )
+                    for col in DEPTH_LEVEL_COLUMNS
                 }
-            )
+                for level in leg.depth
+            ]
+            leg_payloads[leg_name] = {"scalars": scalars, "depth": depth}
+
         return protocol.envelope(
             protocol.TYPE_STOCK_BOARD,
-            {"timestamp": frame.timestamp_unix_ms, "stocks": rows},
+            {
+                "timestamp": frame.timestamp_unix_ms,
+                "count": n,
+                # Static per session, but sent each tick so a late subscriber is complete
+                # immediately; they compress to almost nothing after the first frame.
+                "tradingsymbols": [ref.tradingsymbol for ref in self._stock_refs],
+                "names": [ref.name for ref in self._stock_refs],
+                "future_expiries": [list(ref.future_expiries) for ref in self._stock_refs],
+                "legs": leg_payloads,
+                "live_spread": [
+                    live_spread(frame, i) if len(self._stock_refs[i].future_expiries) >= 2 else 0.0
+                    for i in rows
+                ],
+                "daily_spread": [
+                    daily_spread(frame, i) if len(self._stock_refs[i].future_expiries) >= 2 else 0.0
+                    for i in rows
+                ],
+            },
         )
 
     # -- async broadcast --------------------------------------------------- #

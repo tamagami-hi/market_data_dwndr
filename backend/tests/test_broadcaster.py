@@ -161,12 +161,40 @@ def test_stock_message_shape():
     bc = Broadcaster({}, matrix, FakeHub())
     msg = bc.stock_message(ts=1000)
     assert msg["type"] == TYPE_STOCK_BOARD
-    stocks = {s["name"]: s for s in msg["payload"]["stocks"]}
-    assert set(stocks) == {"M&M", "RELIANCE"}
-    reliance = stocks["RELIANCE"]
-    assert reliance["futures"][0]["ltp"] == 2460.0
-    assert "depth" not in reliance["futures"][0]
-    assert "spot_depth" not in stocks["M&M"]
+    p = msg["payload"]
+
+    # Columnar payload: one array per field, indexed by stock row.
+    names = p["names"]
+    assert set(names) == {"M&M", "RELIANCE"}
+    r = names.index("RELIANCE")
+    assert p["count"] == len(names)
+
+    # All four legs present, each with every captured scalar and all 5 depth levels.
+    assert set(p["legs"]) == {"spot", "fut_current", "fut_mid", "fut_far"}
+    for leg in p["legs"].values():
+        assert len(leg["depth"]) == 5
+        for level in leg["depth"]:
+            assert set(level) == {
+                "bid_price", "bid_qty", "bid_orders", "ask_price", "ask_qty", "ask_orders",
+            }
+            assert len(level["bid_price"]) == len(names)
+        for field in ("ltp", "oi", "volume", "buy_quantity", "sell_quantity",
+                      "ohlc_open", "ohlc_high", "ohlc_low", "ohlc_close"):
+            assert len(leg["scalars"][field]) == len(names)
+
+    # Values land on the right row, with prices converted to rupees.
+    assert p["legs"]["fut_current"]["scalars"]["ltp"][r] == 2460.0
+    assert p["legs"]["fut_mid"]["scalars"]["ltp"][r] == 2475.0
+    assert p["legs"]["fut_current"]["scalars"]["oi"][r] == 8000
+
+    # L1-L5 depth is now STREAMED, not fetched on demand.
+    l1 = p["legs"]["fut_current"]["depth"][0]
+    assert l1["bid_price"][r] == 2459.9
+    assert l1["ask_price"][r] == 2460.1
+    assert l1["bid_qty"][r] == 100
+    assert l1["bid_orders"][r] == 1
+    # deeper levels carry data too (the whole point of the change)
+    assert p["legs"]["fut_current"]["depth"][4]["bid_price"][r] > 0
 
     depth = stock_depth_snapshot(matrix, "RELIANCE")
     assert depth is not None
@@ -189,7 +217,7 @@ def test_stock_message_shape():
     assert len(mm_depth["spot_depth"]) == 5
     assert mm_depth["spot_depth"][0]["ask_price"] == 2950.55
     # live spread = fut_mid - fut_current = 2475 - 2460 = 15
-    assert abs(reliance["live_spread"] - 15.0) < 1e-9
+    assert abs(p["live_spread"][r] - 15.0) < 1e-9
 
 
 async def test_broadcast_all_pushes_all_topics():
