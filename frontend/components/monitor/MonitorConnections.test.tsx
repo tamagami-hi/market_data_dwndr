@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/wsTopicConnection", () => ({
+  // Consumed by the telemetry popover to state the real throughput window.
+  RATE_WINDOW_MS: 5_000,
   captureStatusConnection: {
     topic: "capture", acquire: vi.fn(), release: vi.fn(), onEnvelope: vi.fn(() => vi.fn()),
   },
