@@ -48,13 +48,22 @@ export function DataLossDiagnostics({ globals }: { globals: GlobalStatus | null 
           value: globals.disk_runway_hours ? `${formatIndianNumber(globals.disk_runway_hours, 1)} h` : "--",
           severity: globals.disk_runway_hours && globals.disk_runway_hours < 8 ? "warning" as const : "neutral" as const,
         },
+        {
+          label: "Reconnects",
+          value: formatIndianNumber(globals.reconnects ?? 0, 0),
+          severity: globals.exhausted
+            ? "danger" as const
+            : globals.reconnects
+              ? "warning" as const
+              : "neutral" as const,
+        },
       ]
     : [];
 
   return (
     <Panel title="Data-loss diagnostics" subtitle="current session" className="h-full">
       {items.length > 0 ? (
-        <div className="grid grid-cols-2 gap-2 p-2 sm:grid-cols-3">
+        <div className="grid grid-cols-3 gap-2 p-2">
           {items.map((item) => <Metric key={item.label} compact {...item} />)}
         </div>
       ) : (

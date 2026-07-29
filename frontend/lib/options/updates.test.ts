@@ -27,6 +27,15 @@ const block = (offset: number): GridBlock => ({
   change: [25 + offset, 26 + offset],
 });
 
+function wideBlock(rowCount: number): GridBlock {
+  return Object.fromEntries(
+    Object.keys(block(0)).map((key) => [
+      key,
+      Array.from({ length: rowCount }, (_, index) => index + 1),
+    ]),
+  ) as unknown as GridBlock;
+}
+
 const grid: OptionGrid = {
   strikes: [22_000, 22_050],
   calls: block(0),
@@ -109,6 +118,38 @@ describe("option updates", () => {
         puts: {},
       })?.changed_indices,
     ).toEqual([0]);
+  });
+
+  test("preserves every supplied strike above and below spot ATM", () => {
+    const strikes = Array.from({ length: 101 }, (_, index) => 19_500 + index * 50);
+    const normalized = normalizeOptionGridPayload({
+      underlying: "NIFTY",
+      expiry: "2026-07-30",
+      strikes,
+      calls: wideBlock(strikes.length),
+      puts: wideBlock(strikes.length),
+      market_atm: 22_000,
+      max_pain: 22_050,
+      spot_atm: 22_000,
+      spot: 22_010,
+      vix: 12,
+    });
+    expect(normalized).not.toBeNull();
+
+    const rows = optionGridToRows({
+      strikes: normalized!.strikes,
+      calls: normalized!.calls,
+      puts: normalized!.puts,
+      spot: normalized!.spot,
+      marketAtm: normalized!.market_atm,
+      maxPain: normalized!.max_pain,
+      spotAtm: normalized!.spot_atm,
+    });
+    expect(rows).toHaveLength(101);
+    expect(rows[0].strike).toBe(19_500);
+    expect(rows.at(-1)?.strike).toBe(24_500);
+    expect(rows.filter(({ strike }) => strike < 22_000)).toHaveLength(50);
+    expect(rows.filter(({ strike }) => strike > 22_000)).toHaveLength(50);
   });
 
   test("ignores invalid delta indices and invalidates marker changes", () => {

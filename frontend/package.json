@@ -10,7 +10,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
-    "test:e2e": "dotenv -e .env.local -- node --test e2e/*.e2e.mjs",
+    "test:e2e": "dotenv -e .env.local -- node --test --test-concurrency=1 e2e/*.e2e.mjs",
     "test:performance": "node --test e2e/performance.e2e.mjs",
     "test:visual": "node --test e2e/visual.e2e.mjs",
     "test:visual:update": "UPDATE_VISUAL_BASELINES=1 node --test e2e/visual.e2e.mjs",

@@ -5,6 +5,69 @@ import { useConnectionState } from "@/lib/useTopic";
 import { formatBytes } from "@/lib/numberFormat";
 import { Explanation } from "@/components/ui/Explanation";
 
+type ConnectionState = ReturnType<typeof useConnectionState>;
+export type TelemetryProfile = "all" | "option" | "stocks" | "transport";
+
+function connectionLabel(state: ConnectionState): string {
+  if (!state.connected) return "offline";
+  return state.ageMs != null && state.ageMs > 5_000 ? "stale" : "connected";
+}
+
+export function ConnectionDetails({
+  label,
+  state,
+  profile = "all",
+}: {
+  label: string;
+  state: ConnectionState;
+  profile?: TelemetryProfile;
+}) {
+  const hasPipeline = profile !== "transport";
+  const hasGreeks = profile === "all" || profile === "option";
+  const hasStocks = profile === "all" || profile === "stocks";
+  return (
+    <section className="connection-detail">
+      <h3 className="connection-detail-title">{label}</h3>
+      <dl className="connection-detail-grid">
+        <dt>State</dt>
+        <dd>{connectionLabel(state)}</dd>
+        {hasPipeline && (
+          <>
+            <dt>Pipeline build</dt>
+            <dd>{state.pipelineMs === null ? "--" : `${state.pipelineMs}ms`}</dd>
+          </>
+        )}
+        {hasGreeks && (
+          <>
+            <dt>Greeks</dt>
+            <dd>{state.greeksMs === null ? "--" : `${state.greeksMs}ms`}</dd>
+          </>
+        )}
+        {hasStocks && (
+          <>
+            <dt>Stock board</dt>
+            <dd>{state.stocksMs === null ? "--" : `${state.stocksMs}ms`}</dd>
+          </>
+        )}
+        <dt>Payload</dt>
+        <dd>{formatBytes(state.bytesPerSec)}/s</dd>
+        <dt>Last message</dt>
+        <dd>{state.ageMs === null ? "--" : `${(state.ageMs / 1000).toFixed(1)}s ago`}</dd>
+        <dt>Rate window</dt>
+        <dd>5 seconds</dd>
+        <dt>Payload basis</dt>
+        <dd>decompressed</dd>
+        {state.error && (
+          <>
+            <dt>Error</dt>
+            <dd className="text-danger">{state.error}</dd>
+          </>
+        )}
+      </dl>
+    </section>
+  );
+}
+
 /**
  * Live connection indicator with transport health.
  *
@@ -31,19 +94,25 @@ export default function ConnectionDot({
   label,
   detailed = true,
   showLatency = true,
+  telemetryProfile = "all",
+  telemetryTitle,
+  popoverClassName = "",
 }: {
   connection: TopicConnection;
   label: string;
   detailed?: boolean;
   showLatency?: boolean;
+  telemetryProfile?: TelemetryProfile;
+  telemetryTitle?: string;
+  popoverClassName?: string;
 }) {
   const state = useConnectionState(connection);
   const stale = state.ageMs != null && state.ageMs > 5_000;
   const latencyMs = showLatency ? state.pipelineMs : null;
-  const connectionLabel = state.connected ? (stale ? "stale" : "connected") : "offline";
+  const stateLabel = connectionLabel(state);
 
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-secondary">
+    <div className="inline-flex items-center gap-1.5 text-xs text-secondary">
       <span
         className={`inline-block h-2 w-2 shrink-0 rounded-full ${
           state.connected
@@ -54,28 +123,28 @@ export default function ConnectionDot({
         }`}
         aria-hidden="true"
       />
-      <span className="whitespace-nowrap">{label}: {connectionLabel}</span>
-      {detailed && state.connected && (
-        <span className="inline-flex items-center gap-1 whitespace-nowrap font-mono text-xs text-muted">
-          <span className={latencyMs !== null && latencyMs > 500 ? "text-warning" : ""}>
-            {latencyMs !== null ? `${latencyMs}ms` : ""}
-            {latencyMs !== null && state.bytesPerSec > 0 ? " / " : ""}
-            {state.bytesPerSec > 0 ? `${formatBytes(state.bytesPerSec)}/s` : ""}
-          </span>
-          <Explanation label={`Explain ${label} connection metrics`}>
-            {showLatency && (
-              <span className="block">
-                Build latency: {state.pipelineMs ?? "--"}ms. Greeks: {state.greeksMs ?? "--"}ms.
-                Stocks: {state.stocksMs ?? "--"}ms.
-              </span>
-            )}
-            <span className="mt-1 block">
-              Payload rate: {formatBytes(state.bytesPerSec)}/s decompressed. Last message:{" "}
-              {state.ageMs === null ? "--" : `${(state.ageMs / 1000).toFixed(1)}s ago`}.
+      <span className="whitespace-nowrap">{label}: {stateLabel}</span>
+      {detailed && (
+        <div className="inline-flex items-center gap-1 whitespace-nowrap font-mono text-xs text-muted">
+          {state.connected && (
+            <span className={latencyMs !== null && latencyMs > 500 ? "text-warning" : ""}>
+              {latencyMs !== null ? `${latencyMs}ms` : ""}
+              {latencyMs !== null && state.bytesPerSec > 0 ? " / " : ""}
+              {state.bytesPerSec > 0 ? `${formatBytes(state.bytesPerSec)}/s` : ""}
             </span>
+          )}
+          <Explanation
+            label={`Explain ${label} connection metrics`}
+            contentClassName={popoverClassName}
+          >
+            <ConnectionDetails
+              label={telemetryTitle ?? `${label} stream`}
+              state={state}
+              profile={showLatency ? telemetryProfile : "transport"}
+            />
           </Explanation>
-        </span>
+        </div>
       )}
-    </span>
+    </div>
   );
 }

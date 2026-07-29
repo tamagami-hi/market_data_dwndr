@@ -36,13 +36,6 @@ export function MonitorAlerts({
           severity: "warning" as const,
         }
       : null,
-    restError
-      ? {
-          title: "REST refresh failed",
-          detail: `${restError} Last valid values remain on screen.`,
-          severity: "warning" as const,
-        }
-      : null,
     payloadError
       ? { title: "Malformed telemetry rejected", detail: payloadError, severity: "warning" as const }
       : null,

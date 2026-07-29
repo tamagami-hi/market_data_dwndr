@@ -38,3 +38,16 @@
 - [x] Do not modify REST, WebSocket, payload, environment, route, or backend behavior.
 - [x] Do not modify `backend/app/static/monitor.html`.
 - [x] Do not deploy or commit.
+
+## Live-workstation refinement (2026-07-29)
+
+- [x] RED: continuous frame-integrity color and clamping tests.
+- [x] RED: uncapped daily event storage, validation, rollover, and transition tests.
+- [x] RED: seven-second toast, retained history, keyboard, and newest-first tests.
+- [x] RED: complete option-strike preservation, seven marker variants, and desktop geometry tests.
+- [x] GREEN: root operational-event provider and navigation notification center.
+- [x] GREEN: current-day Monitor log integration and smooth integrity colors.
+- [x] GREEN: denser, more readable option table with complete supplied strike range.
+- [x] Verify live VPS behavior with Playwright without modifying the backend.
+- [x] Run lint, typecheck, unit/integration coverage, production build, E2E, Axe, and visual checks.
+- [x] Complete code, TypeScript, and security reviews; resolve critical and high findings.

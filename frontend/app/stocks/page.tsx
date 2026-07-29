@@ -4,8 +4,8 @@ import React, { Fragment, useCallback, useMemo, useState } from "react";
 
 import ConnectionDot from "@/components/ConnectionDot";
 import StockDepthPanel from "@/components/StockDepthPanel";
+import { MarketPageHeader } from "@/components/ui/MarketPageHeader";
 import { PageFrame } from "@/components/ui/PageFrame";
-import { PageHeader } from "@/components/ui/PageHeader";
 import { StateMessage } from "@/components/ui/StateMessage";
 import {
   areStockRowsEqual,
@@ -27,6 +27,7 @@ const LEG_LABELS: Record<StockLegName, string> = {
   fut_mid: "Mid future",
   fut_far: "Far future",
 };
+const STOCK_TABLE_MIN_WIDTH = 1_112;
 
 export default function StocksPage() {
   const [board, setBoard] = useState<StockBoardPayload | null>(null);
@@ -63,15 +64,18 @@ export default function StocksPage() {
     setExpandedSymbol((current) => current === symbol ? null : symbol);
   }, []);
 
+  const boardStatus = board
+    ? `${rows.length} / ${board.count} stocks / updated ${formatClockTime(board.timestamp)}`
+    : "waiting for board";
+
   return (
-    <PageFrame>
-      <PageHeader
+    <PageFrame className="stocks-page-frame">
+      <MarketPageHeader
         title="Stocks Board"
         description="Spot, three futures, live and daily spreads, scalars, and complete L1-L5 depth."
-        actions={<ConnectionDot connection={stocksConnection} label="stocks" />}
-      />
-      <div className="panel page-toolbar">
-        <label className="min-w-0 flex-1 sm:max-w-64">
+        ariaLabel="Stocks Board controls"
+      >
+        <label className="market-stock-filter">
           <span className="sr-only">Filter stocks by symbol</span>
           <input
             value={query}
@@ -80,10 +84,21 @@ export default function StocksPage() {
             className="control min-h-11 w-full border-border bg-surface-2 px-3 text-sm text-primary placeholder:text-muted"
           />
         </label>
-        <span className="ml-auto text-right text-xs text-muted">
-          {board ? `${rows.length} / ${board.count} stocks` : "waiting for board"}
-          {board ? ` / updated ${formatClockTime(board.timestamp)}` : ""}
+        <span className="market-page-meta">
+          {boardStatus}
         </span>
+        <div className="market-connection">
+          <ConnectionDot
+            connection={stocksConnection}
+            label="stocks"
+            telemetryProfile="stocks"
+            telemetryTitle="Stock telemetry"
+            popoverClassName="stock-telemetry-popover"
+          />
+        </div>
+      </MarketPageHeader>
+      <div className="market-mobile-meta" aria-label="Stock board status">
+        {boardStatus}
       </div>
 
       {payloadError && <StateMessage title="Malformed stock data rejected" severity="warning" role="alert">{payloadError}</StateMessage>}
@@ -108,8 +123,24 @@ export default function StocksPage() {
               );
             })}
           </div>
-          <div className="hidden max-h-[calc(100dvh-14rem)] overflow-auto rounded-[10px] border border-border md:block">
-            <table className="data-table">
+          <div
+            data-stock-table-frame
+            className="stock-table-frame hidden min-h-0 flex-1 overflow-x-auto overflow-y-auto rounded-[10px] border border-border md:block"
+          >
+            <table
+              className="data-table stock-board-table table-fixed"
+              style={{ minWidth: STOCK_TABLE_MIN_WIDTH }}
+            >
+              <caption className="sr-only">Live stock and futures summary</caption>
+              <colgroup>
+                <col style={{ width: 190 }} />
+                <col style={{ width: 112 }} />
+                <col style={{ width: 190 }} />
+                <col style={{ width: 190 }} />
+                <col style={{ width: 190 }} />
+                <col style={{ width: 120 }} />
+                <col style={{ width: 120 }} />
+              </colgroup>
               <thead className="sticky top-0 z-30">
                 <tr>
                   <th className="sticky left-0 z-40 text-left">Symbol</th>
@@ -160,9 +191,13 @@ function Spread({ value }: { value: number }) {
 function FutureSummary({ future }: { future?: { expiry: string; ltp: number; oi: number } }) {
   if (!future) return <span className="text-muted">--</span>;
   return (
-    <span>
-      <span className="font-mono text-primary">{fmtCell(future.ltp, 2)}</span>
-      <span className="ml-1 text-xs text-muted">{future.expiry.slice(5)} / OI {formatIndianNumber(future.oi, 0)}</span>
+    <span className="stock-future-summary">
+      <span className="block font-mono text-primary">{fmtCell(future.ltp, 2)}</span>
+      <span className="mt-0.5 flex items-center justify-end gap-1.5 whitespace-nowrap text-[0.6875rem] text-muted">
+        <span>{future.expiry.slice(5)}</span>
+        <span aria-hidden="true">·</span>
+        <span>OI {formatIndianNumber(future.oi, 0)}</span>
+      </span>
     </span>
   );
 }
@@ -187,6 +222,7 @@ function ExpandedStock({
           <div><span className="text-muted">Far: </span><FutureSummary future={row.futures[2]} /></div>
         </div>
       </section>
+      <StockDepthPanel depth={depth} id={`${id}-depth`} />
       {scalars && (
         <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-4">
           {(Object.keys(LEG_LABELS) as StockLegName[]).map((leg) => (
@@ -194,7 +230,6 @@ function ExpandedStock({
           ))}
         </div>
       )}
-      <StockDepthPanel depth={depth} id={`${id}-depth`} />
     </div>
   );
 }
@@ -269,8 +304,9 @@ const DesktopStockRow = React.memo(function DesktopStockRow({
     <Fragment>
       <tr>
         <td className="sticky left-0 z-20 bg-surface-1">
-          <button type="button" aria-expanded={isExpanded} aria-controls={id} onClick={onToggle} className="control min-h-10 px-2 font-semibold text-primary hover:text-accent">
-            {isExpanded ? "−" : "+"} {row.tradingsymbol}
+          <button type="button" aria-expanded={isExpanded} aria-controls={id} onClick={onToggle} className="control inline-flex min-h-10 items-center gap-1.5 px-2 font-semibold text-primary hover:text-accent">
+            <span className="w-2 text-muted" aria-hidden="true">{isExpanded ? "▾" : "▸"}</span>
+            {row.tradingsymbol}
             {row.name !== row.tradingsymbol && <span className="ml-1 font-normal text-muted">{row.name}</span>}
           </button>
         </td>

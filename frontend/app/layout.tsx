@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import NavBar from "@/components/NavBar";
+import { OperatorEventsProvider } from "@/components/operator-events/OperatorEventsProvider";
 import { APP_NAME, APP_TAGLINE } from "@/lib/branding";
 import "./globals.css";
 
@@ -28,10 +29,12 @@ export default function RootLayout({
         <a href="#main-content" className="skip-link">
           Skip to main content
         </a>
-        <NavBar />
-        <main id="main-content" tabIndex={-1} className="workspace-shell page-shell">
-          {children}
-        </main>
+        <OperatorEventsProvider>
+          <NavBar />
+          <main id="main-content" tabIndex={-1} className="workspace-shell page-shell">
+            {children}
+          </main>
+        </OperatorEventsProvider>
       </body>
     </html>
   );

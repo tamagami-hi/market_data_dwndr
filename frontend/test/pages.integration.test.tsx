@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 
@@ -11,9 +11,9 @@ const mocks = vi.hoisted(() => ({
   connection: {
     connected: true,
     ageMs: 100,
-    pipelineMs: 12,
-    greeksMs: 5,
-    stocksMs: 4,
+    pipelineMs: 12 as number | null,
+    greeksMs: 5 as number | null,
+    stocksMs: 4 as number | null,
     bytesPerSec: 2_048,
     error: null,
   },
@@ -324,9 +324,30 @@ test("renders rich monitor sections, alerts, disclosures, and native logs dialog
   const user = userEvent.setup();
   const view = render(<MonitorPage />);
   expect(view.container.firstElementChild).toHaveClass("page-frame");
+  expect(view.container.firstElementChild).not.toHaveClass("[@media(min-height:900px)]:min-h-[calc(100dvh-7rem)]");
+  expect(view.container.querySelector(".monitor-panel-grid")).not.toHaveClass(
+    "[@media(min-height:900px)]:lg:auto-rows-fr",
+  );
   expect(screen.getByRole("heading", { name: "Capture Monitor" })).toBeInTheDocument();
   expect(screen.getAllByText("Recovery exhausted").length).toBeGreaterThan(0);
   expect(screen.getAllByText("NIFTY").length).toBeGreaterThan(0);
+  const diagnostics = screen.getByRole("heading", { name: "Data-loss diagnostics" }).closest(".panel");
+  expect(diagnostics).not.toBeNull();
+  expect(within(diagnostics as HTMLElement).getByText("Reconnects")).toBeInTheDocument();
+  expect(diagnostics!.querySelectorAll(".metric")).toHaveLength(9);
+  expect(diagnostics!.querySelector(".grid")).toHaveClass("grid-cols-3");
+  expect(screen.getByLabelText("Monitor session context")).toHaveClass("monitor-context-line");
+  expect(screen.getByText("capture + session: connected")).toBeInTheDocument();
+  expect(screen.queryByText("capture: connected")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Explain monitor connections" }));
+  const connectionDetails = screen.getByRole("note");
+  expect(connectionDetails).toHaveClass("monitor-connection-popover");
+  expect(connectionDetails).toHaveTextContent("Monitor telemetry");
+  expect(connectionDetails).toHaveTextContent("Capture Monitor");
+  expect(connectionDetails).toHaveTextContent("Option Chain");
+  expect(connectionDetails).toHaveTextContent("Stocks Board");
+  expect(connectionDetails).toHaveTextContent("Session");
+  expect(connectionDetails).toHaveTextContent("Frozen seconds are separate from elapsed missing-frame loss");
   await user.click(screen.getByRole("button", { name: "Open log viewer" }));
   expect(screen.getByRole("dialog")).toBeInTheDocument();
   const degradedGlobals = {
@@ -365,7 +386,8 @@ test("balances single monitor alerts and paired monitor panels", () => {
   const alerts = render(
     <MonitorAlerts globals={null} restError="History retrying." payloadError={null} isRestStale={false} />,
   );
-  expect(alerts.getByRole("alert").parentElement).toHaveClass("lg:col-span-2");
+  expect(alerts.queryByRole("alert")).not.toBeInTheDocument();
+  expect(alerts.queryByText("REST refresh failed")).not.toBeInTheDocument();
   alerts.rerender(
     <MonitorAlerts
       globals={null}
@@ -374,7 +396,7 @@ test("balances single monitor alerts and paired monitor panels", () => {
       isRestStale={false}
     />,
   );
-  alerts.getAllByRole("alert").forEach((alert) => expect(alert).toHaveClass("h-full"));
+  expect(alerts.getByRole("alert")).toHaveClass("h-full");
 
   const monitor = render(<MonitorPage />);
   const healthPanel = screen.getByRole("heading", { name: "Per-underlying health" }).closest(".panel");
@@ -383,6 +405,7 @@ test("balances single monitor alerts and paired monitor panels", () => {
   const compressionPanel = screen.getByRole("heading", { name: "Compression" }).closest(".panel");
   [healthPanel, lossPanel, storagePanel, compressionPanel].forEach((panel) => {
     expect(panel).toHaveClass("h-full");
+    expect(panel!.querySelector(".panel-title-line")).not.toBeNull();
   });
   monitor.unmount();
 });
@@ -391,7 +414,7 @@ test("renders option-chain snapshots, deltas, symbols, and malformed recovery", 
   const user = userEvent.setup();
   const view = render(<OptionChainPage />);
   expect(view.container.firstElementChild).toHaveClass("page-frame");
-  expect(screen.getByText("Awaiting underlyings")).toBeInTheDocument();
+  expect(screen.getByText("Waiting for option-chain data")).toBeInTheDocument();
   const handler = mocks.handlers.at(-1)!;
   act(() => {
     handler({ type: "MarketHeader", payload: { underlying: "NIFTY", expiry: "2026-07-30", spot: 22_000, atm: 22_000, vix: 12, risk_free_rate: 0.06, timestamp: 1, sequence: 1 } });
@@ -406,6 +429,33 @@ test("renders option-chain snapshots, deltas, symbols, and malformed recovery", 
     handler({ type: "OptionGrid", payload: { underlying: "BANKNIFTY", expiry: "2026-07-30", strikes: [22_000], calls: optionBlock(0), puts: optionBlock(100), market_atm: 22_000, max_pain: 22_000, spot_atm: 22_000, spot: 22_010, vix: 12 } });
   });
   expect(await screen.findByText("NIFTY")).toBeInTheDocument();
+  const routeHeader = screen.getByRole("heading", { name: "Option Chain" }).closest("header");
+  expect(routeHeader).not.toBeNull();
+  expect(routeHeader).toContainElement(screen.getByRole("button", { name: "NIFTY" }));
+  expect(routeHeader).toContainElement(screen.getByRole("button", { name: "BANKNIFTY" }));
+  expect(routeHeader).toContainElement(screen.getByText(/market data: connected/));
+  expect(routeHeader).toHaveTextContent("12ms");
+  await user.click(screen.getByRole("button", { name: "Explain market data connection metrics" }));
+  const optionTelemetry = screen.getByRole("note");
+  expect(optionTelemetry).toHaveClass("option-telemetry-popover");
+  expect(optionTelemetry).toHaveTextContent("Option telemetry");
+  expect(optionTelemetry).toHaveTextContent("Pipeline build");
+  expect(optionTelemetry).toHaveTextContent("Greeks");
+  expect(optionTelemetry).toHaveTextContent("Payload");
+  expect(optionTelemetry).toHaveTextContent("12ms");
+  expect(optionTelemetry).toHaveTextContent("5ms");
+  expect(optionTelemetry).toHaveTextContent("2.0 KB/s");
+  expect(optionTelemetry).not.toHaveTextContent("Stock board");
+  expect(
+    [...routeHeader!.querySelectorAll("button[aria-pressed]")].slice(0, 4).map((button) => button.textContent),
+  ).toEqual(["NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY"]);
+  expect(view.container.querySelector(".page-toolbar")).not.toBeInTheDocument();
+  const marketSummary = screen.getByRole("region", { name: "Selected option-chain market summary" });
+  expect(marketSummary).not.toHaveClass("panel");
+  expect(marketSummary).toHaveAttribute("tabindex", "0");
+  ["Expiry", "Spot", "ATM", "VIX", "Risk-Free", "Max Pain", "Seq"].forEach((label) => {
+    expect(marketSummary).toHaveTextContent(label);
+  });
   await user.click(screen.getByRole("button", { name: "CUSTOM" }));
   await user.click(screen.getByRole("button", { name: "Strike 22000 details" }));
   expect(screen.getByRole("heading", { name: "Greeks" })).toBeInTheDocument();
@@ -414,26 +464,84 @@ test("renders option-chain snapshots, deltas, symbols, and malformed recovery", 
 test("renders stock summaries, symbol filtering, spreads, and complete expansion", async () => {
   const user = userEvent.setup();
   const view = render(<StocksPage />);
-  expect(view.container.firstElementChild).toHaveClass("page-frame");
+  expect(view.container.firstElementChild).toHaveClass("page-frame", "stocks-page-frame");
   act(() => mocks.handlers.at(-1)!({ type: "StockBoard", payload: stockBoard() }));
-  expect(await screen.findByText("RELIANCE")).toBeInTheDocument();
+  expect((await screen.findAllByText("RELIANCE")).length).toBeGreaterThan(0);
+  const routeHeader = screen.getByRole("heading", { name: "Stocks Board" }).closest("header");
+  const filter = screen.getByRole("textbox", { name: "Filter stocks by symbol" });
+  expect(routeHeader).not.toBeNull();
+  expect(routeHeader).toContainElement(filter);
+  expect(routeHeader).toHaveTextContent("1 / 1 stocks");
+  expect(routeHeader).toContainElement(screen.getByText(/stocks: connected/));
+  await user.click(screen.getByRole("button", { name: "Explain stocks connection metrics" }));
+  const stockTelemetry = screen.getByRole("note");
+  expect(stockTelemetry).toHaveClass("stock-telemetry-popover");
+  expect(stockTelemetry).toHaveTextContent("Stock telemetry");
+  expect(stockTelemetry).toHaveTextContent("Pipeline build");
+  expect(stockTelemetry).toHaveTextContent("Stock board");
+  expect(stockTelemetry).toHaveTextContent("Payload");
+  expect(stockTelemetry).toHaveTextContent("12ms");
+  expect(stockTelemetry).toHaveTextContent("4ms");
+  expect(stockTelemetry).toHaveTextContent("2.0 KB/s");
+  expect(stockTelemetry).not.toHaveTextContent("Greeks");
+  expect(view.container.querySelector(".page-toolbar")).not.toBeInTheDocument();
+  expect(view.container.querySelector(".market-mobile-meta")).toHaveTextContent("1 / 1 stocks");
   await user.click(screen.getByRole("button", { name: /Spot 2,450/ }));
-  expect(screen.getAllByRole("region", { name: /L5 market depth/ }).length).toBeGreaterThan(0);
-  await user.type(screen.getByPlaceholderText("Filter symbol"), "missing");
+  const depthRegion = screen.getAllByRole("region", { name: /L5 market depth/ })[0];
+  expect(depthRegion).toBeInTheDocument();
+  ["Spot scalars", "Current future scalars", "Mid future scalars", "Far future scalars"].forEach((name) => {
+    expect(screen.getAllByRole("heading", { name }).length).toBeGreaterThan(0);
+  });
+  const firstScalar = screen.getAllByRole("heading", { name: "Spot scalars" })[0];
+  expect(
+    depthRegion.compareDocumentPosition(firstScalar) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(view.container.querySelector(".stock-future-summary")).not.toBeNull();
+  expect(view.container.querySelector(".stock-board-table")).toHaveClass("table-fixed");
+  expect(view.container.querySelector(".stock-board-table")).toHaveStyle({ minWidth: "1112px" });
+  expect(view.container.querySelector("[data-stock-table-frame]")).toHaveClass(
+    "min-h-0",
+    "flex-1",
+    "overflow-y-auto",
+  );
+  expect(view.container.querySelector("[data-stock-table-frame]")).not.toHaveClass(
+    "max-h-[calc(100dvh-14rem)]",
+  );
+  ["ltp", "oi", "volume", "buy quantity", "sell quantity", "oi day high", "oi day low", "ohlc open", "ohlc high", "ohlc low", "ohlc close"].forEach((field) => {
+    expect(screen.getAllByText(field).length).toBeGreaterThan(0);
+  });
+  await user.type(filter, "missing");
   expect(screen.getByText("No symbols match the filter")).toBeInTheDocument();
   act(() => mocks.handlers.at(-1)!({ type: "StockBoard", payload: { count: 1 } }));
 });
 
 test("renders downloader automation and all connection states", async () => {
+  const user = userEvent.setup();
   const { container, rerender } = render(<DownloaderPage />);
   expect(container.firstElementChild).toHaveClass("page-frame");
   expect(await screen.findByText("Downloader is running")).toBeInTheDocument();
+  const progress = screen.getByRole("progressbar", { name: "Automation progress" });
+  expect(progress).toHaveAttribute("aria-valuenow", "100");
+  expect(
+    screen.getByRole("heading", { name: "Automation progress" }).closest(".panel-title-line"),
+  ).toHaveTextContent("100% complete");
   render(<ConnectionDot connection={captureStatusConnection} label="capture" />);
   expect(screen.getAllByText(/capture: connected/).length).toBeGreaterThan(0);
   mocks.connection = { ...mocks.connection, ageMs: 6_000 };
   rerender(<ConnectionDot connection={captureStatusConnection} label="capture" />);
   expect(screen.getByText(/capture: stale/)).toBeInTheDocument();
-  mocks.connection = { ...mocks.connection, connected: false };
+  mocks.connection = {
+    ...mocks.connection,
+    connected: false,
+    pipelineMs: null,
+    greeksMs: null,
+    stocksMs: null,
+  };
   rerender(<ConnectionDot connection={captureStatusConnection} label="capture" />);
   expect(screen.getByText(/capture: offline/)).toBeInTheDocument();
+  await user.click(
+    screen.getAllByRole("button", { name: "Explain capture connection metrics" })[0],
+  );
+  expect(screen.getByRole("note")).toHaveTextContent("offline");
+  expect(screen.getByRole("note")).not.toHaveTextContent("--ms");
 });

@@ -2,6 +2,7 @@
 
 import { Panel } from "@/components/ui/Panel";
 import { StateMessage } from "@/components/ui/StateMessage";
+import { progressColor } from "@/lib/monitor/progressColor";
 import { formatIndianNumber, formatPercent } from "@/lib/numberFormat";
 import type { GlobalStatus, PerUnderlyingStatus } from "@/lib/wsTypes";
 
@@ -22,8 +23,7 @@ function Gauge({ value }: { value: number }) {
   const radius = 18;
   const circumference = 2 * Math.PI * radius;
   const filled = (clamped / 100) * circumference;
-  const stroke =
-    clamped >= 99 ? "var(--success)" : clamped >= 95 ? "var(--warning)" : "var(--danger)";
+  const stroke = progressColor(clamped);
   return (
     <svg viewBox="0 0 44 44" className="h-11 w-11 shrink-0" aria-hidden="true">
       <circle cx="22" cy="22" r={radius} fill="none" stroke="var(--border)" strokeWidth="4" />
@@ -33,6 +33,7 @@ function Gauge({ value }: { value: number }) {
         r={radius}
         fill="none"
         stroke={stroke}
+        data-progress-gauge
         strokeWidth="4"
         strokeLinecap="round"
         strokeDasharray={`${filled} ${circumference - filled}`}
@@ -54,11 +55,14 @@ function Gauge({ value }: { value: number }) {
 
 function Bar({ value }: { value: number }) {
   const clamped = Math.max(0, Math.min(100, value));
-  const fill =
-    clamped >= 99 ? "var(--success)" : clamped >= 95 ? "var(--warning)" : "var(--danger)";
+  const fill = progressColor(clamped);
   return (
     <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--surface-2)]">
-      <div className="h-full rounded-full" style={{ width: `${clamped}%`, background: fill }} />
+      <div
+        data-progress-bar
+        className="integrity-progress h-full rounded-full"
+        style={{ width: `${clamped}%`, backgroundColor: fill }}
+      />
     </div>
   );
 }

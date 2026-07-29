@@ -28,6 +28,7 @@ export default defineConfig({
         "lib/downloader/**/*.ts",
         "lib/monitor/**/*.ts",
         "lib/numberFormat.ts",
+        "lib/operatorEvents.ts",
         "lib/options/**/*.ts",
         "lib/stockBoard.ts",
         "lib/stockDepth.ts",

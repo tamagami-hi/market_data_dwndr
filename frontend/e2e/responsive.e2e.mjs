@@ -61,6 +61,71 @@ async function openPage(path, width, height) {
   return page;
 }
 
+async function openMonitorWithTelemetry(width, height) {
+  const page = await browser.newPage();
+  await page.setViewport({ width, height, deviceScaleFactor: 1 });
+  await page.evaluateOnNewDocument(() => {
+    window.__testSockets = {};
+    class MockWebSocket {
+      constructor(url) {
+        this.url = String(url);
+        window.__testSockets[this.url] = this;
+        setTimeout(() => this.onopen?.({}), 0);
+      }
+
+      close() {}
+    }
+    window.WebSocket = MockWebSocket;
+  });
+  await page.goto(`${BASE}/monitor`, { waitUntil: "networkidle2", timeout: 30_000 });
+  await page.waitForFunction(() =>
+    Object.keys(window.__testSockets ?? {}).some((url) =>
+      url.endsWith("/ws/capture-status"),
+    ),
+  );
+  await page.evaluate(() => {
+    const socketEntry = Object.entries(window.__testSockets).find(([url]) =>
+      url.endsWith("/ws/capture-status"),
+    );
+    const socket = socketEntry?.[1];
+    const underlyings = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX", "MIDCPNIFTY"];
+    socket?.onmessage?.({
+      data: JSON.stringify({
+        type: "CaptureStatus",
+        payload: {
+          per_underlying: underlyings.map((underlying, index) => ({
+            underlying,
+            connected: index !== 3,
+            last_tick_ms: Date.now(),
+            frames_written: 23_000 + index,
+            frames_expected: 23_520,
+            frame_loss_pct: 0.1,
+            session_frames_expected: 10_000,
+            session_loss_pct: 0.02,
+            day_complete_pct: 76.4,
+            file_bytes: 123_456_789,
+            avg_bytes_per_frame: 5_368,
+            projected_eod_bytes: 165_432_100,
+            heartbeat_ok: index !== 3,
+            heartbeat_age_ms: 200,
+            data_fresh: index !== 3,
+            unmatched: 0,
+            applied: 1_000,
+            writer_pending: 0,
+          })),
+          global: { fps: 5 },
+        },
+      }),
+    });
+  });
+  await page.waitForFunction(() =>
+    document.querySelectorAll(
+      '.monitor-health-table [role="img"][aria-label*="connection"]',
+    ).length === 5,
+  );
+  return page;
+}
+
 describe("responsive workstation", () => {
   for (const [width, height] of VIEWPORTS) {
     for (const path of ROUTES) {
@@ -96,6 +161,76 @@ describe("responsive workstation", () => {
       assert.equal(targets.length, 4);
       targets.forEach((target) => assert.ok(target.height >= 44, `${target.label} is ${target.height}px tall`));
       assert.ok(Math.max(...targets.map((target) => target.width)) - Math.min(...targets.map((target) => target.width)) <= 1);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it("mobile notification history stays inside the viewport below navigation", async () => {
+    const page = await openPage("/", 375, 812);
+    try {
+      const trigger = await page.$('button[aria-controls="notification-history"]');
+      assert.ok(trigger, "notification trigger is missing");
+      await trigger.click();
+      await page.waitForSelector('#notification-history[role="dialog"]');
+      const geometry = await page.evaluate(() => {
+        const panel = document.querySelector("#notification-history");
+        const navigation = document.querySelector("nav");
+        const panelRect = panel?.getBoundingClientRect();
+        const navRect = navigation?.getBoundingClientRect();
+        return {
+          triggerCount: document.querySelectorAll(
+            'button[aria-controls="notification-history"]',
+          ).length,
+          left: panelRect?.left,
+          right: panelRect?.right,
+          top: panelRect?.top,
+          navBottom: navRect?.bottom,
+          viewport: document.documentElement.clientWidth,
+        };
+      });
+      assert.equal(geometry.triggerCount, 1);
+      assert.ok(geometry.left >= 0, JSON.stringify(geometry));
+      assert.ok(geometry.right <= geometry.viewport, JSON.stringify(geometry));
+      assert.ok(geometry.top >= geometry.navBottom, JSON.stringify(geometry));
+    } finally {
+      await page.close();
+    }
+  });
+
+  it("monitor REST failures use timestamped notification history instead of inline alerts", async () => {
+    const page = await browser.newPage();
+    try {
+      await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+      await page.evaluateOnNewDocument(() => window.localStorage.clear());
+      await page.goto(`${BASE}/monitor`, {
+        waitUntil: "networkidle2",
+        timeout: 30_000,
+      });
+      await page.waitForFunction(() =>
+        document.querySelector(
+          'button[aria-label^="Notifications,"][aria-label$="unread"]',
+        ),
+      );
+      const hasInlineRestAlert = await page.evaluate(() => {
+        const alerts = document.querySelector('section[aria-label="Operational alerts"]');
+        return alerts?.textContent?.includes("REST refresh failed") ?? false;
+      });
+      assert.equal(hasInlineRestAlert, false);
+
+      await page.click('button[aria-controls="notification-history"]');
+      await page.waitForSelector('#notification-history[role="dialog"]');
+      const history = await page.evaluate(() => {
+        const panel = document.querySelector("#notification-history");
+        return {
+          text: panel?.textContent,
+          timestamps: panel?.querySelectorAll("time").length,
+        };
+      });
+      assert.match(history.text ?? "", /Monitor REST refresh failed/);
+      assert.match(history.text ?? "", /Today/);
+      assert.doesNotMatch(history.text ?? "", /newest first/i);
+      assert.ok((history.timestamps ?? 0) >= 1);
     } finally {
       await page.close();
     }
@@ -185,6 +320,102 @@ describe("responsive workstation", () => {
     }
   });
 
+  for (const width of [1280, 1440, 1920]) {
+    it(`per-underlying health has compact connection dots and no horizontal scroll at ${width}px`, async () => {
+      const page = await openMonitorWithTelemetry(width, 900);
+      try {
+        const geometry = await page.evaluate(() => {
+          const table = document.querySelector(".monitor-health-table");
+          const frame = table?.parentElement;
+          const tableRect = table?.getBoundingClientRect();
+          const frameRect = frame?.getBoundingClientRect();
+          const overflowingCellDetails = table
+            ? [...table.querySelectorAll("th, td")]
+              .filter((cell) => cell.scrollWidth > cell.clientWidth + 1)
+              .map((cell) => ({
+                text: cell.textContent?.trim(),
+                clientWidth: cell.clientWidth,
+                scrollWidth: cell.scrollWidth,
+              }))
+            : [];
+          return {
+            dotCount: table?.querySelectorAll(
+              '[role="img"][aria-label*="connection"]',
+            ).length,
+            overflowingCellDetails,
+            frameClientWidth: frame?.clientWidth,
+            frameScrollWidth: frame?.scrollWidth,
+            frameOverflowX: frame ? getComputedStyle(frame).overflowX : null,
+            tableWidth: tableRect?.width,
+            frameWidth: frameRect?.width,
+          };
+        });
+
+        assert.equal(geometry.dotCount, 5);
+        assert.deepEqual(
+          geometry.overflowingCellDetails,
+          [],
+          JSON.stringify(geometry),
+        );
+        assert.equal(geometry.frameOverflowX, "hidden");
+        assert.ok(
+          geometry.frameScrollWidth <= geometry.frameClientWidth + 1,
+          JSON.stringify(geometry),
+        );
+        assert.ok(
+          geometry.tableWidth <= geometry.frameWidth + 1,
+          JSON.stringify(geometry),
+        );
+      } finally {
+        await page.close();
+      }
+    });
+  }
+
+  for (const width of [768, 1024, 1279]) {
+    it(`per-underlying health keeps complete disclosures without horizontal scroll at ${width}px`, async () => {
+      const page = await openMonitorWithTelemetry(width, 900);
+      try {
+        const toggles = await page.$$(
+          'button[aria-label$="stream details"]',
+        );
+        const visibleToggles = [];
+        for (const toggle of toggles) {
+          if (await toggle.evaluate((element) =>
+            element.getBoundingClientRect().width > 0,
+          )) {
+            visibleToggles.push(toggle);
+          }
+        }
+        assert.equal(visibleToggles.length, 5);
+        await visibleToggles[0].click();
+        await page.waitForSelector("#stream-NIFTY:not([hidden])");
+
+        const state = await page.evaluate(() => {
+          const table = document.querySelector(".monitor-health-table");
+          const tableFrame = table?.parentElement;
+          const detail = document.querySelector("#stream-NIFTY");
+          return {
+            tableFrameDisplay: tableFrame ? getComputedStyle(tableFrame).display : null,
+            detailText: detail?.textContent,
+            documentWidth: document.documentElement.scrollWidth,
+            viewportWidth: document.documentElement.clientWidth,
+          };
+        });
+        assert.equal(state.tableFrameDisplay, "none");
+        assert.match(state.detailText ?? "", /Full-session loss/);
+        assert.match(state.detailText ?? "", /Bytes \/ frame/);
+        assert.match(state.detailText ?? "", /Projected EOD/);
+        assert.ok(
+          state.documentWidth <= state.viewportWidth + 1,
+          JSON.stringify(state),
+        );
+      } finally {
+        await page.close();
+      }
+    });
+  }
+
   it("monitor stacks into one full-width column on a phone", async () => {
     const page = await openPage("/monitor", 390, 844);
     try {
@@ -223,6 +454,32 @@ describe("responsive workstation", () => {
           boxes[i].top > boxes[i - 1].top,
           `${boxes[i].title} does not stack below ${boxes[i - 1].title}`,
         );
+      }
+    } finally {
+      await page.close();
+    }
+  });
+
+  it("monitor header stays below the mobile navigation while scrolling", async () => {
+    const page = await openPage("/monitor", 375, 667);
+    try {
+      await page.evaluate(() => window.scrollTo(0, 20));
+      const overlap = await page.evaluate(() => {
+        const navigation = document.querySelector("nav");
+        const header = document.querySelector(".monitor-header");
+        if (!navigation || !header) return null;
+        const navigationRect = navigation.getBoundingClientRect();
+        const headerRect = header.getBoundingClientRect();
+        const x = Math.max(headerRect.left + 8, 8);
+        const y = Math.min(navigationRect.bottom - 4, headerRect.bottom - 4);
+        return {
+          intersects: headerRect.top < navigationRect.bottom,
+          topElement: document.elementFromPoint(x, y)?.closest("nav") ? "navigation" : "other",
+        };
+      });
+      assert.ok(overlap, "navigation/header geometry unavailable");
+      if (overlap.intersects) {
+        assert.equal(overlap.topElement, "navigation", "monitor header painted above navigation");
       }
     } finally {
       await page.close();
@@ -317,19 +574,35 @@ describe("responsive workstation", () => {
   });
 
   it("paired monitor alerts keep equal visible card heights", async () => {
-    const page = await openPage("/monitor", 1440, 900);
+    const page = await openMonitorWithTelemetry(1440, 900);
     try {
+      await page.evaluate(() => {
+        const socketEntry = Object.entries(window.__testSockets).find(([url]) =>
+          url.endsWith("/ws/capture-status"),
+        );
+        socketEntry?.[1]?.onmessage?.({
+          data: JSON.stringify({
+            type: "CaptureStatus",
+            payload: {
+              per_underlying: [],
+              global: {
+                fps: 0,
+                exhausted: true,
+                stale: true,
+                data_age_ms: 8_000,
+              },
+            },
+          }),
+        });
+      });
+      await page.waitForFunction(() =>
+        document.querySelectorAll(
+          '[aria-label="Operational alerts"] .state-message',
+        ).length === 2,
+      );
       const heights = await page.evaluate(() => {
         const alerts = document.querySelector('[aria-label="Operational alerts"]');
-        const firstWrapper = alerts?.firstElementChild;
-        if (!alerts || !(firstWrapper instanceof HTMLElement)) return null;
-        firstWrapper.classList.remove("lg:col-span-2");
-        const secondWrapper = firstWrapper.cloneNode(true);
-        if (!(secondWrapper instanceof HTMLElement)) return null;
-        secondWrapper.querySelector(".state-message > div")?.append(
-          " Additional retained-state context makes this alert deliberately longer.",
-        );
-        alerts.append(secondWrapper);
+        if (!alerts) return null;
         return [...alerts.querySelectorAll(".state-message")].map((message) =>
           Math.round(message.getBoundingClientRect().height),
         );

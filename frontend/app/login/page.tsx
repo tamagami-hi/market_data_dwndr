@@ -68,6 +68,21 @@ export default function DownloaderPage() {
 
       <div className="mx-auto w-full max-w-5xl space-y-3">
         <Panel title="Automation progress" subtitle={`${initialization.progress}% complete`}>
+          <div className="px-3 pt-3">
+            <div
+              role="progressbar"
+              aria-label="Automation progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={initialization.progress}
+              className="h-1.5 overflow-hidden rounded-full bg-surface-3"
+            >
+              <div
+                className="h-full bg-accent"
+                style={{ width: `${initialization.progress}%` }}
+              />
+            </div>
+          </div>
           <div className="grid gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_16rem]">
             <ol className="space-y-2">
               {initialization.stages.map((stage, index) => (

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import SessionBadge from "@/components/SessionBadge";
+import { NotificationCenter } from "@/components/operator-events/NotificationCenter";
 import { APP_NAME } from "@/lib/branding";
 
 const LINKS = [
@@ -33,28 +34,28 @@ export default function NavBar() {
           </span>
           {APP_NAME}
         </Link>
-        <span className="shrink-0 sm:hidden">
-          <SessionBadge />
-        </span>
-        <div className="ml-auto hidden h-full items-center gap-1 sm:flex">
-          {LINKS.map((link) => {
-            const active = pathname === link.href;
-            return (
-              <Link
-                key={link.href}
-                href={link.href}
-                aria-current={active ? "page" : undefined}
-                className={`control inline-flex min-h-10 items-center whitespace-nowrap px-3 text-sm ${
-                  active
-                    ? "border-border bg-surface-2 text-accent"
-                    : "text-secondary hover:bg-surface-1 hover:text-primary"
-                }`}
-              >
-                {link.label}
-              </Link>
-            );
-          })}
-          <span className="ml-3">
+        <div className="ml-auto flex h-full min-w-0 items-center gap-1">
+          <div className="hidden h-full items-center gap-1 sm:flex">
+            {LINKS.map((link) => {
+              const active = pathname === link.href;
+              return (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  aria-current={active ? "page" : undefined}
+                  className={`control inline-flex min-h-10 items-center whitespace-nowrap px-3 text-sm ${
+                    active
+                      ? "border-border bg-surface-2 text-accent"
+                      : "text-secondary hover:bg-surface-1 hover:text-primary"
+                  }`}
+                >
+                  {link.label}
+                </Link>
+              );
+            })}
+          </div>
+          <NotificationCenter />
+          <span className="ml-1 shrink-0 sm:ml-2">
             <SessionBadge />
           </span>
         </div>

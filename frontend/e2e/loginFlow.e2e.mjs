@@ -68,8 +68,8 @@ test("expands a stock row to show all five market-depth levels", async () => {
 
   await waitForText(page, "Spot L1-L5");
   await waitForText(page, "Current future L1-L5");
-  await waitForText(page, "2,459.70");
-  await waitForText(page, "2,460.30");
+  await waitForText(page, "2,459.7");
+  await waitForText(page, "2,460.3");
   const depthLevelCounts = await page.$$eval(
     '[aria-label="RELIANCE L5 market depth"] section',
     (sections) => sections
@@ -84,8 +84,11 @@ test("expands a stock row to show all five market-depth levels", async () => {
 async function installMockWebSocket(page) {
   await page.evaluateOnNewDocument(() => {
     class MockWebSocket {
-      constructor() {
-        window.__stockSocket = this;
+      constructor(url) {
+        this.url = String(url);
+        if (this.url.endsWith("/ws/stocks")) {
+          window.__stockSocket = this;
+        }
         setTimeout(() => this.onopen?.({}), 0);
       }
 

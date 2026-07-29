@@ -16,9 +16,9 @@ export function Panel({
   return (
     <section className={`panel ${className}`}>
       <div className="panel-heading">
-        <div className="min-w-0">
-          <h2 className="text-xs font-semibold text-primary">{title}</h2>
-          {subtitle && <p className="mt-0.5 text-xs text-muted">{subtitle}</p>}
+        <div className="panel-title-line">
+          <h2 className="shrink-0 text-xs font-semibold text-primary">{title}</h2>
+          {subtitle && <span className="truncate text-xs text-muted">{subtitle}</span>}
         </div>
         {action}
       </div>

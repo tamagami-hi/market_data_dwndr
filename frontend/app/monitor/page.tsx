@@ -6,22 +6,26 @@ import { FrameIntegrity } from "@/components/monitor/FrameIntegrity";
 import { MonitorAlerts } from "@/components/monitor/MonitorAlerts";
 import { MonitorHeader } from "@/components/monitor/MonitorHeader";
 import { MonitorKpis } from "@/components/monitor/MonitorKpis";
+import { MonitorRestNotifications } from "@/components/monitor/MonitorRestNotifications";
 import { SessionHistory } from "@/components/monitor/SessionHistory";
 import { SessionLogs } from "@/components/monitor/SessionLogs";
 import { StorageHistory } from "@/components/monitor/StorageHistory";
 import { UnderlyingHealth } from "@/components/monitor/UnderlyingHealth";
+import { useOperatorEvents } from "@/components/operator-events/OperatorEventsProvider";
 import { PageFrame } from "@/components/ui/PageFrame";
 import { useMonitorTelemetry } from "@/hooks/useMonitorTelemetry";
 
 export default function MonitorPage() {
   const telemetry = useMonitorTelemetry();
+  const { logs } = useOperatorEvents();
 
   return (
-    // On a tall viewport the dashboard fills the screen and the three rows share the
-    // spare height evenly (see auto-rows-fr below) — that is what gave v0.1.26 its
-    // uniform rows. A min-height, not a fixed height with overflow-hidden, so content
-    // can still grow past it and the page simply scrolls.
-    <PageFrame className="[@media(min-height:900px)]:min-h-[calc(100dvh-7rem)]">
+    <PageFrame>
+      <MonitorRestNotifications
+        error={telemetry.freshness.restError}
+        hasCompletedRefresh={telemetry.freshness.lastSuccessAt !== null}
+      />
+
       <MonitorHeader
         globals={telemetry.live.globals}
         tradingDate={telemetry.context.tradingDate}
@@ -63,7 +67,7 @@ export default function MonitorPage() {
           denser stat surfaces. Session logs sits BELOW the grid as a full-width strip,
           as it did in v0.1.26 — it is a ticker, not a data surface, so pairing it into a
           row forced every other row taller to match. */}
-      <div className="grid grid-cols-1 gap-3 [@media(min-height:900px)]:flex-1 lg:grid-cols-[1fr_1.25fr] [@media(min-height:900px)]:lg:auto-rows-fr">
+      <div className="monitor-panel-grid grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
         <DataLossDiagnostics globals={telemetry.live.globals} />
         <UnderlyingHealth rows={telemetry.live.rows} />
 
@@ -81,7 +85,7 @@ export default function MonitorPage() {
         />
       </div>
 
-      <SessionLogs logs={telemetry.live.logs} />
+      <SessionLogs logs={logs} />
     </PageFrame>
   );
 }

@@ -17,7 +17,7 @@ import {
   normalizeDashboardStats,
 } from "@/lib/monitor/viewModel";
 import { useTopicEnvelopes } from "@/lib/useTopic";
-import { captureStatusConnection, sessionConnection } from "@/lib/wsTopicConnection";
+import { captureStatusConnection } from "@/lib/wsTopicConnection";
 import {
   MSG,
   type CompressionProgressPayload,
@@ -26,14 +26,6 @@ import {
   type WsEnvelope,
 } from "@/lib/wsTypes";
 
-export interface MonitorLogLine {
-  id: number;
-  ts: number;
-  text: string;
-  kind: "log" | "session" | "alert";
-}
-
-const MAX_LOGS = 300;
 const MAX_FPS_SAMPLES = 60;
 const ACTIVE_POLL_MS = 10_000;
 const IDLE_POLL_MS = 60_000;
@@ -53,7 +45,6 @@ export function useMonitorTelemetry() {
   const [rows, setRows] = useState<PerUnderlyingStatus[]>([]);
   const [globals, setGlobals] = useState<GlobalStatus | null>(null);
   const [compression, setCompression] = useState<CompressionProgressPayload | null>(null);
-  const [logs, setLogs] = useState<MonitorLogLine[]>([]);
   const [fpsHistory, setFpsHistory] = useState<number[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [captureHistory, setCaptureHistory] = useState<CaptureHistory | null>(null);
@@ -62,16 +53,9 @@ export function useMonitorTelemetry() {
   const [lastSuccessAt, setLastSuccessAt] = useState<number | null>(null);
   const [clockNow, setClockNow] = useState(0);
   const [hasLiveCaptureTelemetry, setHasLiveCaptureTelemetry] = useState(false);
-  const logIdRef = useRef(0);
   const pollMsRef = useRef(ACTIVE_POLL_MS);
-  const healthRef = useRef({ degraded: false, stale: false, reconnects: 0 });
   const captureRunningRef = useRef<boolean | null>(null);
   const compressionWsAtRef = useRef<number | null>(null);
-
-  const pushLog = useCallback((text: string, kind: MonitorLogLine["kind"]) => {
-    const line = { id: ++logIdRef.current, ts: Date.now(), text, kind };
-    setLogs((current) => [line, ...current].slice(0, MAX_LOGS));
-  }, []);
 
   const onCaptureStatus = useCallback((envelope: WsEnvelope) => {
     if (envelope.type === MSG.COMPRESSION_PROGRESS) {
@@ -96,45 +80,9 @@ export function useMonitorTelemetry() {
     setGlobals(payload.global);
     setFpsHistory((current) => [...current, payload.global.fps].slice(-MAX_FPS_SAMPLES));
 
-    const previous = healthRef.current;
-    const next = payload.global;
-    if (next.stale && !previous.stale) {
-      const seconds = next.data_age_ms === null ? "unknown" : (next.data_age_ms / 1000).toFixed(1);
-      pushLog(`Live feed stale. Data unchanged for ${seconds}s.`, "alert");
-    } else if (!next.degraded && previous.degraded) {
-      pushLog("Live feed recovered. Fresh ticks resumed.", "session");
-    }
-    if (next.reconnects > previous.reconnects) {
-      const tokenNote = next.reconnect_tier === 2 ? " with a fresh token" : "";
-      pushLog(`Ticker reconnect ${next.reconnects}${tokenNote}.`, "alert");
-    }
-    healthRef.current = {
-      degraded: next.degraded,
-      stale: next.stale,
-      reconnects: next.reconnects,
-    };
-  }, [pushLog]);
-
-  const onSession = useCallback((envelope: WsEnvelope) => {
-    const payload = envelope.payload;
-    if (envelope.type === MSG.LOG) {
-      const message =
-        payload && typeof payload === "object" && "message" in payload && typeof payload.message === "string"
-          ? payload.message
-          : "";
-      if (message) pushLog(message, "log");
-    }
-    if (envelope.type === MSG.SESSION_STATUS) {
-      const phase =
-        payload && typeof payload === "object" && "phase" in payload && typeof payload.phase === "string"
-          ? payload.phase
-          : "unknown";
-      pushLog(`Session: ${phase}`, "session");
-    }
-  }, [pushLog]);
+  }, []);
 
   useTopicEnvelopes(captureStatusConnection, onCaptureStatus);
-  useTopicEnvelopes(sessionConnection, onSession);
 
   useEffect(() => {
     const controller = createPollController({
@@ -242,7 +190,7 @@ export function useMonitorTelemetry() {
   );
 
   return {
-    live: { rows, globals, compression, logs, fpsHistory },
+    live: { rows, globals, compression, fpsHistory },
     history: {
       sessions: stats?.session_history ?? [],
       capture: captureHistory,

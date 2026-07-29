@@ -4,8 +4,8 @@ import { useCallback, useMemo, useState } from "react";
 
 import ConnectionDot from "@/components/ConnectionDot";
 import OptionChainTable, { type OptionChainData } from "@/components/OptionChainTable";
+import { MarketPageHeader } from "@/components/ui/MarketPageHeader";
 import { PageFrame } from "@/components/ui/PageFrame";
-import { PageHeader } from "@/components/ui/PageHeader";
 import { StateMessage } from "@/components/ui/StateMessage";
 import { formatIndianNumber } from "@/lib/numberFormat";
 import {
@@ -31,7 +31,7 @@ interface UnderlyingState {
   rows?: OptionRowModel[];
 }
 
-const PREFERRED_ORDER = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"];
+const PREFERRED_ORDER = ["NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY"];
 
 function gridToData(p: OptionGridPayload): OptionChainData {
   return {
@@ -97,45 +97,50 @@ export default function OptionChainPage() {
 
   const symbols = useMemo(() => {
     const present = Object.keys(bySymbol);
-    return present.sort((a, b) => {
-      const ia = PREFERRED_ORDER.indexOf(a);
-      const ib = PREFERRED_ORDER.indexOf(b);
-      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
-    });
+    const custom = present
+      .filter((symbol) => !PREFERRED_ORDER.includes(symbol))
+      .sort((left, right) => left.localeCompare(right));
+    return [...PREFERRED_ORDER, ...custom];
   }, [bySymbol]);
 
   const current = selected ? bySymbol[selected] : undefined;
 
   return (
     <PageFrame>
-      <PageHeader
+      <MarketPageHeader
         title="Option Chain"
         description="Complete live calls, strikes, puts, price, flow, and reconstructed Greeks."
-        actions={<ConnectionDot connection={marketDataConnection} label="market data" />}
-      />
-      <div className="panel page-toolbar">
-        <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
+        ariaLabel="Option Chain controls"
+      >
+        <div className="market-index-tabs" aria-label="Option indices">
           {symbols.map((sym) => (
             <button
               key={sym}
               onClick={() => setSelected(sym)}
               aria-pressed={selected === sym}
+              disabled={!bySymbol[sym]}
               className={`control min-h-11 shrink-0 whitespace-nowrap px-3 text-sm ${
                 selected === sym
                   ? "border-border bg-surface-3 text-accent"
+                  : !bySymbol[sym]
+                    ? "cursor-default text-muted"
                   : "text-secondary hover:bg-surface-2 hover:text-primary"
               }`}
             >
               {sym}
             </button>
           ))}
-          {symbols.length === 0 && (
-            <span className="flex min-h-11 items-center px-2 text-xs text-muted">
-              Awaiting underlyings
-            </span>
-          )}
         </div>
-      </div>
+        <div className="market-connection">
+          <ConnectionDot
+            connection={marketDataConnection}
+            label="market data"
+            telemetryProfile="option"
+            telemetryTitle="Option telemetry"
+            popoverClassName="option-telemetry-popover"
+          />
+        </div>
+      </MarketPageHeader>
 
       {current?.header && <HeaderRibbon header={current.header} data={current.data} />}
 
@@ -158,9 +163,12 @@ function HeaderRibbon({
   data?: OptionChainData;
 }) {
   return (
-    // A 7-item flex row with gap-6 overflowed on phones; a grid wraps cleanly and
-    // becomes the original single row from `md` up.
-    <div className="panel grid grid-cols-2 gap-x-4 gap-y-2 px-3 py-2.5 text-sm md:grid-cols-7 md:px-4">
+    <dl
+      className="market-stat-strip"
+      role="region"
+      aria-label="Selected option-chain market summary"
+      tabIndex={0}
+    >
       <Stat label="Expiry" value={header.expiry} />
       <Stat label="Spot" value={formatIndianNumber(header.spot, 2)} />
       <Stat label="ATM" value={formatIndianNumber(header.atm, 0)} />
@@ -170,25 +178,22 @@ function HeaderRibbon({
       <Stat
         label="Seq"
         value={formatIndianNumber(header.sequence, 0)}
-        className="col-span-2 text-center md:col-span-1 md:text-left"
       />
-    </div>
+    </dl>
   );
 }
 
 function Stat({
   label,
   value,
-  className = "",
 }: {
   label: string;
   value: string;
-  className?: string;
 }) {
   return (
-    <div className={`flex min-w-0 flex-col ${className}`}>
-      <span className="label text-muted">{label}</span>
-      <span className="font-mono font-semibold text-primary">{value}</span>
+    <div className="market-stat">
+      <dt className="label text-muted">{label}</dt>
+      <dd className="font-mono font-semibold text-primary">{value}</dd>
     </div>
   );
 }

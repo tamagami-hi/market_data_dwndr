@@ -82,9 +82,9 @@ test("polls immediately and records a successful refresh", async () => {
   expect(mocks.getStats.mock.calls[0][0].aborted).toBe(false);
 });
 
-test("accepts live capture events, bounded logs, and malformed-data recovery", async () => {
+test("accepts live capture events and recovers from malformed data", async () => {
   const { result } = renderHook(() => useMonitorTelemetry());
-  await waitFor(() => expect(mocks.envelopeHandlers).toHaveLength(2));
+  await waitFor(() => expect(mocks.envelopeHandlers).toHaveLength(1));
   const capture = mocks.envelopeHandlers[0];
 
   act(() => capture({
@@ -95,7 +95,6 @@ test("accepts live capture events, bounded logs, and malformed-data recovery", a
     },
   }));
   expect(result.current.live.globals?.stale).toBe(true);
-  expect(result.current.live.logs[0].kind).toBe("alert");
 
   act(() => capture({ type: "CaptureStatus", payload: { per_underlying: "invalid" } }));
   expect(result.current.freshness.payloadError).toMatch(/invalid shape/);
@@ -124,10 +123,10 @@ test("rejects malformed history and replaces REST compression snapshots", async 
   unmount();
 });
 
-test("handles feed recovery, reconnect context, and session log variants", async () => {
+test("handles compression errors and successive capture states", async () => {
   const { result, unmount } = renderHook(() => useMonitorTelemetry());
-  await waitFor(() => expect(mocks.envelopeHandlers).toHaveLength(2));
-  const [capture, session] = mocks.envelopeHandlers;
+  await waitFor(() => expect(mocks.envelopeHandlers).toHaveLength(1));
+  const [capture] = mocks.envelopeHandlers;
 
   act(() => capture({ type: "CompressionProgress", payload: "invalid" }));
   expect(result.current.freshness.payloadError).toMatch(/compression update/);
@@ -140,15 +139,9 @@ test("handles feed recovery, reconnect context, and session log variants", async
     type: "CaptureStatus",
     payload: capturePayload({ stale: false, degraded: false, reconnects: 2, reconnect_tier: 2 }),
   }));
-  act(() => session({ type: "Log", payload: { message: "writer online" } }));
-  act(() => session({ type: "Log", payload: { message: 42 } }));
-  act(() => session({ type: "SessionStatus", payload: { phase: "capture" } }));
-  act(() => session({ type: "SessionStatus", payload: null }));
-
-  expect(result.current.live.logs.some((line) => line.text.includes("recovered"))).toBe(true);
-  expect(result.current.live.logs.some((line) => line.text.includes("fresh token"))).toBe(true);
-  expect(result.current.live.logs.some((line) => line.text === "writer online")).toBe(true);
-  expect(result.current.live.logs.some((line) => line.text === "Session: unknown")).toBe(true);
+  expect(result.current.live.globals?.stale).toBe(false);
+  expect(result.current.live.globals?.reconnects).toBe(2);
+  expect(result.current.live.fpsHistory).toHaveLength(2);
   unmount();
 });
 

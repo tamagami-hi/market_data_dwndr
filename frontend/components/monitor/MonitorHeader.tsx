@@ -1,10 +1,8 @@
-import ConnectionDot from "@/components/ConnectionDot";
-import { PageHeader } from "@/components/ui/PageHeader";
+import { MonitorConnections } from "@/components/monitor/MonitorConnections";
 import { StatusIndicator } from "@/components/ui/StatusIndicator";
 import type { RefreshWindow } from "@/lib/api";
 import { formatClockTime, formatUptime } from "@/lib/numberFormat";
 import { captureSeverity } from "@/lib/monitor/severity";
-import { captureStatusConnection, sessionConnection } from "@/lib/wsTopicConnection";
 import type { GlobalStatus } from "@/lib/wsTypes";
 
 export function MonitorHeader({
@@ -46,29 +44,29 @@ export function MonitorHeader({
             : "Idle";
 
   return (
-    <PageHeader
-      title="Capture Monitor"
-      description={
+    <header className="monitor-header">
+      <h1 className="shrink-0 whitespace-nowrap text-lg font-semibold tracking-tight text-primary sm:text-xl">
+        Capture Monitor
+      </h1>
+      <p className="sr-only">
+        {
         isPastSession && shownDate
           ? `Showing the retained ${shownDate} session.`
           : "Live capture health, data-loss accounting, storage, and session diagnostics."
-      }
-      actions={
-        <>
-          <div className="text-right text-xs text-muted">
-            <div>
-              {tradingDate ?? "No trading date"} / uptime {formatUptime(globals?.uptime_ms)}
-            </div>
-            <div>
-              {lastSuccessAt ? `refreshed ${formatClockTime(lastSuccessAt)}` : "refresh pending"}
-              {refreshWindow?.local_time ? ` / server ${refreshWindow.local_time}` : ""}
-            </div>
-          </div>
+        }
+      </p>
+      <div className="monitor-context-scroll">
+        <div className="monitor-context-line" aria-label="Monitor session context">
+          <span>{tradingDate ?? "No trading date"} / uptime {formatUptime(globals?.uptime_ms)}</span>
+          <span aria-hidden="true">/</span>
+          <span>
+            {lastSuccessAt ? `refreshed ${formatClockTime(lastSuccessAt)}` : "refresh pending"}
+            {refreshWindow?.local_time ? ` / server ${refreshWindow.local_time}` : ""}
+          </span>
           <StatusIndicator label={stateLabel} severity={severity} />
-          <ConnectionDot connection={captureStatusConnection} label="capture" />
-          <ConnectionDot connection={sessionConnection} label="session" showLatency={false} />
-        </>
-      }
-    />
+          <MonitorConnections />
+        </div>
+      </div>
+    </header>
   );
 }

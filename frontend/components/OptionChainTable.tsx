@@ -16,27 +16,82 @@ import type { GridBlock } from "@/lib/wsTypes";
 
 export type OptionChainData = OptionGrid;
 
-type Column = { key: keyof GridBlock; label: string };
+type Column = { key: keyof GridBlock; label: string; shortLabel: string; weight: number };
 
 const CALL_COLUMNS: Column[] = [
-  { key: "oi", label: "OI" },
-  { key: "change_in_oi", label: "Chg OI" },
-  { key: "volume", label: "Vol" },
-  { key: "iv", label: "IV" },
-  { key: "delta", label: "Delta" },
-  { key: "gamma", label: "Gamma" },
-  { key: "theta", label: "Theta/day" },
-  { key: "vega", label: "Vega/1%" },
-  { key: "rho", label: "Rho/1%" },
-  { key: "bid", label: "Bid" },
-  { key: "ask", label: "Ask" },
-  { key: "ltp", label: "LTP" },
-  { key: "change", label: "Chg" },
+  { key: "oi", label: "OI", shortLabel: "OI", weight: 38 },
+  { key: "change_in_oi", label: "Chg OI", shortLabel: "ΔOI", weight: 40 },
+  { key: "volume", label: "Vol", shortLabel: "Vol", weight: 38 },
+  { key: "iv", label: "IV", shortLabel: "IV", weight: 42 },
+  { key: "delta", label: "Delta", shortLabel: "Δ", weight: 51 },
+  { key: "gamma", label: "Gamma", shortLabel: "Γ", weight: 68 },
+  { key: "theta", label: "Theta/day", shortLabel: "Θ/d", weight: 55 },
+  { key: "vega", label: "Vega/1%", shortLabel: "V/1%", weight: 51 },
+  { key: "rho", label: "Rho/1%", shortLabel: "ρ/1%", weight: 51 },
+  { key: "bid", label: "Bid", shortLabel: "Bid", weight: 52 },
+  { key: "ask", label: "Ask", shortLabel: "Ask", weight: 52 },
+  { key: "ltp", label: "LTP", shortLabel: "LTP", weight: 52 },
+  { key: "change", label: "Chg", shortLabel: "Chg", weight: 52 },
 ];
 const PUT_COLUMNS = [...CALL_COLUMNS].reverse();
 const WHOLE = new Set<keyof GridBlock>(["oi", "change_in_oi", "volume"]);
-const DESKTOP_QUERY = "(min-width: 1024px)";
+const DESKTOP_QUERY = "(min-width: 1280px)";
+const STRIKE_COLUMN_WEIGHT = 92;
 const TABLE_COLUMN_COUNT = CALL_COLUMNS.length + PUT_COLUMNS.length + 1;
+const TABLE_WEIGHT = CALL_COLUMNS.reduce((sum, column) => sum + column.weight, 0) * 2
+  + STRIKE_COLUMN_WEIGHT;
+
+function columnWidth(weight: number): string {
+  return `${(weight / TABLE_WEIGHT) * 100}%`;
+}
+
+interface MarkerFlags {
+  isSpotAtm: boolean;
+  isAtm: boolean;
+  isMaxPain: boolean;
+}
+
+export type OptionMarkerVariant =
+  | "spot"
+  | "atm"
+  | "pain"
+  | "spot-atm"
+  | "spot-pain"
+  | "atm-pain"
+  | "spot-atm-pain";
+
+export function optionMarkerCode(flags: MarkerFlags): string | null {
+  const count = Number(flags.isSpotAtm) + Number(flags.isAtm) + Number(flags.isMaxPain);
+  if (count === 0) return null;
+  if (count === 3) return "S-A-M";
+  if (count === 2) {
+    if (!flags.isMaxPain) return "SA";
+    if (!flags.isAtm) return "SM";
+    return "AM";
+  }
+  if (flags.isSpotAtm) return "SP";
+  if (flags.isAtm) return "ATM";
+  return "MP";
+}
+
+export function optionMarkerVariant(flags: MarkerFlags): OptionMarkerVariant | null {
+  if (flags.isSpotAtm && flags.isAtm && flags.isMaxPain) return "spot-atm-pain";
+  if (flags.isSpotAtm && flags.isAtm) return "spot-atm";
+  if (flags.isSpotAtm && flags.isMaxPain) return "spot-pain";
+  if (flags.isAtm && flags.isMaxPain) return "atm-pain";
+  if (flags.isSpotAtm) return "spot";
+  if (flags.isAtm) return "atm";
+  if (flags.isMaxPain) return "pain";
+  return null;
+}
+
+function markerDescription(flags: MarkerFlags): string {
+  return [
+    flags.isSpotAtm ? "spot" : null,
+    flags.isAtm ? "ATM" : null,
+    flags.isMaxPain ? "max pain" : null,
+  ].filter(Boolean).join(", ");
+}
 
 function subscribeToDesktopLayout(onChange: () => void): () => void {
   const query = window.matchMedia(DESKTOP_QUERY);
@@ -64,12 +119,32 @@ function valueClass(key: keyof GridBlock, value: number): string {
   return value > 0 ? "text-success" : value < 0 ? "text-danger" : "text-muted";
 }
 
+function compactDesktopValue(key: keyof GridBlock, value: number): string {
+  if (value === 0 || Number.isNaN(value)) return "-";
+  if (WHOLE.has(key)) {
+    return Math.abs(value) >= 100_000 ? fmtCell(value, 0) : Math.round(value).toString();
+  }
+  const requestedDecimals = decimals(key);
+  const integerDigits = Math.abs(Math.trunc(value)).toString().length;
+  const effectiveDecimals = integerDigits >= 4 && requestedDecimals > 0 ? 1 : requestedDecimals;
+  return value.toFixed(effectiveDecimals);
+}
+
+function exactValue(key: keyof GridBlock, value: number): string {
+  return formatIndianNumber(value, decimals(key));
+}
+
 function Markers({ row }: { row: OptionRowModel }) {
+  const code = optionMarkerCode(row);
+  const variant = optionMarkerVariant(row);
+  if (!code || !variant) return null;
   return (
-    <span className="inline-flex flex-wrap justify-center gap-1">
-      {row.isSpotAtm && <span className="rounded border border-accent/50 px-1 text-[10px] text-accent">SPOT</span>}
-      {row.isAtm && <span className="rounded border border-border-strong px-1 text-[10px] text-primary">ATM</span>}
-      {row.isMaxPain && <span className="rounded border border-border-strong px-1 text-[10px] text-secondary">PAIN</span>}
+    <span
+      className="option-marker"
+      data-marker-variant={variant}
+      aria-label={`${markerDescription(row)} marker`}
+    >
+      {code}
     </span>
   );
 }
@@ -90,7 +165,7 @@ function DetailGroup({
         <span className="text-muted">Field</span><span className="text-accent">Call</span><span className="text-secondary">Put</span>
         {keys.map((key) => (
           <React.Fragment key={key}>
-            <span className="text-muted">{CALL_COLUMNS.find((column) => column.key === key)?.label ?? key}</span>
+      <span className="text-muted">{CALL_COLUMNS.find((column) => column.key === key)?.label ?? key}</span>
             <span className={`text-right font-mono ${valueClass(key, row.call[key])}`}>{fmtCell(row.call[key], decimals(key))}</span>
             <span className={`text-right font-mono ${valueClass(key, row.put[key])}`}>{fmtCell(row.put[key], decimals(key))}</span>
           </React.Fragment>
@@ -138,8 +213,12 @@ const DesktopOptionRow = React.memo(function DesktopOptionRow({ row, index }: { 
   return (
     <tr className={rowTone}>
       {CALL_COLUMNS.map((column) => (
-        <td key={`call-${column.key}`} className={`whitespace-nowrap text-right font-mono ${row.isCallInTheMoney ? "bg-accent/[0.04]" : ""} ${valueClass(column.key, row.call[column.key])}`}>
-          {fmtCell(row.call[column.key], decimals(column.key))}
+        <td
+          key={`call-${column.key}`}
+          aria-label={exactValue(column.key, row.call[column.key])}
+          className={`whitespace-nowrap text-right font-mono ${row.isCallInTheMoney ? "bg-accent/[0.04]" : ""} ${valueClass(column.key, row.call[column.key])}`}
+        >
+          {compactDesktopValue(column.key, row.call[column.key])}
         </td>
       ))}
       <td className="sticky left-0 z-20 whitespace-nowrap border-x border-border-strong bg-surface-3 text-center font-mono font-semibold text-primary">
@@ -149,8 +228,12 @@ const DesktopOptionRow = React.memo(function DesktopOptionRow({ row, index }: { 
         </div>
       </td>
       {PUT_COLUMNS.map((column) => (
-        <td key={`put-${column.key}`} className={`whitespace-nowrap text-right font-mono ${row.isPutInTheMoney ? "bg-white/[0.025]" : ""} ${valueClass(column.key, row.put[column.key])}`}>
-          {fmtCell(row.put[column.key], decimals(column.key))}
+        <td
+          key={`put-${column.key}`}
+          aria-label={exactValue(column.key, row.put[column.key])}
+          className={`whitespace-nowrap text-right font-mono ${row.isPutInTheMoney ? "bg-white/[0.025]" : ""} ${valueClass(column.key, row.put[column.key])}`}
+        >
+          {compactDesktopValue(column.key, row.put[column.key])}
         </td>
       ))}
     </tr>
@@ -164,7 +247,7 @@ function DesktopOptionTable({ rows }: { rows: OptionRowModel[] }) {
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 30,
+    estimateSize: () => 25,
     overscan: 10,
   });
   const virtualRows = rowVirtualizer.getVirtualItems();
@@ -174,8 +257,24 @@ function DesktopOptionTable({ rows }: { rows: OptionRowModel[] }) {
     : 0;
 
   return (
-    <div ref={scrollRef} className="max-h-[calc(100dvh-15rem)] overflow-auto rounded-[10px] border border-border">
-      <table className="data-table min-w-max">
+    <div
+      ref={scrollRef}
+      data-option-table-frame
+      className="mx-auto max-h-[calc(100dvh-13rem)] w-full max-w-[1600px] overflow-x-hidden overflow-y-auto rounded-[10px] border border-border"
+    >
+      <table
+        className="data-table option-chain-table table-fixed"
+        style={{ width: "100%" }}
+      >
+        <colgroup>
+          {CALL_COLUMNS.map((column) => (
+            <col key={`call-col-${column.key}`} style={{ width: columnWidth(column.weight) }} />
+          ))}
+          <col style={{ width: columnWidth(STRIKE_COLUMN_WEIGHT) }} />
+          {PUT_COLUMNS.map((column) => (
+            <col key={`put-col-${column.key}`} style={{ width: columnWidth(column.weight) }} />
+          ))}
+        </colgroup>
         <thead className="sticky top-0 z-30">
           <tr>
             <th colSpan={CALL_COLUMNS.length} className="border-r border-border-strong text-center text-accent">CALLS</th>
@@ -186,8 +285,16 @@ function DesktopOptionTable({ rows }: { rows: OptionRowModel[] }) {
             <th colSpan={PUT_COLUMNS.length} className="border-l border-border-strong text-center text-secondary">PUTS</th>
           </tr>
           <tr>
-            {CALL_COLUMNS.map((column) => <th key={`call-h-${column.key}`} className="text-right">{column.label}</th>)}
-            {PUT_COLUMNS.map((column) => <th key={`put-h-${column.key}`} className="text-right">{column.label}</th>)}
+            {CALL_COLUMNS.map((column) => (
+              <th key={`call-h-${column.key}`} aria-label={column.label} className="text-right">
+                {column.shortLabel}
+              </th>
+            ))}
+            {PUT_COLUMNS.map((column) => (
+              <th key={`put-h-${column.key}`} aria-label={column.label} className="text-right">
+                {column.shortLabel}
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
