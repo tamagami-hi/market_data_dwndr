@@ -410,6 +410,53 @@ test("balances single monitor alerts and paired monitor panels", () => {
   monitor.unmount();
 });
 
+test("uses the requested 45:50 desktop monitor grid with the existing narrow gutter", () => {
+  const view = render(<MonitorPage />);
+  const grid = view.container.querySelector(".monitor-panel-grid");
+
+  expect(grid).toHaveClass("gap-3");
+  expect(grid).toHaveClass(
+    "lg:grid-cols-[minmax(0,45fr)_minmax(0,50fr)]",
+  );
+});
+
+test("keeps every download-history field in a vertically compact desktop surface", () => {
+  render(<MonitorPage />);
+  const panel = screen
+    .getByRole("heading", { name: "Download history" })
+    .closest(".panel") as HTMLElement;
+
+  ["Sessions", "Files", "Stored", "Archived"].forEach((label) => {
+    expect(within(panel).getAllByText(label).length).toBeGreaterThan(0);
+  });
+  ["Session", "State", "Stored", "Raw / archive", "Files", "Captured sets"].forEach(
+    (label) => {
+      expect(within(panel).getByRole("columnheader", { name: label })).toBeInTheDocument();
+    },
+  );
+  expect(within(panel).getByText("Sessions").parentElement).toHaveClass("py-1");
+  expect(within(panel).getByRole("table")).toHaveClass("monitor-storage-table");
+  expect(panel).toHaveClass("panel-compact");
+});
+
+test("keeps every compression field while using compact metrics", () => {
+  render(<MonitorPage />);
+  const panel = screen
+    .getByRole("heading", { name: "Compression" })
+    .closest(".panel") as HTMLElement;
+
+  ["Ratio", "Throughput", "Elapsed", "Average / file", "Threads", "Sweeps"].forEach(
+    (label) => {
+      expect(within(panel).getByText(label)).toBeInTheDocument();
+    },
+  );
+  expect(within(panel).getByText("1 / 2 files")).toBeInTheDocument();
+  expect(within(panel).getByText("nifty.bin")).toBeInTheDocument();
+  expect(within(panel).getByText(/Average 2\.00x/)).toBeInTheDocument();
+  expect(panel.querySelectorAll(".metric-compact")).toHaveLength(6);
+  expect(panel).toHaveClass("panel-compact");
+});
+
 test("renders option-chain snapshots, deltas, symbols, and malformed recovery", async () => {
   const user = userEvent.setup();
   const view = render(<OptionChainPage />);
@@ -442,8 +489,8 @@ test("renders option-chain snapshots, deltas, symbols, and malformed recovery", 
   expect(optionTelemetry).toHaveTextContent("Pipeline build");
   expect(optionTelemetry).toHaveTextContent("Greeks");
   expect(optionTelemetry).toHaveTextContent("Payload");
-  expect(optionTelemetry).toHaveTextContent("12ms");
-  expect(optionTelemetry).toHaveTextContent("5ms");
+  expect(optionTelemetry).toHaveTextContent("12 ms");
+  expect(optionTelemetry).toHaveTextContent("5 ms");
   expect(optionTelemetry).toHaveTextContent("2.0 KB/s");
   expect(optionTelemetry).not.toHaveTextContent("Stock board");
   expect(
@@ -480,8 +527,8 @@ test("renders stock summaries, symbol filtering, spreads, and complete expansion
   expect(stockTelemetry).toHaveTextContent("Pipeline build");
   expect(stockTelemetry).toHaveTextContent("Stock board");
   expect(stockTelemetry).toHaveTextContent("Payload");
-  expect(stockTelemetry).toHaveTextContent("12ms");
-  expect(stockTelemetry).toHaveTextContent("4ms");
+  expect(stockTelemetry).toHaveTextContent("12 ms");
+  expect(stockTelemetry).toHaveTextContent("4 ms");
   expect(stockTelemetry).toHaveTextContent("2.0 KB/s");
   expect(stockTelemetry).not.toHaveTextContent("Greeks");
   expect(view.container.querySelector(".page-toolbar")).not.toBeInTheDocument();

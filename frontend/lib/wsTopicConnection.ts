@@ -41,7 +41,9 @@ const MAX_RETRIES = 10;
 const RECOVERY_DELAY_MS = 60_000;
 // Throughput is averaged over a trailing window so the number is readable rather than
 // spiking with each 1 Hz burst.
-const RATE_WINDOW_MS = 5_000;
+/** Trailing window for the throughput average. Exported so the telemetry popover can
+ *  state the real value instead of a hardcoded copy that could drift. */
+export const RATE_WINDOW_MS = 5_000;
 
 function parseEnvelope(raw: string): WsEnvelope | null {
   try {

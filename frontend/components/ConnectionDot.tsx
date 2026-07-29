@@ -1,8 +1,8 @@
 "use client";
 
-import type { TopicConnection } from "@/lib/wsTopicConnection";
+import { RATE_WINDOW_MS, type TopicConnection } from "@/lib/wsTopicConnection";
 import { useConnectionState } from "@/lib/useTopic";
-import { formatBytes } from "@/lib/numberFormat";
+import { formatBytes, formatDuration } from "@/lib/numberFormat";
 import { Explanation } from "@/components/ui/Explanation";
 
 type ConnectionState = ReturnType<typeof useConnectionState>;
@@ -34,27 +34,27 @@ export function ConnectionDetails({
         {hasPipeline && (
           <>
             <dt>Pipeline build</dt>
-            <dd>{state.pipelineMs === null ? "--" : `${state.pipelineMs}ms`}</dd>
+            <dd>{formatDuration(state.pipelineMs)}</dd>
           </>
         )}
         {hasGreeks && (
           <>
             <dt>Greeks</dt>
-            <dd>{state.greeksMs === null ? "--" : `${state.greeksMs}ms`}</dd>
+            <dd>{formatDuration(state.greeksMs)}</dd>
           </>
         )}
         {hasStocks && (
           <>
             <dt>Stock board</dt>
-            <dd>{state.stocksMs === null ? "--" : `${state.stocksMs}ms`}</dd>
+            <dd>{formatDuration(state.stocksMs)}</dd>
           </>
         )}
         <dt>Payload</dt>
         <dd>{formatBytes(state.bytesPerSec)}/s</dd>
         <dt>Last message</dt>
-        <dd>{state.ageMs === null ? "--" : `${(state.ageMs / 1000).toFixed(1)}s ago`}</dd>
+        <dd>{state.ageMs === null ? "--" : `${formatDuration(state.ageMs)} ago`}</dd>
         <dt>Rate window</dt>
-        <dd>5 seconds</dd>
+        <dd>{formatDuration(RATE_WINDOW_MS)}</dd>
         <dt>Payload basis</dt>
         <dd>decompressed</dd>
         {state.error && (

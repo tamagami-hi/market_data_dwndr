@@ -1,5 +1,6 @@
 import { StateMessage } from "@/components/ui/StateMessage";
 import type { GlobalStatus } from "@/lib/wsTypes";
+import { formatDuration } from "@/lib/numberFormat";
 
 export function MonitorAlerts({
   globals,
@@ -24,7 +25,7 @@ export function MonitorAlerts({
       ? {
           title: "Live feed is stale",
           detail: `The last data change was ${
-            globals.data_age_ms === null ? "an unknown time" : `${(globals.data_age_ms / 1000).toFixed(1)} seconds`
+            globals.data_age_ms === null ? "an unknown time" : formatDuration(globals.data_age_ms)
           } ago. Retained values remain visible while recovery runs.`,
           severity: "danger" as const,
         }
