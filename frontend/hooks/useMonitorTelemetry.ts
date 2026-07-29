@@ -27,6 +27,13 @@ import {
 } from "@/lib/wsTypes";
 
 const MAX_FPS_SAMPLES = 60;
+
+/** Rolling per-second samples backing the KPI sparklines. */
+export interface KpiSeries {
+  tokens: number[];
+  drop: number[];
+  loss: number[];
+}
 const ACTIVE_POLL_MS = 10_000;
 const IDLE_POLL_MS = 60_000;
 const ERROR_POLL_MS = 30_000;
@@ -46,6 +53,10 @@ export function useMonitorTelemetry() {
   const [globals, setGlobals] = useState<GlobalStatus | null>(null);
   const [compression, setCompression] = useState<CompressionProgressPayload | null>(null);
   const [fpsHistory, setFpsHistory] = useState<number[]>([]);
+  // Rolling samples for the KPI sparklines. Kept client-side and capped like fpsHistory:
+  // the backend already sends these fields every second, so persisting a series server
+  // side would duplicate data the page is receiving anyway.
+  const [kpiSeries, setKpiSeries] = useState<KpiSeries>({ tokens: [], drop: [], loss: [] });
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [captureHistory, setCaptureHistory] = useState<CaptureHistory | null>(null);
   const [restError, setRestError] = useState<string | null>(null);
@@ -79,6 +90,11 @@ export function useMonitorTelemetry() {
     setRows(payload.per_underlying);
     setGlobals(payload.global);
     setFpsHistory((current) => [...current, payload.global.fps].slice(-MAX_FPS_SAMPLES));
+    setKpiSeries((current) => ({
+      tokens: [...current.tokens, payload.global.tokens].slice(-MAX_FPS_SAMPLES),
+      drop: [...current.drop, payload.global.drop_rate_pct].slice(-MAX_FPS_SAMPLES),
+      loss: [...current.loss, payload.global.session_loss_pct ?? 0].slice(-MAX_FPS_SAMPLES),
+    }));
 
   }, []);
 
@@ -190,7 +206,7 @@ export function useMonitorTelemetry() {
   );
 
   return {
-    live: { rows, globals, compression, fpsHistory },
+    live: { rows, globals, compression, fpsHistory, kpiSeries },
     history: {
       sessions: stats?.session_history ?? [],
       capture: captureHistory,

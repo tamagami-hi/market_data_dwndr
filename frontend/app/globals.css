@@ -400,6 +400,14 @@ a {
   padding: 5px 8px;
 }
 
+/* Storage history retains every column while using the same compact row rhythm as
+   the live health matrix. This keeps the final dashboard pair content-driven rather
+   than letting table chrome make both panels unnecessarily tall. */
+.data-table.monitor-storage-table th,
+.data-table.monitor-storage-table td {
+  padding: 5px 8px;
+}
+
 .label {
   font-size: 12px;
   font-weight: 600;
@@ -872,13 +880,19 @@ a {
 .data-table th,
 .data-table td {
   border-bottom: 1px solid var(--border);
-  padding: 7px 9px;
-  /* One line per row, as in the v0.1.26 dashboard. Without this, values like
-     "528.4 MB" and "3:34:45 PM" wrap and every row doubles in height — which then
-     propagates outward, because the dashboard equalises its rows to the tallest panel,
-     so a wrapped table made all six panels ~90px taller. The table wrapper is
-     overflow-auto, so wide tables scroll horizontally inside their panel instead. */
-  white-space: nowrap;
+  padding: 7px 8px;
+}
+
+/* Single-line rows, but only where the columns actually fit.
+   Wrapped cells ("528.4 MB" breaking after the number) double every row's height, and
+   because the dashboard equalises its rows to the tallest panel, one wrapped table made
+   all six panels ~90px taller. Below this width the table is compressed enough that
+   nowrap would instead CLIP values, so wrapping is the better trade there. */
+@media (min-width: 1360px) {
+  .data-table th,
+  .data-table td {
+    white-space: nowrap;
+  }
 }
 
 .data-table tbody tr:last-child td {

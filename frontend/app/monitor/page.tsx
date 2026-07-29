@@ -40,6 +40,8 @@ export default function MonitorPage() {
       <MonitorKpis
         globals={telemetry.live.globals}
         expectedFrames={telemetry.context.expectedFrames}
+        fpsHistory={telemetry.live.fpsHistory}
+        series={telemetry.live.kpiSeries}
       />
 
       <MonitorAlerts
@@ -63,11 +65,11 @@ export default function MonitorPage() {
               Frame integrity  | Session history
               Download history | Compression
 
-          Columns are 1fr / 1.25fr: the right carries the wide data tables, the left the
+          Columns use a 45:50 ratio: the right carries the wide data tables, the left the
           denser stat surfaces. Session logs sits BELOW the grid as a full-width strip,
           as it did in v0.1.26 — it is a ticker, not a data surface, so pairing it into a
           row forced every other row taller to match. */}
-      <div className="monitor-panel-grid grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
+      <div className="monitor-panel-grid grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,45fr)_minmax(0,50fr)]">
         <DataLossDiagnostics globals={telemetry.live.globals} />
         <UnderlyingHealth rows={telemetry.live.rows} />
 
