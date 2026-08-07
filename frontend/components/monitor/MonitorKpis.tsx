@@ -45,7 +45,7 @@ export function MonitorKpis({
         label="Frames / sec"
         value={globals ? globals.fps.toFixed(2) : "--"}
         severity={fpsSeverity(globals?.fps)}
-        detail={globals ? `${globals.writer_lag_max} writer lag / ${globals.snapshot_ms.toFixed(1)}ms build` : undefined}
+        detail={globals ? `${globals.snapshot_ms.toFixed(1)}ms snapshot build` : undefined}
         // The 1 Hz grid: a flat line is healthy, dips are missed seconds.
         accessory={<Sparkline values={fpsHistory} tone={fpsSeverity(globals?.fps)} />}
       />
@@ -90,7 +90,10 @@ export function MonitorKpis({
         compact
         label="Frame loss"
         value={globals ? formatPercent(globals.frame_loss_pct, 2) : "--"}
-        severity={lossSeverity(globals?.session_loss_pct)}
+        // Severity keys off TOTAL data loss (gaps + stale), not the full-day completeness
+        // figure in the value and not the gaps-only elapsed loss: a feed that froze at the
+        // open writes nothing, which only data_loss_pct reflects.
+        severity={lossSeverity(globals?.data_loss_pct ?? globals?.session_loss_pct)}
         detail={
           globals
             ? `${formatIndianNumber(globals.frames_written, 0)} / ${formatIndianNumber(

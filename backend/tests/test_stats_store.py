@@ -102,3 +102,31 @@ def test_history_is_capped(tmp_path, monkeypatch):
     assert len(history) == 3
     assert history[0]["trading_date"] == "2026-07-22"  # oldest two dropped
     assert history[-1]["trading_date"] == "2026-07-24"
+
+
+
+# --- recovery escalation ledger -----------------------------------------------
+
+
+def test_escalation_ledger_counts_per_trading_date(tmp_path):
+    """Restart-first recovery must remember its exits, or it restarts all day."""
+    assert stats_store.load_escalations(tmp_path, "2026-08-06")["count"] == 0
+
+    assert stats_store.record_escalation(tmp_path, "2026-08-06", 1_000) == 1
+    assert stats_store.record_escalation(tmp_path, "2026-08-06", 2_000) == 2
+    assert stats_store.load_escalations(tmp_path, "2026-08-06")["count"] == 2
+    assert stats_store.load_escalations(tmp_path, "2026-08-06")["timestamps"] == [1_000, 2_000]
+
+    # A different trading date starts from zero, so yesterday cannot spend today's budget.
+    assert stats_store.load_escalations(tmp_path, "2026-08-07")["count"] == 0
+
+
+def test_escalation_ledger_tolerates_a_corrupt_file(tmp_path):
+    """Losing the count costs an extra restart; raising here would block capture."""
+    stats_store.escalation_ledger_path(tmp_path, "2026-08-06").write_text("{not json")
+
+    ledger = stats_store.load_escalations(tmp_path, "2026-08-06")
+
+    assert ledger["count"] == 0
+    assert ledger["timestamps"] == []
+    assert stats_store.record_escalation(tmp_path, "2026-08-06", 5_000) == 1

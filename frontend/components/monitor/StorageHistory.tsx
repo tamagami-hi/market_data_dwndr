@@ -19,7 +19,7 @@ export const StorageHistory = memo(function StorageHistory({
 }) {
   if (!history) {
     return (
-      <Panel title="Download history" subtitle="live and archived captures" className="h-full">
+      <Panel title="Download history" subtitle="live and archived captures" className="panel-compact h-full">
         <div className="p-3">
           <StateMessage title="Capture history unavailable">
             The backend has not returned a configured storage history.
@@ -33,7 +33,7 @@ export const StorageHistory = memo(function StorageHistory({
       ? (history.totals.archived_bytes / history.totals.total_bytes) * 100
       : 0;
   return (
-    <Panel title="Download history" subtitle="live and archived captures" className="h-full">
+    <Panel title="Download history" subtitle="live and archived captures" className="panel-compact h-full">
       <div className="grid grid-cols-2 gap-px border-b border-border bg-border sm:grid-cols-4">
         {[
           ["Sessions", formatIndianNumber(history.totals.sessions, 0)],
@@ -41,13 +41,13 @@ export const StorageHistory = memo(function StorageHistory({
           ["Stored", formatBytes(history.totals.total_bytes)],
           ["Archived", `${archiveShare.toFixed(1)}%`],
         ].map(([label, value]) => (
-          <div key={label} className="bg-surface-2 px-3 py-2">
+          <div key={label} className="bg-surface-2 px-3 py-1">
             <div className="label text-muted">{label}</div>
             <div className="mt-1 font-mono text-sm text-primary">{value}</div>
           </div>
         ))}
       </div>
-      <div className="space-y-2 p-2 md:hidden">
+      <div className="max-h-96 space-y-2 overflow-y-auto p-2 md:hidden">
         {history.sessions.map((session) => (
           <ResponsiveDisclosure
             key={session.trading_date}
@@ -72,8 +72,8 @@ export const StorageHistory = memo(function StorageHistory({
           </ResponsiveDisclosure>
         ))}
       </div>
-      <div className="hidden min-h-0 flex-1 overflow-auto md:block">
-        <table className="data-table">
+      <div className="monitor-storage-scroll hidden min-h-0 flex-1 overflow-auto md:block">
+        <table className="data-table monitor-storage-table">
           <thead className="sticky top-0 z-10">
             <tr>
               <th className="text-left">Session</th>

@@ -20,6 +20,16 @@ const VIEWPORTS = [
   [3200, 1800],
 ];
 const ROUTES = ["/", "/monitor", "/option-chain", "/stocks", "/login"];
+// Capture artifacts the monitor mock publishes. The dashboard must render whatever it
+// is sent, so the counts below are derived from this list rather than hardcoded.
+const MONITOR_ARTIFACTS = [
+  "NIFTY",
+  "BANKNIFTY",
+  "FINNIFTY",
+  "SENSEX",
+  "MIDCPNIFTY",
+  "INDICES_FnO",
+];
 
 let server;
 let browser;
@@ -83,12 +93,12 @@ async function openMonitorWithTelemetry(width, height) {
       url.endsWith("/ws/capture-status"),
     ),
   );
-  await page.evaluate(() => {
+  await page.evaluate((artifacts) => {
     const socketEntry = Object.entries(window.__testSockets).find(([url]) =>
       url.endsWith("/ws/capture-status"),
     );
     const socket = socketEntry?.[1];
-    const underlyings = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX", "MIDCPNIFTY"];
+    const underlyings = artifacts;
     socket?.onmessage?.({
       data: JSON.stringify({
         type: "CaptureStatus",
@@ -117,11 +127,14 @@ async function openMonitorWithTelemetry(width, height) {
         },
       }),
     });
-  });
-  await page.waitForFunction(() =>
-    document.querySelectorAll(
-      '.monitor-health-table [role="img"][aria-label*="connection"]',
-    ).length === 5,
+  }, MONITOR_ARTIFACTS);
+  await page.waitForFunction(
+    (expected) =>
+      document.querySelectorAll(
+        '.monitor-health-table [role="img"][aria-label*="connection"]',
+      ).length === expected,
+    {},
+    MONITOR_ARTIFACTS.length,
   );
   return page;
 }
@@ -301,10 +314,14 @@ describe("responsive workstation", () => {
         "logs must span both columns",
       );
 
-      // Left column narrower than the right (1fr vs 1.25fr): the right carries the wide
-      // data tables. Ratio checked loosely so gutter/padding changes don't break it.
+      // The requested 45:50 split keeps the right-side tables slightly wider while
+      // preserving the existing narrow gap between the two panel columns.
       const ratio = boxes.health.width / boxes.loss.width;
-      assert.ok(ratio > 1.1 && ratio < 1.45, `expected ~1.25 column ratio, got ${ratio.toFixed(2)}`);
+      const expectedRatio = 50 / 45;
+      assert.ok(
+        Math.abs(ratio - expectedRatio) < 0.03,
+        `expected 45:50 column ratio, got ${ratio.toFixed(2)}`,
+      );
 
       // Every left panel shares one column edge and width; likewise every right panel.
       for (const [name, box] of [["Frame integrity", boxes.integrity], ["Download history", boxes.storage]]) {
@@ -351,7 +368,7 @@ describe("responsive workstation", () => {
           };
         });
 
-        assert.equal(geometry.dotCount, 5);
+        assert.equal(geometry.dotCount, MONITOR_ARTIFACTS.length);
         assert.deepEqual(
           geometry.overflowingCellDetails,
           [],
@@ -387,7 +404,7 @@ describe("responsive workstation", () => {
             visibleToggles.push(toggle);
           }
         }
-        assert.equal(visibleToggles.length, 5);
+        assert.equal(visibleToggles.length, MONITOR_ARTIFACTS.length);
         await visibleToggles[0].click();
         await page.waitForSelector("#stream-NIFTY:not([hidden])");
 

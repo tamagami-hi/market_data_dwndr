@@ -39,6 +39,10 @@ from app.session import (
 
 logger = logging.getLogger(__name__)
 
+# How long a caller will wait for the session lock before giving up. The live-capture
+# recovery path must never block behind a login or another refresh.
+SESSION_LOCK_TIMEOUT_S = 5.0
+
 LoginFn = Callable[..., SessionState]
 BrokerFetcher = Callable[[], str | None]
 BrokerValidator = Callable[[str], None]
@@ -108,24 +112,74 @@ class SessionService:
     def refresh_broker_session(
         self, expected_access_token: str | None = None
     ) -> SessionState | None:
-        """Force a fresh token from calspread, discarding the one that just failed.
+        """Swap in a genuinely new broker token, or leave the current session untouched.
 
-        Used by the live-capture reconnect ladder when the feed has gone stale and a
-        cheap reconnect (reusing the current token) did not recover it. Unlike
-        :meth:`acquire_broker_session` — which short-circuits on any persisted token —
-        this first *invalidates* the exact token that failed so the next acquire is
-        guaranteed to hit the broker (``fetch_external_access_token`` -> calspread) for a
-        genuinely new token, then validates and persists it. Returns the new session, or
-        ``None`` when the broker has nothing authenticated to hand back yet.
+        **Fetch first, replace second.** The previous implementation invalidated the
+        persisted token *before* asking calspread for a replacement, so a broker that
+        answered ``authenticated: false`` left the deployment with no session at all —
+        capture then could not start until someone logged in again. The deployment's own
+        state directory recorded 27 such destructive attempts in the 2026-08-06 session
+        alone, every one of which returned no token (``token_refreshes`` was 0 on every
+        recorded day).
+
+        A Kite access token stays valid for the whole trading day, so the session we are
+        holding is nearly always still good; discarding it can only ever make things
+        worse. Returns the new session when a *different* token was obtained and
+        validated, otherwise ``None`` (current session preserved).
         """
-        with self._session_lock:
+        if not self._session_lock.acquire(timeout=SESSION_LOCK_TIMEOUT_S):
+            # A login or another refresh holds the lock. Never block a caller on the
+            # recovery path — report "nothing obtained" and let it proceed.
+            logger.warning("session lock busy; skipping broker token refresh")
+            return None
+        try:
+            token = self._broker_fetcher()
+            if not token:
+                logger.warning(
+                    "broker has no authenticated token to hand back; keeping the "
+                    "current session"
+                )
+                return None
+            if expected_access_token and token == expected_access_token:
+                logger.info("broker returned the same access token; nothing to swap")
+                return None
+            self._broker_validator(token)
+            # Only now is it safe to drop the old token: we hold a validated replacement.
             if expected_access_token:
                 invalidate_session(
                     self.settings.state_dir,
                     self.trading_date(),
                     expected_access_token,
                 )
-            return self._acquire_broker_session_unlocked()
+            return self._persist_broker_token(token)
+        except Exception:  # noqa: BLE001 - a failed refresh must not disturb the session
+            logger.warning("broker token refresh failed; current session kept", exc_info=True)
+            return None
+        finally:
+            self._session_lock.release()
+
+    def _persist_broker_token(self, access_token: str) -> SessionState:
+        """Persist ``access_token`` for today, carrying today's risk-free rate forward."""
+        trading_date = self.trading_date()
+        fetched_rate = self._rate_resolver()
+        if fetched_rate is not None:
+            risk_free_rate = validate_risk_free_rate(fetched_rate)
+            rate_as_of = trading_date
+        else:
+            risk_free_rate, rate_as_of = latest_stored_risk_free_rate(
+                self.settings.state_dir, trading_date
+            )
+        timestamp = self._clock()
+        state = SessionState(
+            trading_date=trading_date,
+            access_token=access_token,
+            risk_free_rate=risk_free_rate,
+            access_token_at=timestamp,
+            started_at=timestamp,
+            risk_free_rate_as_of=rate_as_of,
+        )
+        save_session(self.settings.state_dir, state)
+        return state
 
     def _acquire_broker_session_unlocked(self) -> SessionState | None:
         existing = self.active_session()

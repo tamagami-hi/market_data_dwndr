@@ -109,11 +109,19 @@ class DailyAutomationService:
         self.session_service = session_service
         self.capture_controller = capture_controller
         self.hub = hub
+        # The capture WINDOW (when the process runs), not the market session (when a frame
+        # is owed). Starting earlier gets the socket and subscriptions up before the first
+        # print; sessions decide what counts as data.
+        capture_start, capture_end = (
+            settings.capture_window
+            if hasattr(settings, "capture_window")
+            else (settings.market_open, settings.market_close)
+        )
         self.calendar = TradingCalendar(
             holidays=set(getattr(settings, "market_holidays", [])),
             timezone_name=settings.timezone,
-            market_open=settings.market_open,
-            market_close=settings.market_close,
+            market_open=capture_start,
+            market_close=capture_end,
         )
         if eod_fn is None:
             from app.ops.eod import compress_raw_files

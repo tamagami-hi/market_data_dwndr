@@ -139,12 +139,29 @@ describe("capture notification transitions", () => {
       .toEqual(["Live feed recovered"]);
   });
 
-  test("emits reconnect and exhaustion only when their state advances", () => {
+  test("emits reconnect and abandonment only when their state advances", () => {
     const previous = snapshot({ reconnects: 1 });
-    const next = snapshot({ reconnects: 2, reconnect_tier: 2, exhausted: true });
+    const next = snapshot({ reconnects: 2, exhausted: true });
     const titles = deriveCaptureEvents(previous, next).map(({ title }) => title);
-    expect(titles).toEqual(["Ticker reconnected", "Recovery exhausted"]);
+    expect(titles).toEqual(["Ticker reconnected", "Recovery abandoned"]);
     expect(deriveCaptureEvents(next, next)).toEqual([]);
+  });
+
+  test("announces each restart escalation over a dead feed", () => {
+    const previous = snapshot({ escalations: 0 });
+    const next = snapshot({
+      stale: true,
+      degraded: true,
+      escalations: 1,
+      stale_spell_seconds: 62,
+    });
+    const events = deriveCaptureEvents(previous, next);
+    const escalation = events.find(
+      ({ title }) => title === "Capture restarting over a dead feed",
+    );
+    expect(escalation).toBeDefined();
+    expect(escalation?.detail).toContain("62s");
+    expect(escalation?.severity).toBe("danger");
   });
 
   test("emits recovery transitions for exhausted and degraded ingestion states", () => {

@@ -11,8 +11,11 @@ import type {
 import type {
   CaptureStatusPayload,
   CompressionProgressPayload,
+  FeedHealth,
   GlobalStatus,
+  MarketPhase,
   PerUnderlyingStatus,
+  TransportStatus,
 } from "@/lib/wsTypes";
 
 type UnknownRecord = Record<string, unknown>;
@@ -65,6 +68,8 @@ function normalizeUnderlying(value: unknown): PerUnderlyingStatus | null {
     frame_loss_pct: frameLoss,
     session_frames_expected: finite(row.session_frames_expected),
     session_loss_pct: finite(row.session_loss_pct),
+    grid_seconds_elapsed: finite(row.grid_seconds_elapsed),
+    data_loss_pct: finite(row.data_loss_pct),
     day_complete_pct: finite(row.day_complete_pct, Math.max(0, 100 - frameLoss)),
     file_bytes: finite(row.file_bytes),
     avg_bytes_per_frame: finite(row.avg_bytes_per_frame),
@@ -75,6 +80,75 @@ function normalizeUnderlying(value: unknown): PerUnderlyingStatus | null {
     unmatched: finite(row.unmatched),
     applied: finite(row.applied),
     writer_pending: finite(row.writer_pending),
+    // Per-artifact lifecycle: each artifact reports its own phase and freshness, so a
+    // frozen dataset is visible even when every other one is healthy.
+    market_phase: phase(row.market_phase),
+    capture_active: optionalBool(row.capture_active),
+    artifact_age_ms: optionalFinite(row.artifact_age_ms),
+    artifact_stale: bool(row.artifact_stale),
+    last_frame_ms: optionalFinite(row.last_frame_ms),
+  };
+}
+
+const MARKET_PHASES = new Set(["INACTIVE", "BOOTSTRAP", "PRE_OPEN", "OPEN", "CLOSED"]);
+const FEED_HEALTHS = new Set([
+  "INACTIVE",
+  "HEALTHY",
+  "QUIET",
+  "ARTIFACT_STALE",
+  "TRANSPORT_STALE",
+  "RECOVERY_PENDING",
+  "RECOVERY_ABANDONED",
+]);
+
+function phase(value: unknown): MarketPhase | null {
+  return typeof value === "string" && MARKET_PHASES.has(value) ? (value as MarketPhase) : null;
+}
+
+function feedHealth(value: unknown): FeedHealth | null {
+  return typeof value === "string" && FEED_HEALTHS.has(value) ? (value as FeedHealth) : null;
+}
+
+function optionalBool(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+}
+
+function ageMap(value: unknown): Record<string, number | null> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, number | null> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = optionalFinite(raw);
+  }
+  return out;
+}
+
+function normalizeTransport(value: unknown): TransportStatus | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const t = value as Record<string, unknown>;
+  const breakdown = t.subscription_breakdown;
+  return {
+    connected: bool(t.connected),
+    queue_depth: finite(t.queue_depth),
+    batches_received: finite(t.batches_received),
+    dropped_batches: finite(t.dropped_batches),
+    subscribed_tokens: finite(t.subscribed_tokens),
+    subscription_limit: finite(t.subscription_limit),
+    subscription_safe_limit: finite(t.subscription_safe_limit),
+    subscription_remaining: finite(t.subscription_remaining),
+    subscription_utilisation_pct: finite(t.subscription_utilisation_pct),
+    subscription_shards: finite(t.subscription_shards, 1),
+    subscription_over_threshold: bool(t.subscription_over_threshold),
+    subscription_exceeds_capacity: bool(t.subscription_exceeds_capacity),
+    subscription_breakdown:
+      breakdown && typeof breakdown === "object" && !Array.isArray(breakdown)
+        ? Object.fromEntries(
+            Object.entries(breakdown as Record<string, unknown>).map(([k, v]) => [k, finite(v)]),
+          )
+        : {},
   };
 }
 
@@ -103,22 +177,49 @@ function normalizeGlobal(value: unknown): GlobalStatus | null {
     degraded: bool(global.degraded),
     frozen_batches: finite(global.frozen_batches),
     reconnects: finite(global.reconnects),
-    reconnect_tier: finite(global.reconnect_tier),
-    reconnect_cycles: finite(global.reconnect_cycles),
+    stale_spell_seconds: finite(global.stale_spell_seconds),
+    longest_stale_spell_seconds: finite(global.longest_stale_spell_seconds),
+    escalations: finite(global.escalations),
+    recovery_abandoned: bool(global.recovery_abandoned),
+    recovery_armed: bool(global.recovery_armed),
     exhausted: bool(global.exhausted),
     token_refreshes: finite(global.token_refreshes),
+    // Three-signal feed health, kept separate from the market phase.
+    feed_health: feedHealth(global.feed_health),
+    transport_age_ms: optionalFinite(global.transport_age_ms),
+    artifact_ages_ms: ageMap(global.artifact_ages_ms),
+    stale_artifacts: stringList(global.stale_artifacts),
+    market_phase: phase(global.market_phase),
+    capture_expected: optionalBool(global.capture_expected),
+    transport: normalizeTransport(global.transport),
+    // Session-scheduled completeness: the denominator does not depend on uptime, so
+    // downtime shows up in the loss figure instead of vanishing with the process.
+    scheduled_seconds: finite(global.scheduled_seconds),
+    scheduled_seconds_elapsed: finite(global.scheduled_seconds_elapsed),
+    captured_seconds: finite(global.captured_seconds),
+    scheduled_loss_pct: finite(global.scheduled_loss_pct),
+    unscheduled_seconds: finite(global.unscheduled_seconds),
+    missing_seconds: finite(global.missing_seconds),
+    stale_feed_seconds: finite(global.stale_feed_seconds),
+    downtime_seconds: finite(global.downtime_seconds),
+    write_path_seconds: finite(global.write_path_seconds),
+    unclassified_seconds: finite(global.unclassified_seconds),
     last_token_refresh_ms: optionalFinite(global.last_token_refresh_ms),
     token_age_ms: optionalFinite(global.token_age_ms),
     grid_gaps: finite(global.grid_gaps),
     grid_seconds_lost: finite(global.grid_seconds_lost),
-    frozen_seconds: finite(global.frozen_seconds),
+    stale_seconds: finite(global.stale_seconds),
+    stale_events: finite(global.stale_events),
+    stale_writes_suppressed: bool(global.stale_writes_suppressed),
+    grid_seconds_elapsed: finite(global.grid_seconds_elapsed),
     session_frames_expected: finite(global.session_frames_expected),
     session_loss_pct: finite(global.session_loss_pct),
+    data_loss_pct: finite(global.data_loss_pct),
     unmatched_ticks: finite(global.unmatched_ticks),
     batches_received: finite(global.batches_received),
     ticks_received: finite(global.ticks_received),
     ticks_per_sec: finite(global.ticks_per_sec),
-    disk_runway_hours: finite(global.disk_runway_hours),
+    first_grid_ms: optionalFinite(global.first_grid_ms),
   };
 }
 
@@ -218,15 +319,23 @@ function normalizeSessionSummary(value: unknown): SessionSummary | null {
     frame_loss_pct: finite(session.frame_loss_pct),
     session_frames_expected: finite(session.session_frames_expected),
     session_loss_pct: finite(session.session_loss_pct),
+    grid_seconds_elapsed: finite(session.grid_seconds_elapsed),
+    data_loss_pct: finite(session.data_loss_pct),
     grid_gaps: finite(session.grid_gaps),
     grid_seconds_lost: finite(session.grid_seconds_lost),
-    frozen_seconds: finite(session.frozen_seconds),
+    // Sessions recorded before stale-write suppression stored this as ``frozen_seconds``
+    // (frames that WERE written while frozen); keep rendering them rather than showing 0.
+    stale_seconds: finite(session.stale_seconds ?? session.frozen_seconds),
+    stale_events: finite(session.stale_events),
     dropped_batches: finite(session.dropped_batches),
     drop_rate_pct: finite(session.drop_rate_pct),
     unmatched_ticks: finite(session.unmatched_ticks),
     ticks_received: finite(session.ticks_received),
     reconnects: finite(session.reconnects),
     token_refreshes: finite(session.token_refreshes),
+    longest_stale_spell_seconds: finite(session.longest_stale_spell_seconds),
+    escalations: finite(session.escalations),
+    recovery_abandoned: bool(session.recovery_abandoned),
     exhausted: bool(session.exhausted),
     disk_bytes: finite(session.disk_bytes),
     streams: streams as SessionStreamSummary[],
@@ -286,6 +395,53 @@ export function normalizeCaptureHistory(value: unknown): CaptureHistory | null {
       data_files: finite(totals.data_files),
     },
     sessions: sessions as CaptureHistorySession[],
+  };
+}
+
+/**
+ * Build a session-history row for the IN-PROGRESS capture from the live telemetry
+ * stream. The recorded history (session-history.jsonl) only gains a session after
+ * finalization, so without this the panel's Frames column never reflects the frames
+ * currently being written to the .bin files.
+ */
+export function liveSessionSummary(
+  tradingDate: string,
+  globals: GlobalStatus,
+  rows: PerUnderlyingStatus[],
+): SessionSummary {
+  return {
+    trading_date: tradingDate,
+    recorded_at: Date.now(),
+    uptime_ms: globals.uptime_ms,
+    captures: globals.captures,
+    frames_written: globals.frames_written,
+    frames_expected: globals.frames_expected,
+    frame_loss_pct: globals.frame_loss_pct,
+    session_frames_expected: globals.session_frames_expected ?? 0,
+    session_loss_pct: globals.session_loss_pct ?? 0,
+    grid_seconds_elapsed: globals.grid_seconds_elapsed ?? 0,
+    data_loss_pct: globals.data_loss_pct ?? 0,
+    grid_gaps: globals.grid_gaps ?? 0,
+    grid_seconds_lost: globals.grid_seconds_lost ?? 0,
+    stale_seconds: globals.stale_seconds ?? 0,
+    stale_events: globals.stale_events ?? 0,
+    dropped_batches: globals.dropped_batches,
+    drop_rate_pct: globals.drop_rate_pct,
+    unmatched_ticks: globals.unmatched_ticks ?? 0,
+    ticks_received: globals.ticks_received ?? 0,
+    reconnects: globals.reconnects,
+    token_refreshes: globals.token_refreshes ?? 0,
+    longest_stale_spell_seconds: globals.longest_stale_spell_seconds ?? 0,
+    escalations: globals.escalations ?? 0,
+    recovery_abandoned: globals.recovery_abandoned ?? false,
+    exhausted: globals.exhausted ?? false,
+    disk_bytes: globals.disk_bytes,
+    streams: rows.map((row) => ({
+      underlying: row.underlying,
+      frames_written: row.frames_written,
+      frame_loss_pct: row.frame_loss_pct,
+      file_bytes: row.file_bytes,
+    })),
   };
 }
 

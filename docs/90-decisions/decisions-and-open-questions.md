@@ -22,7 +22,7 @@ related: ["[[overview-and-scope]]", "[[bin-structure-spec]]", "[[implementation-
 | 6 | Depth — indices | **L1** (top of book) for the option chain. ([[depth-level-research]]) |
 | 7 | Depth — stocks | **L5** (top-5 order book each side) for spot + each future. ([[depth-level-research]], [[stocks-capture]]) |
 | 8 | Cadence | **1 Hz** — one snapshot/second, last-value-wins. ([[live-capture-performance]]) |
-| 9 | Index universe | **NIFTY, BANKNIFTY, FINNIFTY, SENSEX.** MIDCPNIFTY and BANKEX **excluded**. ([[option-chain-selection]]) |
+| 9 | Index universe | **NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX, BANKEX** — all six. MIDCPNIFTY and BANKEX were originally excluded; **revised 2026-08-07** when the index-F&O domain was added. ([[option-chain-selection]]) |
 | 10 | Stock universe | **Full F&O stock board** (CalSpread discovery). ([[stocks-capture]]) |
 | 11 | Storage layout | `INDICES/<INDEX>/<date>.bin`, `STOCKS/<date>.bin` (all stocks, matrix); historical under `INDICES_HIS/` & `STOCKS_HIS/`. ([[storage-layout]]) |
 | 12 | Historical | Same BIN format as live. ([[historical-data]]) |

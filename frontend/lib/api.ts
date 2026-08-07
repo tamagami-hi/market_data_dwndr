@@ -240,15 +240,28 @@ export interface SessionSummary {
   frame_loss_pct: number;
   session_frames_expected: number;
   session_loss_pct: number;
+  /** Every grid second the session covered, stale ones included. */
+  grid_seconds_elapsed: number;
+  /** Total market-data loss, stale-suppressed seconds included. */
+  data_loss_pct: number;
   grid_gaps: number;
   grid_seconds_lost: number;
-  frozen_seconds: number;
+  /** Grid seconds not written because the feed was stale. */
+  stale_seconds: number;
+  /** Distinct stale spells during the session. */
+  stale_events: number;
   dropped_batches: number;
   drop_rate_pct: number;
   unmatched_ticks: number;
   ticks_received: number;
   reconnects: number;
   token_refreshes: number;
+  /** Longest continuous stale spell this session, in seconds. */
+  longest_stale_spell_seconds?: number;
+  /** Times this session restarted the process over a dead feed. */
+  escalations?: number;
+  /** True when the day's restart budget was spent without restoring the feed. */
+  recovery_abandoned?: boolean;
   exhausted: boolean;
   disk_bytes: number;
   streams: SessionStreamSummary[];

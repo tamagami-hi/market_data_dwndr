@@ -153,10 +153,26 @@ async def test_non_auth_close_does_not_signal_auth_failure():
     assert bridge.auth_failed.is_set() is False
 
 
-# --- token-refresh reconnect + GC hygiene ------------------------------------
+# --- reconnect drill + GC hygiene --------------------------------------------
+#
+# The live capture path no longer performs in-process reconnects at all: recovery is
+# restart-first (see ``CaptureEngine.observe_feed_health``). ``reconnect()`` is kept for
+# the operator drill documented in docs/30-live-capture/live-data-pipeline.md, so the
+# behaviour it must still guarantee is "a replacement socket resubscribes everything".
 
 
-async def test_reconnect_with_refresh_swaps_token_and_resubscribes():
+def test_the_live_path_has_no_token_refresh_ladder():
+    """Regression guard for the destructive tier-2 refresh.
+
+    It fired ~27 times in the 2026-08-06 session, obtained a token on none of them
+    (``token_refreshes`` was 0 on every recorded day), and deleted that day's persisted
+    session each attempt. It must not come back.
+    """
+    assert not hasattr(TickerBridge, "reconnect_with_refresh")
+
+
+async def test_reconnect_resubscribes_every_token_in_full_mode():
+    """The drill's success criterion: a replacement socket is fully subscribed."""
     created: list[FakeTicker] = []
 
     def factory(api_key, access_token):
@@ -164,51 +180,17 @@ async def test_reconnect_with_refresh_swaps_token_and_resubscribes():
         created.append(t)
         return t
 
-    seen: list[str | None] = []
-
-    def provider(current_token):
-        seen.append(current_token)
-        return "TOKEN_B"
-
-    bridge = TickerBridge(
-        "key", "TOKEN_A", [1, 2], ticker_factory=factory, token_provider=provider
-    )
+    bridge = TickerBridge("key", "TOK", [1, 2], ticker_factory=factory)
     bridge.bind_loop(asyncio.get_running_loop())
     bridge.start()
-    assert bridge.access_token == "TOKEN_A"
 
-    result = await bridge.reconnect_with_refresh()
+    bridge.reconnect()
 
-    assert result is True
-    assert seen == ["TOKEN_A"]  # provider was handed the token that just failed
-    assert bridge.access_token == "TOKEN_B"
-    assert created[-1].access_token == "TOKEN_B"  # new socket uses the fresh token
+    assert len(created) == 2  # a brand-new socket, not the old one reused
+    assert created[-1].access_token == "TOK"
     assert created[-1].subscribed == [1, 2]
     assert created[-1].mode == (MODE_FULL, [1, 2])
-    assert bridge.token_refreshes == 1
-    assert bridge.last_token_refresh_ms is not None
-
-
-async def test_reconnect_with_refresh_without_new_token_reuses_current():
-    created: list[FakeTicker] = []
-
-    def factory(api_key, access_token):
-        t = FakeTicker(api_key, access_token)
-        created.append(t)
-        return t
-
-    bridge = TickerBridge(
-        "key", "TOK", [1], ticker_factory=factory, token_provider=lambda _cur: None
-    )
-    bridge.bind_loop(asyncio.get_running_loop())
-    bridge.start()
-
-    result = await bridge.reconnect_with_refresh()
-
-    assert result is False  # broker had nothing to hand back
-    assert bridge.access_token == "TOK"  # kept the current token
-    assert bridge.token_refreshes == 0
-    assert len(created) == 2  # still reconnected so a transient outage doesn't freeze us
+    assert bridge.reconnects == 1
 
 
 async def test_reconnect_frees_the_superseded_ticker():

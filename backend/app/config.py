@@ -20,11 +20,18 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import AnyHttpUrl, Field, SecretStr, field_validator, model_validator
+from pydantic import AliasChoices, AnyHttpUrl, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Locked index universe (docs/90-decisions/decisions-and-open-questions.md #9).
-DEFAULT_INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"]
+DEFAULT_INDICES = [
+    "NIFTY",
+    "BANKNIFTY",
+    "FINNIFTY",
+    "MIDCPNIFTY",
+    "SENSEX",
+    "BANKEX",
+]
 
 
 def _parse_hhmm(value: str) -> time:
@@ -138,7 +145,11 @@ class Settings(BaseSettings):
     )
     market_open: str = Field(default="09:00", description="Capture start (IST, HH:MM)")
     market_close: str = Field(default="15:30", description="Session close (IST, HH:MM)")
-    timezone: str = Field(default="Asia/Kolkata", description="Exchange timezone")
+    timezone: str = Field(
+        default="Asia/Kolkata",
+        description="Exchange timezone. Accepts TIMEZONE or MARKET_TIMEZONE.",
+        validation_alias=AliasChoices("TIMEZONE", "MARKET_TIMEZONE"),
+    )
     expected_frames_override: int | None = Field(
         default=None,
         ge=1,
@@ -160,49 +171,209 @@ class Settings(BaseSettings):
             "Tunable via CAPTURE_STALE_SECONDS in .env."
         ),
     )
-    capture_reconnect_token_refresh_after: int = Field(
-        default=2,
+    capture_suppress_stale_writes: bool = Field(
+        default=True,
+        description=(
+            "Do not write a frame when the feed is stale (see CAPTURE_STALE_SECONDS). "
+            "A stale grid second carries duplicate last-known values, so writing it "
+            "fabricates market data that never traded: an honest hole in the file is "
+            "recoverable, a silently frozen frame is not. Set false only to reproduce "
+            "the legacy behaviour of writing frozen frames. Tunable via "
+            "CAPTURE_SUPPRESS_STALE_WRITES."
+        ),
+    )
+    capture_stale_exit_seconds: float = Field(
+        default=60.0,
+        ge=0,
+        le=3_600,
+        description=(
+            "Seconds of CONTINUOUS staleness, while the market is trading, before the "
+            "process exits so Docker restarts it with a clean session + fresh token "
+            "(restart-first recovery). A brief flicker of ticks does not reset the spell, "
+            "but a feed that is healthy right now is never restarted. 0 = disabled. "
+            "Tunable via CAPTURE_STALE_EXIT_SECONDS."
+        ),
+    )
+    capture_stale_exit_max_restarts: int = Field(
+        default=3,
         ge=0,
         le=50,
         description=(
-            "Cheap 'reuse the current token' reconnect attempts to try before escalating "
-            "to a fresh token fetch from calspread. Tier-1 handles a half-open socket; "
-            "tier-2 handles an expired/rotated token. Tunable via "
-            "CAPTURE_RECONNECT_TOKEN_REFRESH_AFTER."
+            "How many restart escalations to allow for one trading date before giving up "
+            "and staying online (reporting exhausted/recovery_abandoned) instead of "
+            "restarting the container all day. 0 = unlimited. Tunable via "
+            "CAPTURE_STALE_EXIT_MAX_RESTARTS."
         ),
     )
-    capture_reconnect_max_cycles: int = Field(
-        default=3,
+    capture_stale_recovery_confirm_seconds: float = Field(
+        default=15.0,
         ge=0,
-        le=100,
+        le=600,
         description=(
-            "How many full backoff cycles (each ~MAX_ATTEMPTS reconnects with token "
-            "refresh) to run while the feed stays stale before the recovery is declared "
-            "exhausted. 0 = cycle forever (never escalate). Tunable via "
-            "CAPTURE_RECONNECT_MAX_CYCLES."
+            "Seconds of SUSTAINED fresh ticks required to declare a stale spell over. "
+            "Guards the restart deadline against flickers: on 2026-08-06 a single fresh "
+            "second reset the old recovery ladder and disarmed escalation for another "
+            "hour. Tunable via CAPTURE_STALE_RECOVERY_CONFIRM_SECONDS."
         ),
     )
-    capture_reconnect_escalate_to_exit: bool = Field(
+    capture_recovery_arm_delay_seconds: float = Field(
+        default=300.0,
+        ge=0,
+        le=7_200,
+        description=(
+            "Grace period after MARKET_OPEN before staleness is treated as a fault. "
+            "Capture starts at MARKET_OPEN but the exchange's continuous session begins "
+            "later (MARKET_OPEN=09:10 vs NSE 09:15), and no ticks before then is normal — "
+            "without this grace the process would exit every minute of every pre-open. "
+            "Tunable via CAPTURE_RECOVERY_ARM_DELAY_SECONDS."
+        ),
+    )
+    # --- session-oriented timing (see app/ops/sessions.py) --------------------------
+    # Each of these falls back to MARKET_OPEN/MARKET_CLOSE when unset, so an existing
+    # deployment keeps its exact schedule until the session block is added to the env.
+    # Several artifacts sharing a session share ONE piece of configuration: there is
+    # deliberately no NIFTY_CLOSE / STOCK_FNO_CLOSE style per-artifact setting.
+    bootstrap_time: str | None = Field(
+        default=None,
+        description=(
+            "When the process may begin preparing a session (instrument masters, chains, "
+            "subscriptions) before any frame is expected. Informational: capture "
+            "activation is governed by the session windows below. BOOTSTRAP_TIME."
+        ),
+    )
+    equity_deriv_open: str | None = Field(
+        default=None,
+        description="Equity-derivatives continuous session start (IST HH:MM). EQUITY_DERIV_OPEN.",
+    )
+    equity_deriv_close: str | None = Field(
+        default=None,
+        description="Equity-derivatives session close (IST HH:MM). EQUITY_DERIV_CLOSE.",
+    )
+    equity_deriv_preopen_start: str | None = Field(
+        default=None,
+        description="Equity-derivatives pre-open start (IST HH:MM). EQUITY_DERIV_PREOPEN_START.",
+    )
+    equity_deriv_preopen_end: str | None = Field(
+        default=None,
+        description="Equity-derivatives pre-open end (IST HH:MM). EQUITY_DERIV_PREOPEN_END.",
+    )
+    equity_deriv_capture_preopen: bool = Field(
+        default=False,
+        description=(
+            "Persist the equity-derivatives pre-open auction. Pre-open is a POLICY, not "
+            "an assumption: when false the pre-open window schedules no frames and its "
+            "silence is not data loss. EQUITY_DERIV_CAPTURE_PREOPEN."
+        ),
+    )
+    equity_deriv_enabled: bool = Field(
         default=True,
         description=(
-            "When the recovery is exhausted (see CAPTURE_RECONNECT_MAX_CYCLES), exit the "
-            "process so Docker's restart policy recovers with a clean session + fresh "
-            "token. When false, keep cycling with token refresh and report 'exhausted' "
-            "on /health instead. Tunable via CAPTURE_RECONNECT_ESCALATE_TO_EXIT."
+            "Explicitly disable equity-derivatives capture. A disabled session schedules "
+            "no seconds, so its silence is 'not expected data' rather than data loss — "
+            "which is what separates maintenance from an outage. EQUITY_DERIV_ENABLED."
         ),
     )
-    capture_token_max_age_seconds: float = Field(
-        default=0.0,
-        ge=0,
-        le=86_400,
+    equity_cash_open: str | None = Field(
+        default=None,
+        description="Equity-cash session start (IST HH:MM). EQUITY_CASH_OPEN.",
+    )
+    equity_cash_close: str | None = Field(
+        default=None,
+        description="Equity-cash session close (IST HH:MM). EQUITY_CASH_CLOSE.",
+    )
+    equity_cash_preopen_start: str | None = Field(
+        default=None,
+        description="Equity-cash pre-open start (IST HH:MM). EQUITY_CASH_PREOPEN_START.",
+    )
+    equity_cash_preopen_end: str | None = Field(
+        default=None,
+        description="Equity-cash pre-open end (IST HH:MM). EQUITY_CASH_PREOPEN_END.",
+    )
+    equity_cash_capture_preopen: bool = Field(
+        default=False,
+        description="Persist the equity-cash pre-open auction. EQUITY_CASH_CAPTURE_PREOPEN.",
+    )
+    equity_cash_enabled: bool = Field(
+        default=True,
+        description="Explicitly disable equity-cash capture. EQUITY_CASH_ENABLED.",
+    )
+    broker_subscription_limit: int = Field(
+        default=3_000,
+        ge=1,
         description=(
-            "Max age of the in-memory access token before a reconnect proactively "
-            "re-fetches a fresh one from calspread (even on the first stale event). "
-            "0 = disabled (only refresh reactively after cheap reconnects fail). "
-            "Tunable via CAPTURE_TOKEN_MAX_AGE_SECONDS."
+            "Instruments the broker accepts per websocket connection (Kite Connect: 3000). "
+            "Used to compute subscription headroom at bootstrap. BROKER_SUBSCRIPTION_LIMIT."
+        ),
+    )
+    broker_subscription_safety_margin_pct: float = Field(
+        default=10.0,
+        ge=0,
+        le=90,
+        description=(
+            "Headroom held below BROKER_SUBSCRIPTION_LIMIT. Crossing the resulting safe "
+            "threshold is reported loudly rather than silently risking a rejected "
+            "subscribe (which surfaces only as a dead feed). "
+            "BROKER_SUBSCRIPTION_SAFETY_MARGIN_PCT."
+        ),
+    )
+    broker_max_connections: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description=(
+            "Websocket connections the broker allows per API key (Kite Connect: 3). Bounds "
+            "how far subscription sharding could ever scale. BROKER_MAX_CONNECTIONS."
+        ),
+    )
+    capture_start_time: str | None = Field(
+        default=None,
+        description=(
+            "When the capture process activates: connects, subscribes, and starts the 1 Hz "
+            "grid. This is deliberately EARLIER than the market session open so the socket "
+            "and subscriptions are established before the first print. It is NOT a market "
+            "time and nothing is owed before the session opens. Defaults to MARKET_OPEN. "
+            "CAPTURE_START_TIME."
+        ),
+    )
+    capture_end_time: str | None = Field(
+        default=None,
+        description=(
+            "When the capture process deactivates. Defaults to MARKET_CLOSE. Set later than "
+            "the session close to keep capturing a post-close tail — those extra seconds are "
+            "reported as unscheduled, never as data loss. CAPTURE_END_TIME."
+        ),
+    )
+    indices_fno_enabled: bool = Field(
+        default=True,
+        description=(
+            "Capture the consolidated index-F&O dataset: index futures (3 nearest "
+            "expiries) plus each index's spot, for every index in INDICES, on the shared "
+            "1 Hz grid in one file. Separate from the per-index option files and from the "
+            "stock F&O file, so no existing binary contract changes. INDICES_FNO_ENABLED."
         ),
     )
     log_level: str = Field(default="INFO")
+
+    @field_validator(
+        "bootstrap_time",
+        "capture_start_time",
+        "capture_end_time",
+        "equity_deriv_open",
+        "equity_deriv_close",
+        "equity_deriv_preopen_start",
+        "equity_deriv_preopen_end",
+        "equity_cash_open",
+        "equity_cash_close",
+        "equity_cash_preopen_start",
+        "equity_cash_preopen_end",
+        mode="before",
+    )
+    @classmethod
+    def _blank_session_time_is_unset(cls, value: object) -> object:
+        """An empty session time means 'inherit the legacy MARKET_OPEN/MARKET_CLOSE'."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("capture_stale_seconds", mode="before")
     @classmethod
@@ -213,9 +384,10 @@ class Settings(BaseSettings):
         return value
 
     @field_validator(
-        "capture_reconnect_token_refresh_after",
-        "capture_reconnect_max_cycles",
-        "capture_token_max_age_seconds",
+        "capture_stale_exit_seconds",
+        "capture_stale_exit_max_restarts",
+        "capture_stale_recovery_confirm_seconds",
+        "capture_recovery_arm_delay_seconds",
         mode="before",
     )
     @classmethod
@@ -329,8 +501,9 @@ class Settings(BaseSettings):
     def _validate_daily_schedule(self) -> Settings:
         auth_start = _parse_hhmm(self.auth_poll_start)
         auth_end = _parse_hhmm(self.auth_poll_end)
-        market_open = _parse_hhmm(self.market_open)
-        market_close = _parse_hhmm(self.market_close)
+        capture_start_str, capture_end_str = self.capture_window
+        market_open = _parse_hhmm(capture_start_str)
+        market_close = _parse_hhmm(capture_end_str)
         if not auth_start < auth_end <= market_open < market_close:
             raise ValueError(
                 "daily schedule must satisfy AUTH_POLL_START < AUTH_POLL_END "
@@ -379,6 +552,24 @@ class Settings(BaseSettings):
     @property
     def stocks_dir(self) -> Path:
         return self.market_data_path / "STOCKS"
+
+    @property
+    def capture_window(self) -> tuple[str, str]:
+        """``(start, end)`` HH:MM for when the capture PROCESS runs.
+
+        Distinct from the market sessions in ``app/ops/sessions.py``, which decide when a
+        frame is *owed*. The process deliberately starts earlier so the socket and
+        subscriptions are live before the first print, and may run later to keep a
+        post-close tail; neither affects the loss denominator.
+        """
+        return (
+            self.capture_start_time or self.market_open,
+            self.capture_end_time or self.market_close,
+        )
+
+    @property
+    def indices_fno_dir(self) -> Path:
+        return self.market_data_path / "INDICES_FnO"
 
     @property
     def indices_his_dir(self) -> Path:

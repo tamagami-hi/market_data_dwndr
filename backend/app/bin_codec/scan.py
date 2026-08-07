@@ -34,18 +34,31 @@ class FrameScan:
     first_timestamp_ms: int | None = None
     last_timestamp_ms: int | None = None
     truncated: bool = False  # a partial trailing frame was found and ignored
+    # Every data frame's timestamp, in file order, when ``collect_timestamps`` was set.
+    # This is what lets completeness be proven from the ARCHIVE rather than from
+    # telemetry: a crash, container kill or power loss can destroy the telemetry snapshot,
+    # but the frames that reached the disk cannot lie about which seconds exist.
+    timestamps: tuple[int, ...] = ()
 
     @property
     def exists(self) -> bool:
         return self.frames > 0
 
 
-def scan_frames(path: str | os.PathLike[str]) -> FrameScan:
+def scan_frames(
+    path: str | os.PathLike[str], *, collect_timestamps: bool = False
+) -> FrameScan:
     """Count data frames and read the first/last timestamps from ``path``.
 
     Tolerates a torn trailing frame (possible only if the process died between writing
     the length prefix and the payload, since every frame is fsynced): the partial record
     is ignored and ``truncated`` is set, rather than raising.
+
+    ``collect_timestamps`` additionally returns every frame's timestamp. It costs nothing
+    extra on the I/O side — the timestamp is already read for first/last, so the same
+    single pass just keeps them — and it is what makes interior holes visible. Sequence
+    numbers cannot serve that purpose: they reset to 0 whenever the process restarts (the
+    tables are rebuilt), so they only prove continuity *within* one process run.
     """
     file_path = Path(path)
     if not file_path.exists() or file_path.stat().st_size == 0:
@@ -55,6 +68,7 @@ def scan_frames(path: str | os.PathLike[str]) -> FrameScan:
     first_ts: int | None = None
     last_ts: int | None = None
     truncated = False
+    collected: list[int] = []
 
     with open(file_path, "rb") as handle:
         while True:
@@ -82,10 +96,13 @@ def scan_frames(path: str | os.PathLike[str]) -> FrameScan:
                 if first_ts is None:
                     first_ts = timestamp
                 last_ts = timestamp
+                if collect_timestamps:
+                    collected.append(timestamp)
 
     return FrameScan(
         frames=frames,
         first_timestamp_ms=first_ts,
         last_timestamp_ms=last_ts,
         truncated=truncated,
+        timestamps=tuple(collected),
     )

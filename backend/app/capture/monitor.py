@@ -11,6 +11,7 @@ Builds the ``CaptureStatus`` telemetry that drives the frontend dashboard
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import threading
@@ -22,6 +23,8 @@ from app.chain.table import IndexTable
 from app.session import now_ms
 from app.stocks.matrix import StockMatrix
 from app.ws import protocol
+
+logger = logging.getLogger(__name__)
 
 HEARTBEAT_WINDOW_MS = 2_000
 
@@ -36,7 +39,7 @@ FPS_MIN_SPAN_MS = 900
 DISK_BYTES_TTL_MS = 30_000
 
 # Full-session frame baseline (09:00-15:30 @ 1 Hz). Overridable via Settings.
-DEFAULT_EXPECTED_FRAMES = 23_400
+DEFAULT_EXPECTED_FRAMES = 0  # no configured session window == no defensible baseline
 
 
 def directory_bytes(root: str | os.PathLike[str]) -> int:
@@ -95,25 +98,6 @@ def expected_frames_elapsed(
     return span // interval_ms + 1
 
 
-def disk_runway_hours(
-    disk_free_bytes: int,
-    bytes_per_frame: float,
-    active_writers: int,
-    interval_s: float = 1.0,
-) -> float:
-    """Hours of capture the free space can still absorb (0 when not computable).
-
-    Predicts ENOSPC — the failure mode that kills every writer at once — from values
-    the monitor already has.
-    """
-    if disk_free_bytes <= 0 or bytes_per_frame <= 0 or active_writers <= 0:
-        return 0.0
-    per_second = bytes_per_frame * active_writers / max(0.001, interval_s)
-    if per_second <= 0:
-        return 0.0
-    return disk_free_bytes / per_second / 3600.0
-
-
 def drop_rate_pct(dropped_batches: int, captures: int) -> float:
     """Percent of ingest batches dropped: dropped / (captures + dropped) * 100."""
     denom = captures + dropped_batches
@@ -155,6 +139,10 @@ class CaptureMonitor:
         capture_start_ms: int | None = None,
         fps_window_ms: int = FPS_WINDOW_MS,
         disk_bytes_ttl_ms: int = DISK_BYTES_TTL_MS,
+        session_registry=None,
+        subscription=None,
+        index_fno_matrix=None,
+        index_fno_writer: FileWriterThread | None = None,
     ) -> None:
         self.index_tables = index_tables
         self.stock_matrix = stock_matrix
@@ -163,9 +151,22 @@ class CaptureMonitor:
         self.engine = engine
         self.bridge = bridge
         self.market_data_path = market_data_path
+        # Session schedule (app/ops/sessions.py). When present it replaces the
+        # process-observed grid as the loss denominator: expected seconds must not depend
+        # on the application having been alive to count them, or an outage erases itself
+        # from its own loss figure.
+        self.session_registry = session_registry
+        # Resolved subscription plan (app/capture/subscription.py), for capacity telemetry.
+        self.subscription = subscription
+        # Third capture domain, reported as just another artifact.
+        self.index_fno_matrix = index_fno_matrix
+        self.index_fno_writer = index_fno_writer
         self._clock = clock
         self.heartbeat_window_ms = heartbeat_window_ms
-        self.expected_frames = expected_frames if expected_frames > 0 else DEFAULT_EXPECTED_FRAMES
+        # A non-positive baseline means "unknown", not "assume a standard day": every
+        # percentage derived from it guards against zero rather than dividing by an
+        # invented market schedule.
+        self.expected_frames = max(0, int(expected_frames))
         # Capture start timestamp for uptime; defaults to first construction time.
         self.capture_start_ms = capture_start_ms if capture_start_ms is not None else clock()
         # fps rate tracking: a trailing window of (timestamp_ms, total_captures)
@@ -204,6 +205,92 @@ class CaptureMonitor:
             return False
         return bool(freshness.is_stale(now))
 
+    def _loss_baselines(self) -> tuple[int, int, int]:
+        """Return ``(grid_seconds_elapsed, writable_seconds, stale_seconds)``.
+
+        Three different denominators, each answering a different question:
+
+        * ``grid_seconds_elapsed`` — every grid second the capture loop reached, whether
+          a frame was persisted or not. The honest denominator for *total* market-data
+          loss, and the only one that still moves while stale writes are suppressed.
+        * ``writable_seconds`` — elapsed seconds minus the stale ones, i.e. the seconds a
+          frame *could* legitimately have been written for. Loss against this isolates
+          gaps and write-path failures from an upstream feed that had nothing to give.
+        * ``stale_seconds`` — seconds deliberately not written because the feed was
+          frozen or absent (see ``CaptureEngine.capture_snapshot``).
+        """
+        first_grid = getattr(self.engine, "first_grid_ms", None)
+        last_grid = getattr(self.engine, "last_grid_ms", None)
+        if first_grid is None or last_grid is None:
+            # Pre-suppression engines (and unit doubles) only track written frames.
+            first_grid = getattr(self.engine, "first_capture_ms", None)
+            last_grid = getattr(self.engine, "last_capture_ms", None)
+        elapsed = expected_frames_elapsed(first_grid, last_grid)
+        stale_seconds = int(getattr(self.engine, "stale_seconds", 0))
+        writable = max(0, elapsed - stale_seconds)
+        return elapsed, writable, stale_seconds
+
+    def _queue_depth(self) -> int:
+        """Depth of the bridge's ingest queue (0 when unavailable).
+
+        A sustained depth is the early warning that tick application is falling behind the
+        socket, which is a different problem from a slow writer queue.
+        """
+        queue = getattr(self.bridge, "queue", None)
+        if queue is None:
+            return 0
+        try:
+            return int(queue.qsize())
+        except Exception:  # noqa: BLE001 - telemetry must never break capture
+            return 0
+
+    def _scheduled_baselines(self, now: int) -> tuple[int, int]:
+        """Return ``(scheduled_today, scheduled_elapsed)`` from the session schedule.
+
+        Both are derived from configuration and the trading date alone. That is the whole
+        point: if the application or the server was down from 09:15 to 09:27, those 720
+        seconds were still owed, and a denominator built from what the process observed
+        would quietly erase them from its own loss figure (§17.1).
+
+        Falls back to ``(0, 0)`` without a registry, in which case callers keep using the
+        process-observed grid.
+        """
+        registry = self.session_registry
+        if registry is None:
+            return 0, 0
+        artifact = next(iter(self.index_tables), "STOCKS")
+        try:
+            return (
+                int(registry.scheduled_seconds(artifact)),
+                int(registry.scheduled_seconds_elapsed(artifact, now)),
+            )
+        except Exception:  # noqa: BLE001 - telemetry must never break capture
+            logger.debug("scheduled-baseline lookup failed", exc_info=True)
+            return 0, 0
+
+    def _loss_breakdown(self, scheduled_elapsed: int, captured: int) -> dict:
+        """Split total missing seconds into causes that reconcile with the total (§17.11).
+
+        ``stale`` is what the engine deliberately suppressed; ``write_path`` is the gap
+        accounting for frames that should have been written and were not; whatever is left
+        is downtime — the application or the server was not there to capture it, which
+        covers a crash, a restart, a reboot and a deliberate stop alike. Anything that
+        cannot be attributed stays visible as ``unclassified`` rather than being dropped.
+        """
+        missing = max(0, scheduled_elapsed - captured)
+        stale = min(missing, int(getattr(self.engine, "stale_seconds", 0)))
+        write_path = min(
+            max(0, missing - stale), int(getattr(self.engine, "grid_seconds_lost", 0))
+        )
+        downtime = max(0, missing - stale - write_path)
+        return {
+            "missing_seconds": missing,
+            "stale_feed_seconds": stale,
+            "write_path_seconds": write_path,
+            "downtime_seconds": downtime,
+            "unclassified_seconds": max(0, missing - stale - write_path - downtime),
+        }
+
     def _entry(
         self,
         underlying: str,
@@ -226,16 +313,17 @@ class CaptureMonitor:
         heartbeat_age_ms = (now - last_write) if last_write is not None else None
         last_tick_ms = self.engine.stall.last_message_ms if self.engine is not None else None
         connected = bool(self.bridge.connected) if self.bridge is not None else False
-        # Two DIFFERENT loss figures, previously conflated into one alarming number:
+        # Three DIFFERENT loss figures, previously conflated into one alarming number:
         #   frame_loss_pct   – vs the whole-day baseline. At 10:30 a perfect session still
         #                      reads ~75%, because most of the day has not happened yet.
         #                      It is a completeness/progress measure, not a fault.
-        #   session_loss_pct – vs the grid seconds that have ACTUALLY elapsed. This is the
-        #                      health signal: anything above ~0 means real missing frames.
-        session_expected = expected_frames_elapsed(
-            getattr(self.engine, "first_capture_ms", None),
-            getattr(self.engine, "last_capture_ms", None),
-        )
+        #   session_loss_pct – vs the grid seconds a frame COULD have been written for
+        #                      (elapsed minus stale). This isolates gaps and write-path
+        #                      failures: anything above ~0 means frames we owed and lost.
+        #   data_loss_pct    – vs every elapsed grid second, stale ones included. This is
+        #                      the "how much of the session is actually missing from the
+        #                      archive" number, and the one a frozen feed moves.
+        grid_elapsed, writable, _stale = self._loss_baselines()
         return {
             "underlying": underlying,
             "connected": connected,
@@ -243,8 +331,10 @@ class CaptureMonitor:
             "frames_written": frames,
             "frames_expected": self.expected_frames,
             "frame_loss_pct": round(frame_loss_pct(frames, self.expected_frames), 3),
-            "session_frames_expected": session_expected,
-            "session_loss_pct": round(frame_loss_pct(frames, session_expected), 3),
+            "session_frames_expected": writable,
+            "session_loss_pct": round(frame_loss_pct(frames, writable), 3),
+            "grid_seconds_elapsed": grid_elapsed,
+            "data_loss_pct": round(frame_loss_pct(frames, grid_elapsed), 3),
             "day_complete_pct": round(
                 min(100.0, frames / self.expected_frames * 100.0) if self.expected_frames else 0.0,
                 2,
@@ -262,7 +352,50 @@ class CaptureMonitor:
             # This file's writer queue depth; a sustained non-zero value is the early
             # warning that the write path is falling behind for *this* stream.
             "writer_pending": int(writer.pending) if writer is not None else 0,
+            # --- per-artifact lifecycle and freshness (§20) ---
+            # Each artifact answers for itself: which session phase it is in, whether a
+            # frame is owed right now, and how long since IT last received a relevant
+            # update. A frozen index is invisible in the global signals.
+            "market_phase": self._artifact_phase(underlying, now),
+            "capture_active": self._artifact_capture_active(underlying, now),
+            "artifact_age_ms": self._artifact_age_ms(underlying, now),
+            "artifact_stale": underlying in self._stale_artifact_set(now),
+            "last_frame_ms": last_write,
         }
+
+    def _artifact_phase(self, artifact: str, now: int) -> str | None:
+        if self.session_registry is None:
+            return None
+        try:
+            return self.session_registry.phase(artifact, now)
+        except Exception:  # noqa: BLE001 - telemetry must never break capture
+            return None
+
+    def _artifact_capture_active(self, artifact: str, now: int) -> bool | None:
+        if self.session_registry is None:
+            return None
+        try:
+            return self.session_registry.is_capture_expected(artifact, now)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _artifact_age_ms(self, artifact: str, now: int) -> int | None:
+        ages = getattr(self.engine, "artifact_ages_ms", None)
+        if not callable(ages):
+            return None
+        try:
+            return ages(now).get(artifact)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _stale_artifact_set(self, now: int) -> frozenset[str]:
+        names = getattr(self.engine, "stale_artifact_names", None)
+        if not callable(names):
+            return frozenset()
+        try:
+            return frozenset(names(now))
+        except Exception:  # noqa: BLE001
+            return frozenset()
 
     def per_underlying(self) -> list[dict]:
         entries = [
@@ -281,6 +414,19 @@ class CaptureMonitor:
                     self.stock_matrix.unmatched,
                     self.stock_writer,
                     applied=getattr(self.stock_matrix, "applied", 0),
+                )
+            )
+        # The consolidated index-F&O domain is just another artifact here. Everything
+        # downstream — the WebSocket payload, the dashboard's health table, the per-artifact
+        # loss figures — iterates this list, so a new domain appears without any consumer
+        # needing to know it exists.
+        if self.index_fno_matrix is not None:
+            entries.append(
+                self._entry(
+                    "INDICES_FnO",
+                    self.index_fno_matrix.unmatched,
+                    self.index_fno_writer,
+                    applied=getattr(self.index_fno_matrix, "applied", 0),
                 )
             )
         return entries
@@ -367,11 +513,19 @@ class CaptureMonitor:
         stale = self._feed_stale(now)
         degraded = bool(getattr(self.engine, "degraded", False)) or stale
         reconnects = int(getattr(self.bridge, "reconnects", 0)) if self.bridge is not None else 0
-        # Tiered self-healing telemetry: which recovery tier is active, how many token
-        # refreshes have happened, and whether the recovery has been declared exhausted
-        # (the escalation signal that replaces the old silent freeze).
-        reconnect_tier = int(getattr(self.engine, "reconnect_tier", 0))
-        reconnect_cycles = int(getattr(self.engine, "reconnect_cycles", 0))
+        # Restart-first recovery telemetry: how long the CURRENT continuous stale spell
+        # has run, how many times today's session has escalated to a process restart, and
+        # whether the restart budget is spent (``recovery_abandoned`` — capture stays up
+        # but is knowingly not receiving data). These replace the old reconnect
+        # tier/cycle counters, which reported 0 through a 91-minute outage because a
+        # single fresh tick reset them.
+        stale_spell_seconds = int(getattr(self.engine, "stale_spell_ms", lambda _n: 0)(now)) // 1000
+        longest_stale_spell_seconds = int(
+            getattr(self.engine, "longest_stale_spell_seconds", 0)
+        )
+        escalations = int(getattr(self.engine, "escalations", 0))
+        recovery_abandoned = bool(getattr(self.engine, "recovery_abandoned", False))
+        recovery_armed = bool(getattr(self.engine, "recovery_armed", lambda _n: False)(now))
         exhausted = bool(getattr(self.engine, "exhausted", False))
         token_refreshes = (
             int(getattr(self.bridge, "token_refreshes", 0)) if self.bridge is not None else 0
@@ -387,27 +541,71 @@ class CaptureMonitor:
         # Grid gaps are the ground truth for lost seconds (previously log-only).
         grid_gaps = int(getattr(self.engine, "grid_gaps", 0))
         grid_seconds_lost = int(getattr(self.engine, "grid_seconds_lost", 0))
-        frozen_seconds = int(getattr(self.engine, "frozen_seconds", 0))
-        session_expected = expected_frames_elapsed(
-            getattr(self.engine, "first_capture_ms", None),
-            getattr(self.engine, "last_capture_ms", None),
-        )
-        # Loss measured against ELAPSED capture time (not the full-day baseline), so an
-        # early-session reading is meaningful instead of showing ~96% "loss".
-        session_loss_pct = round(frame_loss_pct(captures, session_expected), 3)
+        stale_events = int(getattr(self.engine, "stale_events", 0))
+        grid_seconds_elapsed, writable_seconds, stale_seconds = self._loss_baselines()
+        # Loss measured against the seconds a frame could legitimately have been written
+        # for (elapsed minus stale) — gaps and write-path failures only.
+        session_loss_pct = round(frame_loss_pct(captures, writable_seconds), 3)
+        # Total market-data loss: every elapsed grid second with no frame in the archive,
+        # whether it was lost to a gap or skipped because the feed had frozen. This is the
+        # number that would have exposed a feed that stopped updating at 09:00 while the
+        # frame count, file size and 1 Hz cadence all still looked perfect.
+        data_loss_pct = round(frame_loss_pct(captures, grid_seconds_elapsed), 3)
         # Ingest throughput from the bridge. `ticks_per_sec` is a TRAILING-WINDOW rate,
         # not ticks_received/uptime — a lifetime average only ever creeps toward the mean
         # and cannot show the current rate (which is what the label promises).
         batches_received = int(getattr(self.bridge, "batches_received", 0)) if self.bridge else 0
         ticks_received = int(getattr(self.bridge, "ticks_received", 0)) if self.bridge else 0
         ticks_per_sec = self._ticks_rate(now, ticks_received)
-        # Disk runway: predicts the ENOSPC that would kill every writer at once.
-        active_writers = max(1, len(entries))
-        mean_bytes_per_frame = (
-            sum(float(e["avg_bytes_per_frame"]) for e in entries) / len(entries)
-            if entries
-            else 0.0
+        # --- session-scheduled completeness (§17) --------------------------------- #
+        # The scheduled figures are uptime-independent, so ``downtime_seconds`` finally
+        # makes an outage visible in the loss number instead of vanishing with the process
+        # that would have counted it.
+        scheduled_today, scheduled_elapsed = self._scheduled_baselines(now)
+        breakdown = self._loss_breakdown(scheduled_elapsed, captures)
+        scheduled_loss_pct = (
+            round(frame_loss_pct(captures, scheduled_elapsed), 3) if scheduled_elapsed else 0.0
         )
+        # Feed health as three separate signals plus one classification (§11/§12), kept
+        # distinct from the market phase (§23) which the session registry owns.
+        health = (
+            self.engine.feed_health(now)
+            if hasattr(self.engine, "feed_health")
+            else None
+        )
+        artifact_ages = (
+            self.engine.artifact_ages_ms(now)
+            if hasattr(self.engine, "artifact_ages_ms")
+            else {}
+        )
+        stale_artifact_names = (
+            list(self.engine.stale_artifact_names(now))
+            if hasattr(self.engine, "stale_artifact_names")
+            else []
+        )
+        transport_age_ms = (
+            self.engine.transport_age_ms(now)
+            if hasattr(self.engine, "transport_age_ms")
+            else None
+        )
+        market_phase = None
+        capture_expected = None
+        if self.session_registry is not None:
+            artifact = next(iter(self.index_tables), "STOCKS")
+            market_phase = self.session_registry.phase(artifact, now)
+            capture_expected = self.session_registry.is_capture_expected(artifact, now)
+        # Transport-level observability (§21): enough to tell a transport problem from
+        # market inactivity, and enough headroom detail to see a capacity wall coming.
+        transport = {
+            "connected": bool(getattr(self.bridge, "connected", False))
+            if self.bridge is not None
+            else False,
+            "queue_depth": self._queue_depth(),
+            "batches_received": batches_received,
+            "dropped_batches": dropped_batches,
+        }
+        if self.subscription is not None:
+            transport.update(self.subscription.as_telemetry())
         return {
             "tokens": self._unique_token_count(),
             "fps": round(self._fps(), 3),
@@ -431,8 +629,11 @@ class CaptureMonitor:
             "degraded": degraded,
             "frozen_batches": frozen_batches,
             "reconnects": reconnects,
-            "reconnect_tier": reconnect_tier,
-            "reconnect_cycles": reconnect_cycles,
+            "stale_spell_seconds": stale_spell_seconds,
+            "longest_stale_spell_seconds": longest_stale_spell_seconds,
+            "escalations": escalations,
+            "recovery_abandoned": recovery_abandoned,
+            "recovery_armed": recovery_armed,
             "exhausted": exhausted,
             "token_refreshes": token_refreshes,
             "last_token_refresh_ms": last_token_refresh_ms,
@@ -440,16 +641,37 @@ class CaptureMonitor:
             # --- per-session data loss ---
             "grid_gaps": grid_gaps,
             "grid_seconds_lost": grid_seconds_lost,
-            "frozen_seconds": frozen_seconds,
-            "session_frames_expected": session_expected,
+            "stale_seconds": stale_seconds,
+            "stale_events": stale_events,
+            "stale_writes_suppressed": bool(
+                getattr(self.engine, "suppress_stale_writes", False)
+            ),
+            "grid_seconds_elapsed": grid_seconds_elapsed,
+            "session_frames_expected": writable_seconds,
             "session_loss_pct": session_loss_pct,
+            "data_loss_pct": data_loss_pct,
             "unmatched_ticks": int(getattr(self.engine, "unmatched", 0)),
+            # --- session-scheduled completeness (uptime-independent) ---
+            "scheduled_seconds": scheduled_today,
+            "scheduled_seconds_elapsed": scheduled_elapsed,
+            "captured_seconds": captures,
+            "scheduled_loss_pct": scheduled_loss_pct,
+            "unscheduled_seconds": int(getattr(self.engine, "unscheduled_seconds", 0)),
+            **breakdown,
+            # --- feed health: three signals, one classification ---
+            "feed_health": health,
+            "transport_age_ms": transport_age_ms,
+            "artifact_ages_ms": artifact_ages,
+            "stale_artifacts": stale_artifact_names,
+            # --- market phase (independent of feed health) ---
+            "market_phase": market_phase,
+            "capture_expected": capture_expected,
+            # --- transport / subscription capacity ---
+            "transport": transport,
             "batches_received": batches_received,
             "ticks_received": ticks_received,
             "ticks_per_sec": ticks_per_sec,
-            "disk_runway_hours": round(
-                disk_runway_hours(disk_free, mean_bytes_per_frame, active_writers), 2
-            ),
+            "first_grid_ms": getattr(self.engine, "first_grid_ms", None),
         }
 
     def snapshot(self) -> dict:
@@ -471,16 +693,33 @@ class CaptureMonitor:
             "frame_loss_pct": g["frame_loss_pct"],
             "session_frames_expected": g["session_frames_expected"],
             "session_loss_pct": g["session_loss_pct"],
+            "grid_seconds_elapsed": g["grid_seconds_elapsed"],
+            "data_loss_pct": g["data_loss_pct"],
             "grid_gaps": g["grid_gaps"],
             "grid_seconds_lost": g["grid_seconds_lost"],
-            "frozen_seconds": g["frozen_seconds"],
+            "stale_seconds": g["stale_seconds"],
+            "stale_events": g["stale_events"],
             "dropped_batches": g["dropped_batches"],
             "drop_rate_pct": g["drop_rate_pct"],
             "unmatched_ticks": g["unmatched_ticks"],
             "ticks_received": g["ticks_received"],
             "reconnects": g["reconnects"],
             "token_refreshes": g["token_refreshes"],
+            "longest_stale_spell_seconds": g["longest_stale_spell_seconds"],
+            "escalations": g["escalations"],
+            "recovery_abandoned": g["recovery_abandoned"],
             "exhausted": g["exhausted"],
+            # Session-scheduled completeness: the honest "how much of this trading day is
+            # missing" figure, including time the process or server was not running.
+            "scheduled_seconds": g["scheduled_seconds"],
+            "scheduled_seconds_elapsed": g["scheduled_seconds_elapsed"],
+            "captured_seconds": g["captured_seconds"],
+            "scheduled_loss_pct": g["scheduled_loss_pct"],
+            "missing_seconds": g["missing_seconds"],
+            "stale_feed_seconds": g["stale_feed_seconds"],
+            "downtime_seconds": g["downtime_seconds"],
+            "write_path_seconds": g["write_path_seconds"],
+            "unclassified_seconds": g["unclassified_seconds"],
             "disk_bytes": g["disk_bytes"],
             "streams": [
                 {

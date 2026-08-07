@@ -106,14 +106,14 @@ def test_engine_resume_restores_frames_first_timestamp_and_carried_counters(tmp_
     assert engine.captures == 0 and engine.first_capture_ms is None
 
     result = engine.resume_from_disk(
-        {"grid_gaps": 2, "grid_seconds_lost": 7, "frozen_seconds": 3}
+        {"grid_gaps": 2, "grid_seconds_lost": 7, "stale_seconds": 3}
     )
 
     assert result["resumed"] is True
     assert result["frames_on_disk"] == 600
     assert engine.captures == 600
     assert engine.first_capture_ms == session_start, "session start comes from the file"
-    assert engine.frozen_seconds == 3
+    assert engine.stale_seconds == 3
     # Carried 7 lost seconds + the ~29s restart hole, counted as one extra gap.
     assert engine.grid_gaps == 3
     assert engine.grid_seconds_lost == 7 + result["downtime_seconds"]

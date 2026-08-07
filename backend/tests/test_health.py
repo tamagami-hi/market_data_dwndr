@@ -65,7 +65,14 @@ def test_running_but_no_telemetry_is_ok_warming_up():
 
 def test_stale_feed_is_degraded_but_http_200():
     snap = {
-        "global": {"stale": True, "degraded": True, "data_age_ms": 42_000, "reconnects": 3}
+        "global": {
+            "stale": True,
+            "degraded": True,
+            "data_age_ms": 42_000,
+            "reconnects": 3,
+            "stale_spell_seconds": 42,
+            "recovery_armed": True,
+        }
     }
     payload, status = build_health(
         _state(capture_controller=_controller(running=True, snapshot=snap))
@@ -78,20 +85,48 @@ def test_stale_feed_is_degraded_but_http_200():
     assert fresh["code"] == CODE_STALE
     assert fresh["data_age_ms"] == 42_000
     assert fresh["reconnects"] == 3
+    assert fresh["stale_spell_seconds"] == 42
+    assert "restart itself" in fresh["message"]
 
 
-def test_exhausted_recovery_is_dead_and_http_503():
-    # The tiered reconnect (incl. calspread token refresh) gave up: this is a real dead
-    # signal, not "self-healing in progress", so it must flip HTTP to 503 for recovery.
+def test_pre_open_silence_is_reported_as_disarmed_not_as_a_fault():
+    """Capture starts at MARKET_OPEN but the exchange trades later; silence is normal.
+
+    The 2026-08-04/05/06 sessions began their destructive recovery in exactly this
+    window, so the two situations must read differently on /health.
+    """
+    snap = {
+        "global": {
+            "stale": True,
+            "degraded": True,
+            "data_age_ms": 30_000,
+            "stale_spell_seconds": 30,
+            "recovery_armed": False,
+        }
+    }
+    payload, status = build_health(
+        _state(capture_controller=_controller(running=True, snapshot=snap))
+    )
+    assert status == CODE_OK
+    fresh = _check(payload, "data_freshness")
+    assert fresh["status"] == "stale"
+    assert fresh["recovery_armed"] is False
+    assert "not trading yet" in fresh["message"]
+
+
+def test_abandoned_recovery_is_dead_and_http_503():
+    # Restart-first recovery spent the day's restart budget without restoring the feed:
+    # a real dead signal, not "self-healing in progress", so HTTP flips to 503.
     snap = {
         "global": {
             "stale": True,
             "degraded": True,
             "exhausted": True,
+            "recovery_abandoned": True,
             "data_age_ms": 120_000,
-            "reconnect_cycles": 3,
-            "reconnects": 60,
-            "token_refreshes": 5,
+            "stale_spell_seconds": 120,
+            "escalations": 3,
+            "reconnects": 0,
         }
     }
     payload, status = build_health(
@@ -102,7 +137,8 @@ def test_exhausted_recovery_is_dead_and_http_503():
     fresh = _check(payload, "data_freshness")
     assert fresh["status"] == "dead"
     assert fresh["code"] == CODE_DEAD
-    assert fresh["token_refreshes"] == 5
+    assert fresh["escalations"] == 3
+    assert fresh["recovery_abandoned"] is True
 
 
 def test_crashed_capture_task_is_dead_and_http_503():

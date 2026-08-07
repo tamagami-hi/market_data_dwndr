@@ -159,6 +159,15 @@ class CaptureController:
         bootstrap_fn, run_fn = self._resolve_fns()
         try:
             context = bootstrap_fn(
+                self.settings,
+                session.access_token,
+                session.risk_free_rate,
+                hub=self.hub,
+                token_refresher=self._make_token_refresher(session.access_token),
+            )
+        except TypeError:
+            # Injected test doubles may not accept the recovery hook.
+            context = bootstrap_fn(
                 self.settings, session.access_token, session.risk_free_rate, hub=self.hub
             )
         except KiteAuthenticationError as exc:
@@ -167,7 +176,6 @@ class CaptureController:
                 "broker session expired; waiting for automatic token refresh"
             ) from exc
         self._context = context
-        self._wire_token_provider(context)
         self._stop = asyncio.Event()
         self._error = None
         self._has_failed = False
@@ -259,33 +267,30 @@ class CaptureController:
             self._maintenance_store.release(lease_id)
             return True
 
-    def _wire_token_provider(self, context) -> None:
-        """Give the live ticker a way to fetch a fresh token from calspread on reconnect.
+    def _make_token_refresher(self, access_token: str):
+        """A bounded, best-effort token swap attempted just before a restart escalation.
 
-        Set on the bridge *after* bootstrap so the injected ``bootstrap_fn`` signature is
-        unchanged (and test doubles without a ``bridge`` are simply skipped). The provider
-        invalidates the failed token and re-acquires via the session service, which reaches
-        the calspread broker over HTTP.
+        Restart-first recovery exits the process when the feed is dead; giving the
+        replacement process a fresh token makes that restart worth more. The swap is
+        non-destructive by construction (see ``SessionService.refresh_broker_session``):
+        the working session is only replaced once a *validated, different* token is in
+        hand, never deleted in the hope that one arrives.
         """
-        bridge = getattr(context, "bridge", None)
-        if bridge is None:
-            return
-        setter = getattr(bridge, "set_token_provider", None)
-        if callable(setter):
-            setter(self._make_token_provider())
-
-    def _make_token_provider(self):
         service = self.session_service
 
-        def _provider(current_token: str | None) -> str | None:
+        def _refresh() -> bool:
             refresh = getattr(service, "refresh_broker_session", None)
             if not callable(refresh):
-                return None
-            session = refresh(current_token)
+                return False
+            session = refresh(access_token)
             token = getattr(session, "access_token", None) if session else None
-            return token or None
+            if token:
+                logger.warning("swapped in a fresh broker token before restarting capture")
+                return True
+            logger.warning("no fresh broker token available; restarting with the current one")
+            return False
 
-        return _provider
+        return _refresh
 
     def _handle_authentication_failure(self, expected_access_token: str) -> None:
         invalidate = getattr(self.session_service, "invalidate_active_session", None)

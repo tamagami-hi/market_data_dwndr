@@ -33,6 +33,9 @@ from app.bin_codec.layout import (
     TAG_HEADER,
     Cursor,
     FutureRef,
+    IndexFnoFrame,
+    IndexFnoHeader,
+    IndexFnoRef,
     IndexFrame,
     IndexHeader,
     InstrColumns,
@@ -308,3 +311,55 @@ class StockBinReader(_BaseReader):
 
     def frames_in_range(self, start_ms: int, end_ms: int) -> list[StockFrame]:
         return [self.frame(i) for i in self.indices_in_range(start_ms, end_ms)]
+
+
+
+class IndexFnoBinReader(_BaseReader):
+    """Reader for the consolidated index-F&O file (all configured indices, one grid)."""
+
+    def header(self) -> IndexFnoHeader:
+        cur = self._header_cursor()
+        cur.u32()  # tag
+        schema_version = cur.u32()
+        trading_date = cur.string()
+        risk_free_rate = cur.f64()
+        n_indices = cur.u64()
+        indices: list[IndexFnoRef] = []
+        for _ in range(n_indices):
+            underlying = cur.string()
+            spot_symbol = cur.string()
+            spot_token = cur.u64()
+            n_fut = cur.u64()
+            futures = [
+                FutureRef(token=cur.u64(), expiry=cur.string(), lot_size=cur.u32())
+                for _ in range(n_fut)
+            ]
+            indices.append(
+                IndexFnoRef(
+                    underlying=underlying,
+                    spot_symbol=spot_symbol,
+                    spot_token=spot_token,
+                    futures=futures,
+                )
+            )
+        return IndexFnoHeader(
+            trading_date=trading_date,
+            risk_free_rate=risk_free_rate,
+            indices=indices,
+            schema_version=schema_version,
+        )
+
+    def frame(self, index: int) -> IndexFnoFrame:
+        cur = self._frame_cursor(index)
+        cur.u32()  # tag
+        timestamp = cur.u64()
+        sequence = cur.u64()
+        spot = _decode_instr_columns(cur)
+        fut_current = _decode_instr_columns(cur)
+        fut_mid = _decode_instr_columns(cur)
+        fut_far = _decode_instr_columns(cur)
+        return IndexFnoFrame(timestamp, sequence, spot, fut_current, fut_mid, fut_far)
+
+    def frames(self):
+        for i in range(len(self)):
+            yield self.frame(i)

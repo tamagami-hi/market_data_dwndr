@@ -92,6 +92,15 @@ export function FrameIntegrity({
             {globals ? formatPercent(overall, 1) : "--"}
           </div>
           captured of full session
+          {/* The full-session figure is a progress bar for the day and reads high even
+              when the feed is dead (a frozen morning still leaves the afternoon intact).
+              The elapsed real-data share is the number that exposes that. */}
+          {globals && (globals.data_loss_pct ?? 0) > 0 && (
+            <div className="mt-0.5 text-warning">
+              {formatPercent(Math.max(0, 100 - (globals.data_loss_pct ?? 0)), 1)} real data of
+              elapsed
+            </div>
+          )}
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-3">
@@ -108,7 +117,7 @@ export function FrameIntegrity({
                   <div className="mb-0.5 flex justify-between gap-2">
                     <span className="truncate font-medium text-secondary">{row.underlying}</span>
                     <span className="shrink-0 font-mono tabular-nums text-muted">
-                      {formatIndianNumber(row.frames_written, 0)} · loss{" "}
+                      {formatIndianNumber(row.frames_written, 0)} · remaining{" "}
                       {formatPercent(row.frame_loss_pct, 1)}
                     </span>
                   </div>

@@ -69,7 +69,14 @@ Per-underlying config: ATM `step`, options exchange, spot symbol/token.
 | FINNIFTY | 50 | NFO | NSE:NIFTY FIN SERVICE | 257801 |
 | SENSEX | 100 | BFO | BSE:SENSEX | 265 |
 
-> MIDCPNIFTY and BANKEX are **excluded** (per decision, [[decisions-and-open-questions]]).
+> All six indices are captured: NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX, BANKEX.
+> MIDCPNIFTY and BANKEX were excluded until 2026-08-07 (see
+> [[decisions-and-open-questions]] #9). Their configuration was verified against that
+> day's live instrument masters rather than assumed — spot tokens read from the `INDICES`
+> segment (`NIFTY MID SELECT` = 288009, `BANKEX` = 274441, which also re-confirmed SENSEX
+> 265), and strike steps derived from the modal gap between listed strikes (MIDCPNIFTY 25,
+> BANKEX 100). A wrong spot token or step fails silently — it centres the chain on the
+> wrong strike — so re-verify both if an exchange relists an index.
 > VIX: `NSE:INDIA VIX` (token 264969) — stored raw per chain.
 > Each index gets its own file: `MARKET_DATA/INDICES/<INDEX>/<date>.bin` ([[storage-layout]]).
 

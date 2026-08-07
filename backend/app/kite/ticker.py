@@ -199,7 +199,13 @@ class TickerBridge:
             logger.exception("failed to start replacement ticker during reconnect")
 
     def set_token_provider(self, token_provider: TokenProvider | None) -> None:
-        """Wire (or replace) the callable used to fetch a fresh token on reconnect."""
+        """Wire (or replace) the callable used to fetch a fresh token.
+
+        Retained for the reconnect drill and tests. The live capture path no longer uses
+        it: recovery is restart-first (see ``CaptureEngine.observe_feed_health``), because
+        the in-process token-refresh ladder this once fed never obtained a token on any
+        recorded trading day while destroying the day's persisted session each attempt.
+        """
         self._token_provider = token_provider
 
     def _apply_new_token(self, token: str) -> None:
@@ -213,37 +219,6 @@ class TickerBridge:
         """Milliseconds since the in-memory access token was last (re)set."""
         reference = now if now is not None else self._clock()
         return max(0, reference - self._token_set_ms)
-
-    async def reconnect_with_refresh(self) -> bool:
-        """Fetch a fresh access token (calspread HTTP, off-loop) then reconnect.
-
-        The provider runs in a worker thread via ``asyncio.to_thread`` so the blocking
-        HTTP round-trip never stalls the 1 Hz capture loop. If a new token comes back it
-        is adopted (and the old one dropped) before a brand-new socket is opened; if the
-        provider yields nothing we still reconnect with the current token so a transient
-        broker outage does not leave the feed frozen. Returns ``True`` when a token was
-        obtained.
-        """
-        provider = self._token_provider
-        new_token: str | None = None
-        if provider is not None:
-            try:
-                new_token = await asyncio.to_thread(provider, self.access_token)
-            except Exception:  # noqa: BLE001 - broker/network failure must not crash the loop
-                logger.exception("token refresh via calspread failed")
-                new_token = None
-        if new_token:
-            if new_token != self.access_token:
-                logger.info("obtained a fresh Kite access token; reconnecting with it")
-                self._apply_new_token(new_token)
-            else:
-                self.last_token_refresh_ms = self._clock()
-        else:
-            logger.warning(
-                "token refresh returned nothing; reconnecting with the current token"
-            )
-        self.reconnect()
-        return bool(new_token)
 
     def stop(self) -> None:
         if self._ticker is not None:

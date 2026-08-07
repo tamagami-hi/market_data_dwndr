@@ -174,8 +174,12 @@ export interface PerUnderlyingStatus {
   frame_loss_pct: number;
   /** Frames the grid should have produced over the elapsed span (health baseline). */
   session_frames_expected?: number;
-  /** Loss vs elapsed grid seconds — the real health signal (above ~0 = genuine loss). */
+  /** Loss vs writable grid seconds — gaps and write failures only (above ~0 = real loss). */
   session_loss_pct?: number;
+  /** Every grid second the loop reached, stale ones included. */
+  grid_seconds_elapsed?: number;
+  /** Total loss vs elapsed grid seconds, stale-suppressed seconds included. */
+  data_loss_pct?: number;
   /** Share of the full session captured so far. */
   day_complete_pct?: number;
   file_bytes: number;
@@ -190,6 +194,50 @@ export interface PerUnderlyingStatus {
   applied?: number;
   /** This stream's writer queue depth. */
   writer_pending?: number;
+  // --- per-artifact lifecycle (each artifact answers for itself) ---
+  /** This artifact's market-session phase: INACTIVE/BOOTSTRAP/PRE_OPEN/OPEN/CLOSED. */
+  market_phase?: MarketPhase | null;
+  /** True when a frame is owed for this artifact right now. */
+  capture_active?: boolean | null;
+  /** Age of this artifact's last relevant update; null when it has never updated. */
+  artifact_age_ms?: number | null;
+  /** True when this artifact is not updating while the transport is alive. */
+  artifact_stale?: boolean;
+  /** Timestamp of this artifact's last persisted frame. */
+  last_frame_ms?: number | null;
+}
+
+/** Market-session lifecycle phase. Independent of feed health. */
+export type MarketPhase = "INACTIVE" | "BOOTSTRAP" | "PRE_OPEN" | "OPEN" | "CLOSED";
+
+/**
+ * Feed health, kept strictly separate from the market phase: PRE_OPEN + HEALTHY and
+ * OPEN + TRANSPORT_STALE are both meaningful states.
+ */
+export type FeedHealth =
+  | "INACTIVE"
+  | "HEALTHY"
+  | "QUIET"
+  | "ARTIFACT_STALE"
+  | "TRANSPORT_STALE"
+  | "RECOVERY_PENDING"
+  | "RECOVERY_ABANDONED";
+
+/** Transport + subscription-capacity telemetry (distinguishes a dead socket from a quiet market). */
+export interface TransportStatus {
+  connected: boolean;
+  queue_depth: number;
+  batches_received: number;
+  dropped_batches: number;
+  subscribed_tokens?: number;
+  subscription_limit?: number;
+  subscription_safe_limit?: number;
+  subscription_remaining?: number;
+  subscription_utilisation_pct?: number;
+  subscription_shards?: number;
+  subscription_over_threshold?: boolean;
+  subscription_exceeds_capacity?: boolean;
+  subscription_breakdown?: Record<string, number>;
 }
 
 export interface GlobalStatus {
@@ -207,6 +255,8 @@ export interface GlobalStatus {
   frames_expected: number;
   frame_loss_pct: number;
   snapshot_ms: number;
+  /** Deepest writer queue depth. Kept for /api/status consumers and logs; no longer on
+   *  the dashboard, where a queue depth was noise next to the loss metrics. */
   writer_lag_max: number;
   /** ms since the feed content last changed (null before the first tick). */
   data_age_ms: number | null;
@@ -220,34 +270,84 @@ export interface GlobalStatus {
   frozen_batches: number;
   /** Number of self-driven ticker reconnects triggered this session. */
   reconnects: number;
-  /** Active reconnect tier: 1 = reuse token, 2 = fresh token from calspread. */
-  reconnect_tier?: number;
-  /** Completed backoff cycles while the feed stayed stale. */
-  reconnect_cycles?: number;
-  /** True once reconnect recovery is exhausted (needs a process restart). */
+  /** Seconds the CURRENT continuous stale spell has run (0 when ticks are fresh). */
+  stale_spell_seconds?: number;
+  /** Longest stale spell this session, carried across process restarts. */
+  longest_stale_spell_seconds?: number;
+  /** Times this trading date has restarted the process over a dead feed. */
+  escalations?: number;
+  /** True when the day's restart budget is spent: capture is up but has no data. */
+  recovery_abandoned?: boolean;
+  /** True only while the exchange is trading — staleness is a fault worth restarting for. */
+  recovery_armed?: boolean;
+  /** True once recovery has been abandoned for the day (needs operator attention). */
   exhausted?: boolean;
   /** Access-token refreshes fetched during recovery. */
   token_refreshes?: number;
   last_token_refresh_ms?: number | null;
   token_age_ms?: number | null;
+  // --- three-signal feed health (§11/§12), separate from the market phase (§23) ---
+  /** Classified feed health; worst-first precedence. */
+  feed_health?: FeedHealth | null;
+  /** Milliseconds since ANY broker packet arrived (the transport signal). */
+  transport_age_ms?: number | null;
+  /** Per-artifact last-relevant-update ages; null means never updated. */
+  artifact_ages_ms?: Record<string, number | null>;
+  /** Artifacts not updating while the transport is alive. */
+  stale_artifacts?: string[];
+  /** The session phase of the reference artifact. Independent of feed health. */
+  market_phase?: MarketPhase | null;
+  /** Whether a frame is owed right now. */
+  capture_expected?: boolean | null;
+  /** Transport + subscription capacity. */
+  transport?: TransportStatus;
+  // --- session-scheduled completeness (uptime-independent, §17) ---
+  /** Seconds this session is scheduled to capture over the whole trading day. */
+  scheduled_seconds?: number;
+  /** Scheduled seconds owed so far today — counts time the process was NOT running. */
+  scheduled_seconds_elapsed?: number;
+  /** Seconds actually captured. */
+  captured_seconds?: number;
+  /** Loss against the scheduled grid: the honest completeness figure. */
+  scheduled_loss_pct?: number;
+  /** Grid seconds reached while nothing was scheduled. Never counted as loss. */
+  unscheduled_seconds?: number;
+  /** Total missing scheduled seconds, whatever the cause. */
+  missing_seconds?: number;
+  /** Missing because the feed was stale and writes were suppressed. */
+  stale_feed_seconds?: number;
+  /** Missing because the application or server was not running. */
+  downtime_seconds?: number;
+  /** Missing because persistence failed. */
+  write_path_seconds?: number;
+  /** Missing with no determinable cause — visible rather than forced into a category. */
+  unclassified_seconds?: number;
   // --- per-session data loss ---
   /** Times the 1 Hz grid fell so far behind it had to resync (lost whole seconds). */
   grid_gaps?: number;
   /** Total grid seconds that could never be written. */
   grid_seconds_lost?: number;
-  /** Seconds captured while the feed was stale (duplicate values, no fresh data). */
-  frozen_seconds?: number;
+  /** Grid seconds NOT written because the feed was stale (frozen or absent values). */
+  stale_seconds?: number;
+  /** Distinct stale spells — one long freeze vs many brief blips. */
+  stale_events?: number;
+  /** True when the engine is configured to skip writing stale frames. */
+  stale_writes_suppressed?: boolean;
+  /** Every grid second the loop reached, whether or not a frame was persisted. */
+  grid_seconds_elapsed?: number;
   /** Frames the grid should have produced over the ELAPSED capture span. */
   session_frames_expected?: number;
-  /** Loss measured against elapsed time (not the full-day baseline). */
+  /** Loss vs writable seconds (elapsed minus stale): gaps and write failures only. */
   session_loss_pct?: number;
+  /** Total market-data loss vs every elapsed grid second, stale seconds included. */
+  data_loss_pct?: number;
   /** Ticks that matched no subscribed instrument. */
   unmatched_ticks?: number;
   batches_received?: number;
   ticks_received?: number;
   ticks_per_sec?: number;
-  /** Hours of capture the remaining free disk can absorb. */
-  disk_runway_hours?: number;
+  /** First grid second of the session (survives a restart via the persisted snapshot). */
+  first_grid_ms?: number | null;
 }
 
 /** EOD zstd compression telemetry (CompressionProgress + persisted history). */

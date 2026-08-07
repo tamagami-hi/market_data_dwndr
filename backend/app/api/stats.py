@@ -17,7 +17,7 @@ import logging
 
 from fastapi import APIRouter, Request
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.ops import stats_store
 from app.session import now_ms
 
@@ -64,8 +64,14 @@ def _refresh_window(settings, session_service, capture_running: bool) -> dict:
     session is being established. Outside both, the last session's numbers are final,
     so the frontend can idle instead of polling every few seconds.
     """
-    auth_start = getattr(settings, "auth_poll_start", "08:30") if settings else "08:30"
-    auth_end = getattr(settings, "auth_poll_end", "09:00") if settings else "09:00"
+    # Falls back to the field defaults rather than to literal clock times, so the auth
+    # window always reflects configuration.
+    auth_start = getattr(settings, "auth_poll_start", None) if settings else None
+    auth_end = getattr(settings, "auth_poll_end", None) if settings else None
+    if auth_start is None or auth_end is None:
+        defaults = Settings.model_fields
+        auth_start = auth_start or defaults["auth_poll_start"].default
+        auth_end = auth_end or defaults["auth_poll_end"].default
     info: dict = {
         "auth_poll_start": auth_start,
         "auth_poll_end": auth_end,
@@ -98,11 +104,14 @@ def collect_stats(app_state) -> dict:
     try:
         settings = get_settings()
         state_dir = settings.stats_dir
-        expected_frames = getattr(settings, "expected_frames_per_session", 23_400)
+        expected_frames = getattr(settings, "expected_frames_per_session", 0)
     except Exception:  # noqa: BLE001 - settings unavailable in some test contexts
         settings = None
         state_dir = None
-        expected_frames = 23_400
+        # No configuration means no session window, and therefore no defensible frame
+        # baseline. Reporting 0 makes the absence visible; inventing a number would put a
+        # fabricated market schedule into the loss percentages.
+        expected_frames = 0
 
     trading_date = _trading_date(session_service)
 

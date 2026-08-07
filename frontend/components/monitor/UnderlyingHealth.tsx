@@ -20,6 +20,21 @@ function StreamDetails({ row }: { row: PerUnderlyingStatus }) {
     ["Unmatched ticks", formatIndianNumber(row.unmatched, 0)],
     ["Writer pending", formatIndianNumber(row.writer_pending ?? 0, 0)],
     ["Data freshness", row.data_fresh ? "fresh" : "frozen"],
+    ["Session phase", row.market_phase ?? "--"],
+    [
+      "Capture active",
+      row.capture_active === null || row.capture_active === undefined
+        ? "--"
+        : row.capture_active
+          ? "yes"
+          : "no (outside session)",
+    ],
+    [
+      "Last update age",
+      row.artifact_age_ms === null || row.artifact_age_ms === undefined
+        ? "never"
+        : `${(row.artifact_age_ms / 1000).toFixed(1)}s`,
+    ],
   ];
   return (
     <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
@@ -50,6 +65,21 @@ function CompactColumnHeader({
   );
 }
 
+/**
+ * Abbreviated session phase for the dense table.
+ *
+ * The full name is kept in the mobile disclosure and in the accessible column name; the
+ * table itself has eleven columns to fit, and a wide phase string would squeeze the
+ * timestamp column until it clipped.
+ */
+const SHORT_PHASE: Record<string, string> = {
+  INACTIVE: "IDLE",
+  BOOTSTRAP: "BOOT",
+  PRE_OPEN: "PRE",
+  OPEN: "OPEN",
+  CLOSED: "CLSD",
+};
+
 function StreamConnectionIndicator({
   connected,
   underlying,
@@ -69,8 +99,15 @@ function StreamConnectionIndicator({
 }
 
 export function UnderlyingHealth({ rows }: { rows: PerUnderlyingStatus[] }) {
+  // Rendered purely from the artifact list the backend sends — there is deliberately no
+  // assumption about how many capture domains exist, so the consolidated index-F&O
+  // dataset (and anything added later) appears without a change here.
   return (
-    <Panel title="Per-underlying health" subtitle={`${rows.length} streams`} className="h-full">
+    <Panel
+      title="Per-underlying health"
+      subtitle={`${rows.length} ${rows.length === 1 ? "artifact" : "artifacts"}`}
+      className="h-full"
+    >
       {rows.length === 0 ? (
         <div className="p-3">
           <StateMessage title="Waiting for capture telemetry">
@@ -118,14 +155,15 @@ export function UnderlyingHealth({ rows }: { rows: PerUnderlyingStatus[] }) {
               <colgroup>
                 <col className="w-[13%]" />
                 <col className="w-[6%]" />
-                <col className="w-[9%]" />
-                <col className="w-[9%]" />
-                <col className="w-[9%]" />
+                <col className="w-[8%]" />
+                <col className="w-[8%]" />
+                <col className="w-[8%]" />
                 <col className="w-[10%]" />
                 <col className="w-[11%]" />
-                <col className="w-[10%]" />
+                <col className="w-[9%]" />
                 <col className="w-[13%]" />
-                <col className="w-[10%]" />
+                <col className="w-[7%]" />
+                <col className="w-[7%]" />
               </colgroup>
               <thead className="sticky top-0 z-10">
                 <tr>
@@ -143,12 +181,16 @@ export function UnderlyingHealth({ rows }: { rows: PerUnderlyingStatus[] }) {
                   <th className="text-right">File</th>
                   <CompactColumnHeader label="Last tick" shortLabel="Tick" />
                   <CompactColumnHeader label="Heartbeat" shortLabel="HB" />
+                  <CompactColumnHeader label="Session phase" shortLabel="Phase" />
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row) => (
                   <tr key={row.underlying}>
-                    <td className="sticky left-0 z-10 bg-surface-1 font-sans font-semibold text-primary">
+                    {/* Artifact names are data and vary in length (INDICES_FnO is the
+                        longest). Rendered a step smaller so a longer name neither clips
+                        nor forces every other column narrower. */}
+                    <td className="sticky left-0 z-10 bg-surface-1 text-[11px] font-semibold text-primary">
                       {row.underlying}
                     </td>
                     <td className="text-center">
@@ -170,6 +212,28 @@ export function UnderlyingHealth({ rows }: { rows: PerUnderlyingStatus[] }) {
                     <td className="text-right text-secondary">{formatClockTime(row.last_tick_ms)}</td>
                     <td className={`text-right ${row.heartbeat_ok ? "text-success" : "text-danger"}`}>
                       {row.heartbeat_ok ? "1 Hz" : "stale"}
+                    </td>
+                    {/* Each artifact's own session phase. An artifact outside its session
+                        is idle by design, which must not read like a failure. */}
+                    <td
+                      className={`text-right ${
+                        row.capture_active === false
+                          ? "text-muted"
+                          : row.artifact_stale
+                            ? "text-warning"
+                            : "text-secondary"
+                      }`}
+                    >
+                      {row.market_phase ? (
+                        <>
+                          <span aria-hidden="true">
+                            {SHORT_PHASE[row.market_phase] ?? row.market_phase}
+                          </span>
+                          <span className="sr-only">{row.market_phase}</span>
+                        </>
+                      ) : (
+                        "--"
+                      )}
                     </td>
                   </tr>
                 ))}

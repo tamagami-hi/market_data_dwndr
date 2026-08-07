@@ -21,6 +21,8 @@ from app.bin_codec.layout import (
     RAW_BLOCK_COLUMNS,
     TAG_DATA,
     TAG_HEADER,
+    IndexFnoFrame,
+    IndexFnoHeader,
     IndexFrame,
     IndexHeader,
     InstrColumns,
@@ -102,6 +104,35 @@ def encode_stock_frame(frame: StockFrame, n_stocks: int) -> bytes:
     layout.put_u64(out, frame.sequence)
     for leg in frame.legs():
         _encode_instr_columns(out, leg, n_stocks)
+    return bytes(out)
+
+
+def encode_index_fno_header(header: IndexFnoHeader) -> bytes:
+    out = bytearray()
+    layout.put_u32(out, TAG_HEADER)
+    layout.put_u32(out, header.schema_version)
+    layout.put_string(out, header.trading_date)
+    layout.put_f64(out, header.risk_free_rate)
+    layout.put_u64(out, len(header.indices))  # Vec<IndexFnoRef> count
+    for index in header.indices:
+        layout.put_string(out, index.underlying)
+        layout.put_string(out, index.spot_symbol)
+        layout.put_u64(out, index.spot_token)
+        layout.put_u64(out, len(index.futures))  # Vec<FutureRef> count
+        for fut in index.futures:
+            layout.put_u64(out, fut.token)
+            layout.put_string(out, fut.expiry)
+            layout.put_u32(out, fut.lot_size)
+    return bytes(out)
+
+
+def encode_index_fno_frame(frame: IndexFnoFrame, n_indices: int) -> bytes:
+    out = bytearray()
+    layout.put_u32(out, TAG_DATA)
+    layout.put_u64(out, frame.timestamp_unix_ms)
+    layout.put_u64(out, frame.sequence)
+    for leg in frame.legs():
+        _encode_instr_columns(out, leg, n_indices)
     return bytes(out)
 
 
@@ -209,3 +240,33 @@ class StockBinWriter(_BaseWriter):
         if self._n_stocks is None:
             raise RuntimeError("call write_header first to establish stock count")
         self._write_framed(encode_stock_frame(frame, self._n_stocks))
+
+
+
+
+class IndexFnoBinWriter(_BaseWriter):
+    """Writer for the daily consolidated index-F&O file (all configured indices).
+
+    A separate file and a separate header from the stocks writer, deliberately: the stock
+    F&O binary contract is untouched by this domain, so existing historical data stays
+    readable and the two schemas can evolve independently.
+    """
+
+    def __init__(self, path: str | os.PathLike[str], *, sync: bool = False) -> None:
+        super().__init__(path, sync=sync)
+        self._n_indices: int | None = None
+
+    def write_header(self, header: IndexFnoHeader) -> bool:
+        self._n_indices = len(header.indices)
+        if self._header_written:
+            return False
+        self._write_framed(encode_index_fno_header(header))
+        self._header_written = True
+        return True
+
+    def append_frame(self, frame: IndexFnoFrame) -> None:
+        if not self._header_written:
+            raise RuntimeError("index-F&O header must be written before frames")
+        if self._n_indices is None:
+            raise RuntimeError("call write_header first to establish index count")
+        self._write_framed(encode_index_fno_frame(frame, self._n_indices))

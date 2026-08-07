@@ -69,3 +69,64 @@ test("does not expose a horizontal scrollbar for the desktop health matrix", () 
   expect(frame).toHaveClass("overflow-x-hidden", "overflow-y-auto");
   expect(frame).not.toHaveClass("overflow-auto");
 });
+
+
+
+// --- dynamic artifact list ----------------------------------------------------
+//
+// §22: the dashboard must not assume TickVault has exactly five capture domains. Every row
+// comes from the artifact list the backend sends, so a new domain appears with no change
+// here — which is exactly how INDICES_FnO shows up.
+
+
+function artifact(underlying: string, overrides: Partial<PerUnderlyingStatus> = {}) {
+  return { ...ROW, underlying, ...overrides } as PerUnderlyingStatus;
+}
+
+test("renders however many artifacts the backend reports, including new domains", () => {
+  const rows = ["NIFTY", "BANKNIFTY", "STOCKS", "INDICES_FnO"].map((name) =>
+    artifact(name, { market_phase: "OPEN", capture_active: true }),
+  );
+
+  render(<UnderlyingHealth rows={rows} />);
+
+  for (const name of ["NIFTY", "BANKNIFTY", "STOCKS", "INDICES_FnO"]) {
+    expect(screen.getAllByText(name).length).toBeGreaterThan(0);
+  }
+  expect(screen.getByText("4 artifacts")).toBeInTheDocument();
+});
+
+test("a single artifact is labelled in the singular", () => {
+  render(<UnderlyingHealth rows={[artifact("INDICES_FnO")]} />);
+  expect(screen.getByText("1 artifact")).toBeInTheDocument();
+});
+
+test("each artifact shows its own session phase", () => {
+  const rows = [
+    artifact("NIFTY", { market_phase: "OPEN", capture_active: true }),
+    artifact("INDICES_FnO", { market_phase: "CLOSED", capture_active: false }),
+  ];
+
+  render(<UnderlyingHealth rows={rows} />);
+
+  // Both phases are rendered, so one artifact closing while another trades is visible.
+  expect(screen.getAllByText("OPEN").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("CLOSED").length).toBeGreaterThan(0);
+});
+
+test("an artifact outside its session is muted rather than flagged as failing", () => {
+  render(
+    <UnderlyingHealth
+      rows={[artifact("INDICES_FnO", { market_phase: "CLOSED", capture_active: false })]}
+    />,
+  );
+
+  // Target the table cell specifically; the mobile disclosure renders the phase too.
+  const cell = screen
+    .getAllByText("CLSD")
+    .map((element) => element.closest("td"))
+    .find((element) => element !== null);
+  expect(cell).toBeTruthy();
+  expect(cell!.className).toContain("text-muted");
+  expect(cell!.className).not.toContain("text-danger");
+});

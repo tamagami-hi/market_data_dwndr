@@ -7,9 +7,10 @@ monitor, and the Docker healthcheck all read the same source of truth:
 * **capture_task** — ``ok`` while running, ``idle`` off-hours/pre-open, or ``dead`` when
   the in-process task has crashed and needs a fresh process (``CaptureController.has_failed``).
 * **data_freshness** — ``ok`` when ticks are fresh, ``idle`` when capture isn't running,
-  ``stale`` when the live feed has frozen but the tiered reconnect (incl. calspread token
-  refresh) is still self-healing it (reported, not restart-triggering), or ``dead`` once
-  that recovery is *exhausted* (escalated: a process restart is required).
+  ``stale`` when the live feed has no fresh ticks (either the exchange has not started
+  trading yet, or the feed has died and the process will restart itself over it — the
+  message and ``recovery_armed`` distinguish the two), or ``dead`` once the day's restart
+  budget is spent and recovery has been *abandoned*.
 
 Critically, the **HTTP status code encodes liveness only**: ``503`` iff a component is
 *dead*, otherwise ``200`` — even when degraded/stale. The Docker healthcheck's
@@ -89,42 +90,53 @@ def _freshness_check(controller) -> dict:
     g = snapshot.get("global") or {}
     data_age_ms = g.get("data_age_ms")
     reconnects = g.get("reconnects")
-    if bool(g.get("exhausted")):
-        # The tiered reconnect ladder (incl. calspread token refresh) could not restore
-        # a live feed. This is a real dead signal: surface 503 so the healthcheck /
-        # restart tooling recovers, rather than pretending recovery is still in progress.
+    recovery = {
+        "data_age_ms": data_age_ms,
+        "liveness_age_ms": g.get("liveness_age_ms"),
+        "frozen_batches": g.get("frozen_batches"),
+        "reconnects": reconnects,
+        "stale_spell_seconds": g.get("stale_spell_seconds"),
+        "longest_stale_spell_seconds": g.get("longest_stale_spell_seconds"),
+        "escalations": g.get("escalations"),
+        "recovery_abandoned": bool(g.get("recovery_abandoned")),
+        "recovery_armed": bool(g.get("recovery_armed")),
+    }
+    if bool(g.get("exhausted")) or bool(g.get("recovery_abandoned")):
+        # Restart-first recovery has spent the day's restart budget without restoring a
+        # live feed. A real dead signal: surface 503 so the healthcheck / restart tooling
+        # and the operator see it, rather than pretending recovery is still in progress.
         return {
             "component": "data_freshness",
             "status": "dead",
             "code": CODE_DEAD,
             "message": (
-                f"live feed stale ({data_age_ms} ms) and reconnect recovery exhausted "
-                f"after {g.get('reconnect_cycles')} cycle(s); process restart required"
+                f"live feed stale for {g.get('stale_spell_seconds')}s after "
+                f"{g.get('escalations')} restart escalation(s); recovery abandoned for "
+                "today — capture is running but not receiving data"
             ),
-            "data_age_ms": data_age_ms,
-            "liveness_age_ms": g.get("liveness_age_ms"),
-            "frozen_batches": g.get("frozen_batches"),
-            "reconnects": reconnects,
-            "reconnect_tier": g.get("reconnect_tier"),
-            "token_refreshes": g.get("token_refreshes"),
+            **recovery,
         }
     if bool(g.get("degraded")) or bool(g.get("stale")):
+        # Two very different situations share the "no fresh ticks" signal: the exchange
+        # has not started trading yet (normal, recovery disarmed), or the feed has died
+        # mid-session (a fault the process will restart itself over).
+        if g.get("recovery_armed"):
+            message = (
+                f"live feed stale for {g.get('stale_spell_seconds')}s "
+                f"({data_age_ms} ms since content changed); process will restart itself "
+                "if this persists"
+            )
+        else:
+            message = (
+                f"no fresh ticks ({data_age_ms} ms) but the market is not trading yet; "
+                "restart-first recovery is disarmed"
+            )
         return {
             "component": "data_freshness",
             "status": "stale",
             "code": CODE_STALE,
-            "message": (
-                f"live feed frozen ({data_age_ms} ms without fresh ticks); "
-                f"auto-reconnect in progress "
-                f"(tier={g.get('reconnect_tier')}, reconnects={reconnects}, "
-                f"token_refreshes={g.get('token_refreshes')})"
-            ),
-            "data_age_ms": data_age_ms,
-            "liveness_age_ms": g.get("liveness_age_ms"),
-            "frozen_batches": g.get("frozen_batches"),
-            "reconnects": reconnects,
-            "reconnect_tier": g.get("reconnect_tier"),
-            "token_refreshes": g.get("token_refreshes"),
+            "message": message,
+            **recovery,
         }
     return {
         "component": "data_freshness",

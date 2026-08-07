@@ -330,3 +330,52 @@ class StockFrame:
 
     def legs(self) -> tuple[InstrColumns, InstrColumns, InstrColumns, InstrColumns]:
         return (self.spot, self.fut_current, self.fut_mid, self.fut_far)
+
+
+@dataclass
+class IndexFnoRef:
+    """One index's identity in the consolidated index-F&O header.
+
+    Deliberately a separate record from :class:`StockRef` even though the two currently
+    carry similar fields. Index and stock derivatives are independent capture domains
+    whose schemas must be able to evolve apart (index futures may gain expiries, stock
+    depth requirements may change), and sharing one record would couple them.
+    """
+
+    underlying: str
+    spot_symbol: str
+    spot_token: int
+    futures: list[FutureRef] = field(default_factory=list)  # ordered [current, mid, far]
+
+
+@dataclass
+class IndexFnoHeader:
+    """IndexFnoHeader (tag 0) -- written once per consolidated index-F&O file."""
+
+    trading_date: str
+    risk_free_rate: float
+    indices: list[IndexFnoRef]
+    schema_version: int = SCHEMA_VERSION
+
+
+@dataclass
+class IndexFnoFrame:
+    """IndexFnoFrame (tag 1) -- one per second, all indices on one timing grid.
+
+    The four legs mirror the stock matrix's shape on purpose: carrying each index's spot
+    *alongside* its futures means the basis (futures - spot) is computable from a single
+    frame at a single timestamp, with no cross-file join and no risk of comparing two
+    different instants. Cross-index and calendar-spread relationships are likewise
+    readable from one frame. Only raw state is stored — every relationship is a
+    reconstruction-time calculation.
+    """
+
+    timestamp_unix_ms: int
+    sequence: int
+    spot: InstrColumns
+    fut_current: InstrColumns
+    fut_mid: InstrColumns
+    fut_far: InstrColumns
+
+    def legs(self) -> tuple[InstrColumns, InstrColumns, InstrColumns, InstrColumns]:
+        return (self.spot, self.fut_current, self.fut_mid, self.fut_far)

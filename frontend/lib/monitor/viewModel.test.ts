@@ -64,6 +64,25 @@ describe("monitor adapters and view model", () => {
     expect(normalizeCaptureStatus({ per_underlying: [{ underlying: 42 }], global: {} })).toBeNull();
   });
 
+  test("reads pre-suppression session records that stored frozen_seconds", () => {
+    // Sessions archived before stale writes were suppressed recorded the count of frames
+    // written WHILE frozen under `frozen_seconds`. Same quantity of unusable seconds, so
+    // it must keep rendering in the Stale s column instead of silently reading 0.
+    const stats = normalizeDashboardStats({
+      capture_running: false,
+      monitor: null,
+      session_history: [{ trading_date: "2026-07-29", frozen_seconds: 201 }],
+    });
+    expect(stats?.session_history?.[0]?.stale_seconds).toBe(201);
+    // A record carrying the new key wins over the legacy one.
+    const current = normalizeDashboardStats({
+      capture_running: false,
+      monitor: null,
+      session_history: [{ trading_date: "2026-07-31", stale_seconds: 13_579, frozen_seconds: 0 }],
+    });
+    expect(current?.session_history?.[0]?.stale_seconds).toBe(13_579);
+  });
+
   test("normalizes an older stats payload with safe empty history defaults", () => {
     const stats = normalizeDashboardStats({
       generated_at: 100,

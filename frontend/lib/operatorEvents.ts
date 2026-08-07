@@ -259,9 +259,12 @@ export function deriveCaptureEvents(
     const age = next.data_age_ms === null
       ? "for an unknown interval"
       : `for ${(next.data_age_ms / 1000).toFixed(1)}s`;
+    const suppressed = next.stale_writes_suppressed
+      ? " Frame writes are suppressed until fresh ticks resume."
+      : "";
     events.push(eventDraft(
       "Live feed is stale",
-      `Market data has not changed ${age}.`,
+      `Market data has not changed ${age}.${suppressed}`,
       "danger",
       "capture",
     ));
@@ -272,26 +275,36 @@ export function deriveCaptureEvents(
     && !next.stale
     && !next.degraded
   ) {
+    const skipped = next.stale_seconds ?? 0;
+    const detail = skipped > 0
+      ? `Fresh ticks have resumed. ${skipped} stale second(s) were not written this session.`
+      : "Fresh ticks have resumed.";
+    events.push(eventDraft("Live feed recovered", detail, "success", "capture"));
+  }
+  if (hadPrevious && next.reconnects > previous.reconnects) {
     events.push(eventDraft(
-      "Live feed recovered",
-      "Fresh ticks have resumed.",
-      "success",
+      "Ticker reconnected",
+      `Reconnect ${next.reconnects}.`,
+      "warning",
       "capture",
     ));
   }
-  if (hadPrevious && next.reconnects > previous.reconnects) {
-    const tokenDetail = next.reconnect_tier === 2 ? " using a refreshed access token" : "";
+  // Restart-first recovery: each escalation is a deliberate process restart over a dead
+  // feed, which matters far more to an operator than a socket reconnect.
+  if (hadPrevious && (next.escalations ?? 0) > (previous.escalations ?? 0)) {
     events.push(eventDraft(
-      "Ticker reconnected",
-      `Reconnect ${next.reconnects}${tokenDetail}.`,
-      "warning",
+      "Capture restarting over a dead feed",
+      `The live feed was stale for ${next.stale_spell_seconds ?? 0}s; `
+        + `restarting for a clean session (escalation ${next.escalations}).`,
+      "danger",
       "capture",
     ));
   }
   if (next.exhausted && (!hadPrevious || !previous.exhausted)) {
     events.push(eventDraft(
-      "Recovery exhausted",
-      "Automatic feed recovery is exhausted; operator action is required.",
+      "Recovery abandoned",
+      "The day's restart budget is spent and the feed is still dead; "
+        + "capture is running but receiving no data. Operator action required.",
       "danger",
       "capture",
     ));

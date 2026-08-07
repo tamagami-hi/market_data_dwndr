@@ -30,7 +30,7 @@ const TONE_STROKE: Record<string, string> = {
 export function Sparkline({
   values,
   tone = "neutral",
-  width = 56,
+  width = 65,
   height = 18,
 }: {
   values: number[];

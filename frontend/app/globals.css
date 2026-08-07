@@ -408,6 +408,38 @@ a {
   padding: 5px 8px;
 }
 
+/* Cap the download-history table at six body rows; a seventh row starts a vertical
+   scrollbar instead of stretching the panel. Row math: 5px padding top+bottom +
+   12px × 1.35 line + 1px border = 27.2px; one sticky header row plus six body rows. */
+.monitor-storage-scroll {
+  max-height: calc(7 * (10px + 12px * 1.35 + 1px));
+}
+
+/* Session history uses the same six-row cap as the download-history table above, so a
+   long recorded history scrolls vertically instead of stretching the panel (and its
+   paired Frame-integrity panel) taller. Row math: the 10px header row is
+   14px padding + 10px × 1.35 line + 1px border, and each 12px body row is
+   14px + 12px × 1.35 + 1px = 31.2px. */
+.monitor-session-scroll {
+  max-height: calc((14px + 10px * 1.35 + 1px) + 6 * (14px + 12px * 1.35 + 1px));
+}
+
+/* Thirteen columns of session accounting, and most of them hold two or three characters
+   ("0", "12", "0.04%"). At the shared 12px header size the HEADINGS — not the data — set
+   those column widths, and the table overflowed its panel horizontally at every width
+   below 1920px. A 10px header row plus tighter column gutters buys that space back
+   without touching the values, which stay 12px and remain the thing being read. Vertical
+   padding is left at the 7px default so the six-row cap math above still holds. */
+.data-table.monitor-session-table th {
+  font-size: 10px;
+  letter-spacing: 0.01em;
+}
+
+.data-table.monitor-session-table th,
+.data-table.monitor-session-table td {
+  padding-inline: 5px;
+}
+
 .label {
   font-size: 12px;
   font-weight: 600;

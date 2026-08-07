@@ -254,3 +254,67 @@ def session_history(state_dir: str | os.PathLike[str], limit: int = 30) -> list[
     records = load_session_history(state_dir)
     records.sort(key=lambda r: str(r.get("trading_date") or ""), reverse=True)
     return records[: max(0, int(limit))]
+
+
+
+# --- recovery escalation ledger ---------------------------------------------------
+#
+# Restart-first recovery exits the process when the live feed is dead (see
+# ``CaptureEngine.observe_feed_health``). The exit count for the day has to survive that
+# exit, or a feed that can never be restored would restart the container all day. This
+# tiny per-date ledger is that memory.
+
+ESCALATION_LEDGER_PREFIX = "escalations-"
+
+
+def escalation_ledger_path(stats_dir_path: str | os.PathLike[str], trading_date: str) -> Path:
+    return Path(stats_dir_path) / f"{ESCALATION_LEDGER_PREFIX}{trading_date}.json"
+
+
+def load_escalations(
+    state_dir: str | os.PathLike[str],
+    trading_date: str,
+) -> dict:
+    """Return ``{"count": int, "timestamps": [ms, ...]}`` for the day (never raises).
+
+    A missing or corrupt ledger reads as "no escalations yet": losing the count can only
+    cost extra restarts, whereas raising here would block capture from starting at all.
+    """
+    empty = {"trading_date": trading_date, "count": 0, "timestamps": []}
+    path = escalation_ledger_path(state_dir, trading_date)
+    if not path.exists():
+        return empty
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("escalation ledger for %s is unreadable; assuming none", trading_date)
+        return empty
+    if not isinstance(payload, dict):
+        return empty
+    try:
+        count = int(payload.get("count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    timestamps = payload.get("timestamps")
+    if not isinstance(timestamps, list):
+        timestamps = []
+    return {
+        "trading_date": trading_date,
+        "count": max(0, count),
+        "timestamps": [t for t in timestamps if isinstance(t, int)],
+    }
+
+
+def record_escalation(
+    state_dir: str | os.PathLike[str],
+    trading_date: str,
+    at_ms: int,
+) -> int:
+    """Append one escalation for the day and return the new count."""
+    ledger = load_escalations(state_dir, trading_date)
+    ledger["count"] += 1
+    ledger["timestamps"] = [*ledger["timestamps"], int(at_ms)][-50:]
+    _atomic_write_text(
+        escalation_ledger_path(state_dir, trading_date), json.dumps(ledger, indent=2)
+    )
+    return ledger["count"]

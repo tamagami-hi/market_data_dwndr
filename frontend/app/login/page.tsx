@@ -140,7 +140,7 @@ function AutomationStatus({ status }: { status: AuthStatus }) {
         <Metric label="Kite token" value={status.authenticated ? "validated" : "pending"} severity={status.authenticated ? "success" : "warning"} />
         <Metric label="Token broker" value={status.external_token_source_configured ? "configured" : "missing"} severity={status.external_token_source_configured ? "success" : "danger"} />
         <Metric label="Capture" value={status.capture?.running ? "running" : status.capture_ready ? "ready" : "waiting"} severity={status.capture?.running ? "success" : "neutral"} />
-        <Metric label="Risk-free rate" value={status.risk_free_rate == null ? "pending" : String(status.risk_free_rate)} />
+        <Metric label="Risk-free rate" value={status.risk_free_rate == null ? "pending" : `${(status.risk_free_rate * 100).toFixed(4)}%`} />
       </div>
       <div className="border-t border-border p-3">
         <StateMessage title={hasError ? "Automation needs attention" : "Automation status"} severity={hasError ? "warning" : "neutral"}>

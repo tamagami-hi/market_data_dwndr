@@ -96,7 +96,23 @@ def test_freshness_exchange_timestamp_advance_counts_as_fresh():
     assert fm.is_stale(5_000) is False
 
 
-# --- self-driven reconnect on stall ------------------------------------------
+# --- restart-first staleness escalation ---------------------------------------
+#
+# Regression coverage for the 2026-08-04/05/06 sessions, where the feed delivered no
+# ticks for 9/72/91 minutes and the process never escalated. Reconstructed from the
+# deployment's own artifacts (_state/session-*.invalidated-*.json timestamps and
+# _state/stats/capture-<date>.json):
+#
+#   * the old tiered ladder fired ~27 token refreshes on 08-06, every one of which
+#     returned no token (token_refreshes=0, last_token_refresh_ms=None on EVERY day)
+#     while destroying that day's persisted session file;
+#   * a momentary tick at 10:25:32 reset the backoff cycle, so reconnect_cycles stayed
+#     0, `exhausted` stayed False, and the escalate-and-restart safety net never ran;
+#   * staleness was declared 5s after capture start at MARKET_OPEN=09:10, before NSE
+#     actually trades at 09:15, so the ladder ran at every single open.
+#
+# The engine now tracks one continuous stale spell that a flicker cannot reset, and
+# escalates once — but only while the market is genuinely trading.
 
 
 class _FakeBridge:
@@ -107,154 +123,119 @@ class _FakeBridge:
         self.reconnects += 1
 
 
-def test_engine_maybe_reconnect_fires_then_backs_off():
-    engine = CaptureEngine({}, None, {}, None, stale_after_ms=5_000)
+def _stale_engine(**kwargs):
+    """Engine with recovery armed and a 60s stale deadline, clock-driven."""
+    defaults = {
+        "stale_after_ms": 5_000,
+        "stale_exit_ms": 60_000,
+        "recovery_armed": lambda _now: True,
+    }
+    return CaptureEngine({}, None, {}, None, **{**defaults, **kwargs})
+
+
+def test_continuous_staleness_escalates_at_the_deadline():
+    engine = _stale_engine()
     engine.freshness.start(0)
-    bridge = _FakeBridge()
 
-    assert engine._maybe_reconnect(bridge, 0) is False  # fresh
-    assert engine.degraded is False
-
-    # Threshold crossed: first reconnect fires immediately.
-    assert engine._maybe_reconnect(bridge, 5_000) is True
+    # Stale from 5s, but inside the deadline nothing escalates.
+    engine.observe_feed_health(5_000)
     assert engine.degraded is True
-    assert bridge.reconnects == 1
+    assert engine.stale_spell_ms(5_000) == 0
+    engine.observe_feed_health(60_000)
+    assert engine.escalations == 0
 
-    # Inside the 5s backoff window: no repeat.
-    assert engine._maybe_reconnect(bridge, 7_000) is False
-    assert bridge.reconnects == 1
-
-    # Backoff elapsed and still stale: reconnect again.
-    assert engine._maybe_reconnect(bridge, 10_000) is True
-    assert bridge.reconnects == 2
+    # 60s of continuous staleness: escalate exactly once, loudly.
+    with pytest.raises(CaptureStalledError, match="60s"):
+        engine.observe_feed_health(65_000)
+    assert engine.escalations == 1
 
 
-def test_engine_maybe_reconnect_recovers_and_resets():
-    engine = CaptureEngine({}, None, {}, None, stale_after_ms=5_000)
+def test_a_momentary_tick_does_not_reset_the_stale_spell():
+    """The 08-06 failure: one fresh batch reset the ladder and disarmed escalation."""
+    engine = _stale_engine(stale_recovery_confirm_ms=15_000)
     engine.freshness.start(0)
-    bridge = _FakeBridge()
+    engine.observe_feed_health(5_000)  # spell starts
 
-    engine._maybe_reconnect(bridge, 5_000)
-    assert engine.degraded is True
-    assert engine.reconnect_policy.attempt == 1
+    # A single fresh batch 30s in — exactly the 10:25:32 flicker.
+    engine.freshness.observe([_tick(price=1.0)], now_ms=35_000)
+    engine.observe_feed_health(35_000)
+    assert engine.escalations == 0  # currently fresh: never restart a healthy feed
 
-    # Fresh data resumes.
-    engine.freshness.observe([_tick(price=1.0)], now_ms=6_000)
-    assert engine._maybe_reconnect(bridge, 6_000) is False
-    assert engine.degraded is False
-    assert engine.reconnect_policy.attempt == 0  # backoff reset on recovery
+    # It goes stale again immediately; the spell must still be counted from 5s.
+    engine.observe_feed_health(41_000)
+    assert engine.stale_spell_ms(41_000) == 36_000
 
-
-def test_engine_reconnect_escalates_cycle_instead_of_silent_giveup():
-    # The old behaviour: once the circuit breaker tripped it returned False forever and
-    # kept writing frozen frames. Now a tripped breaker advances a *cycle* (and, past
-    # max_cycles, escalates) rather than silently giving up.
-    engine = CaptureEngine(
-        {}, None, {}, None, stale_after_ms=5_000, max_cycles=3, escalate_to_exit=True
-    )
-    engine.freshness.start(0)
-    bridge = _FakeBridge()
-    engine.reconnect_policy.attempt = engine.reconnect_policy.max_attempts
-    assert engine._maybe_reconnect(bridge, 100_000) is False
-    assert engine.degraded is True
-    assert engine.reconnect_cycles == 1  # advanced a cycle, did not permanently die
-    assert engine.exhausted is False
-    assert engine.reconnect_policy.attempt == 0  # backoff re-armed for the next cycle
-
-
-def test_engine_reconnect_raises_to_restart_when_exhausted():
-    engine = CaptureEngine(
-        {}, None, {}, None, stale_after_ms=5_000, max_cycles=1, escalate_to_exit=True
-    )
-    engine.freshness.start(0)
-    bridge = _FakeBridge()
-    engine.reconnect_policy.attempt = engine.reconnect_policy.max_attempts
-    # max_cycles=1 -> the first exhausted cycle escalates to a process restart.
     with pytest.raises(CaptureStalledError):
-        engine._maybe_reconnect(bridge, 100_000)
+        engine.observe_feed_health(66_000)
+
+
+def test_sustained_recovery_clears_the_spell():
+    engine = _stale_engine(stale_recovery_confirm_ms=15_000)
+    engine.freshness.start(0)
+    engine.observe_feed_health(5_000)
+
+    # Fresh ticks for longer than the confirm window: the spell is genuinely over.
+    for ts in range(35_000, 55_000, 1_000):
+        engine.freshness.observe([_tick(price=ts / 1000.0)], now_ms=ts)
+        engine.observe_feed_health(ts)
+    assert engine.stale_spell_ms(54_000) == 0
+    assert engine.degraded is False
+
+    # A later spell is measured from its own start, not the earlier one.
+    engine.observe_feed_health(60_000)
+    assert engine.stale_spell_ms(60_000) == 0
+
+
+def test_pre_open_staleness_never_escalates():
+    """Capture starts at MARKET_OPEN=09:10; NSE trades at 09:15. No ticks is normal."""
+    engine = _stale_engine(recovery_armed=lambda _now: False)
+    engine.freshness.start(0)
+
+    for ts in range(5_000, 900_000, 5_000):
+        engine.observe_feed_health(ts)  # 15 minutes of pre-open silence
+    assert engine.escalations == 0
+    assert engine.stale_spell_ms(900_000) >= 60_000  # tracked, just not acted on
+
+
+def test_escalation_is_abandoned_after_the_restart_budget():
+    """Bounded restarts: a permanently dead feed must not thrash the container."""
+    recorded = []
+    engine = _stale_engine(
+        escalations_before=3,
+        escalation_limit=3,
+        escalation_recorder=lambda: recorded.append(1) or len(recorded),
+    )
+    engine.freshness.start(0)
+    engine.observe_feed_health(5_000)
+
+    engine.observe_feed_health(70_000)  # past the deadline, budget spent
+    assert engine.recovery_abandoned is True
     assert engine.exhausted is True
+    assert recorded == []  # no further escalation recorded
 
 
-def test_engine_reconnect_cycles_forever_when_exit_disabled():
-    engine = CaptureEngine(
-        {}, None, {}, None, stale_after_ms=5_000, max_cycles=0, escalate_to_exit=False
-    )
+def test_escalation_refreshes_the_token_without_destroying_it():
+    """08-06 destroyed 27 session files. Escalation may swap, never delete-and-hope."""
+    calls = []
+    engine = _stale_engine(token_refresher=lambda: calls.append("refresh"))
     engine.freshness.start(0)
-    bridge = _FakeBridge()
-    engine.reconnect_policy.attempt = engine.reconnect_policy.max_attempts
-    # max_cycles=0 -> never escalate; keep cycling (with token refresh) indefinitely.
-    assert engine._maybe_reconnect(bridge, 100_000) is False
-    assert engine.reconnect_cycles == 1
-    assert engine.exhausted is False
+    engine.observe_feed_health(5_000)
+
+    with pytest.raises(CaptureStalledError):
+        engine.observe_feed_health(66_000)
+    assert calls == ["refresh"]
 
 
-async def test_engine_tier2_refreshes_token_when_cheap_reconnects_fail():
-    engine = CaptureEngine(
-        {}, None, {}, None, stale_after_ms=5_000, token_refresh_after=1, max_cycles=0
-    )
+def test_token_refresh_failure_still_escalates():
+    def _boom():
+        raise RuntimeError("calspread unreachable")
+
+    engine = _stale_engine(token_refresher=_boom)
     engine.freshness.start(0)
+    engine.observe_feed_health(5_000)
 
-    class _RefreshBridge:
-        def __init__(self):
-            self.reconnects = 0
-            self.refreshes = 0
-
-        def reconnect(self):
-            self.reconnects += 1
-
-        async def reconnect_with_refresh(self):
-            self.refreshes += 1
-            self.reconnect()
-            return True
-
-    bridge = _RefreshBridge()
-
-    # Attempt 1: cheap tier-1 reconnect (reuse token).
-    assert engine._maybe_reconnect(bridge, 5_000) is True
-    assert engine.reconnect_tier == 1
-    assert bridge.reconnects == 1 and bridge.refreshes == 0
-
-    # Attempt 2 (past token_refresh_after=1): tier-2 token-refresh reconnect, scheduled
-    # off the loop so it never blocks capture.
-    assert engine._maybe_reconnect(bridge, 20_000) is True
-    assert engine.reconnect_tier == 2
-    for _ in range(3):
-        await asyncio.sleep(0)  # let the scheduled refresh task run
-    assert bridge.refreshes == 1
-    assert bridge.reconnects == 2
-
-
-def test_engine_proactive_token_refresh_when_token_too_old():
-    engine = CaptureEngine(
-        {},
-        None,
-        {},
-        None,
-        stale_after_ms=5_000,
-        token_refresh_after=10,  # cheap reconnects would normally dominate
-        token_max_age_ms=1_000,  # but an old token forces tier-2 immediately
-    )
-    engine.freshness.start(0)
-
-    class _AgingBridge:
-        def __init__(self):
-            self.reconnects = 0
-            self.refresh_called = False
-
-        def reconnect(self):
-            self.reconnects += 1
-
-        def token_age_ms(self, now=None):
-            return 60_000  # far older than token_max_age_ms
-
-        async def reconnect_with_refresh(self):
-            self.refresh_called = True
-            self.reconnect()
-            return True
-
-    bridge = _AgingBridge()
-    assert engine._maybe_reconnect(bridge, 5_000) is True
-    assert engine.reconnect_tier == 2  # aged token -> refresh even on the first attempt
+    with pytest.raises(CaptureStalledError):
+        engine.observe_feed_health(66_000)
 
 
 # --- writer thread integration -----------------------------------------------
@@ -439,3 +420,201 @@ def test_index_writer_sync_roundtrips(tmp_path):
     with IndexBinReader(path) as r:
         assert len(r) == 3
         assert r.frame(0).spot_price == 100
+
+
+
+# --- session-aware scheduling -------------------------------------------------
+#
+# Feed health and data loss are only meaningful while a frame is expected. Without this,
+# the pre-open silence that begins every trading day is indistinguishable from a dead
+# feed — which is exactly how the 2026-08-04/05/06 sessions started.
+
+
+def test_unscheduled_seconds_are_not_written_and_are_not_loss():
+    engine = CaptureEngine({}, None, {}, None, capture_expected=lambda _now: False)
+    engine.freshness.start(0)
+
+    snapshot = engine.capture_snapshot(10_000)
+
+    assert snapshot.scheduled is False
+    assert snapshot.written is False
+    assert engine.unscheduled_seconds == 1
+    # None of the loss counters move: this second was never owed.
+    assert engine.stale_seconds == 0
+    assert engine.captures == 0
+    assert engine.first_grid_ms is None  # the elapsed baseline has not started either
+
+
+def test_a_scheduled_second_still_writes_normally():
+    engine = CaptureEngine({}, None, {}, None, capture_expected=lambda _now: True)
+    engine.freshness.start(0)
+    engine.freshness.observe([_tick(price=1.0)], now_ms=1_000)
+
+    snapshot = engine.capture_snapshot(1_000)
+
+    assert snapshot.scheduled is True
+    assert snapshot.written is True
+    assert engine.unscheduled_seconds == 0
+    assert engine.captures == 1
+
+
+def test_pre_open_silence_does_not_accumulate_a_stale_spell():
+    """The spell must not breach the deadline the instant recovery arms at the open.
+
+    If the spell were allowed to grow through a 15-minute pre-open, arming at 09:15 would
+    find a 900s spell already past a 60s deadline and restart the process on every single
+    trading day.
+    """
+    scheduled = {"value": False}
+    engine = CaptureEngine(
+        {},
+        None,
+        {},
+        None,
+        stale_after_ms=5_000,
+        stale_exit_ms=60_000,
+        recovery_armed=lambda _now: True,
+        capture_expected=lambda _now: scheduled["value"],
+    )
+    engine.freshness.start(0)
+
+    # 15 minutes of unscheduled silence.
+    for ts in range(5_000, 900_000, 5_000):
+        engine.observe_feed_health(ts)
+    assert engine.stale_spell_ms(900_000) == 0
+    assert engine.degraded is False
+
+    # The session opens. The spell starts now, from zero.
+    scheduled["value"] = True
+    engine.observe_feed_health(900_000)
+    assert engine.stale_spell_ms(900_000) == 0
+    engine.observe_feed_health(930_000)
+    assert engine.stale_spell_ms(930_000) == 30_000
+    assert engine.escalations == 0  # 30s < 60s deadline
+
+    with pytest.raises(CaptureStalledError):
+        engine.observe_feed_health(961_000)
+
+
+def test_leaving_the_session_clears_an_open_stale_spell():
+    """§14: after the close, inactivity is not a fault and must not linger as one."""
+    scheduled = {"value": True}
+    engine = CaptureEngine(
+        {},
+        None,
+        {},
+        None,
+        stale_after_ms=5_000,
+        stale_exit_ms=60_000,
+        recovery_armed=lambda _now: True,
+        capture_expected=lambda _now: scheduled["value"],
+    )
+    engine.freshness.start(0)
+    engine.observe_feed_health(30_000)  # spell starts here
+    engine.observe_feed_health(40_000)
+    assert engine.stale_spell_ms(40_000) == 10_000
+
+    scheduled["value"] = False  # market closes
+    engine.observe_feed_health(45_000)
+
+    assert engine.stale_spell_ms(45_000) == 0
+    assert engine.degraded is False
+    # And no amount of post-close silence escalates.
+    for ts in range(50_000, 600_000, 10_000):
+        engine.observe_feed_health(ts)
+    assert engine.escalations == 0
+
+
+
+# --- transport vs artifact staleness ------------------------------------------
+#
+# §16: restart-first recovery answers a dead TRANSPORT. One frozen dataset while packets
+# keep arriving is an artifact-level condition — it must be recorded and exposed, not
+# allowed to take down capture for every dataset that is working fine.
+
+
+def _two_artifact_engine(**kwargs):
+    """An engine with two real artifacts so per-artifact routing can be exercised."""
+    from app.chain.assembler import build_option_chain
+    from app.chain.config import get_index_config
+
+    options = _make_options("NIFTY", "2026-07-31", [24500, 24550])
+    chain = build_option_chain(
+        options, get_index_config("NIFTY"), spot=24550.0, expiry="2026-07-31"
+    )
+    nifty = IndexTable(chain, 0.0691, "2026-07-31")
+
+    nfo, nse = _sample_instruments()
+    matrix = StockMatrix(build_board(nfo, nse), 0.0691, "2026-07-31")
+
+    defaults = {
+        "stale_after_ms": 5_000,
+        "stale_exit_ms": 60_000,
+        "recovery_armed": lambda _now: True,
+        "capture_expected": lambda _now: True,
+    }
+    return CaptureEngine(
+        {"NIFTY": nifty}, matrix, {}, None, **{**defaults, **kwargs}
+    ), nifty, matrix
+
+
+def test_apply_ticks_records_per_artifact_freshness():
+    engine, nifty, matrix = _two_artifact_engine()
+
+    engine.apply_ticks([{"instrument_token": nifty.tokens[0], "last_price": 100.0}], 1_000)
+
+    ages = engine.artifact_ages_ms(1_000)
+    assert ages["NIFTY"] == 0
+    assert ages["STOCKS"] is None  # never updated yet
+    assert engine.artifact_names() == ("NIFTY", "STOCKS")
+
+
+def test_one_frozen_artifact_does_not_restart_the_process():
+    """The socket is alive and STOCKS keeps updating; NIFTY froze. No escalation."""
+    engine, nifty, matrix = _two_artifact_engine()
+    engine.freshness.start(0)
+
+    # Both artifacts start healthy.
+    engine.apply_ticks([{"instrument_token": nifty.tokens[0], "last_price": 1.0}], 0)
+    engine.apply_ticks([{"instrument_token": matrix.tokens[0], "last_price": 2.0}], 0)
+
+    # From now on only STOCKS receives ticks. The transport stays alive, but the CONTENT
+    # digest stops changing because we replay an identical batch.
+    stock_tick = [{"instrument_token": matrix.tokens[0], "last_price": 2.0}]
+    for ts in range(1_000, 120_000, 1_000):
+        engine.apply_ticks(stock_tick, ts)
+        engine.freshness.observe(stock_tick, ts)
+        engine.observe_feed_health(ts)  # must not raise
+
+    assert engine.escalations == 0
+    assert engine.stale_artifact_names(119_000) == ("NIFTY",)
+    assert engine.feed_health(119_000) == "ARTIFACT_STALE"
+
+
+def test_a_dead_transport_still_escalates():
+    """The 2026-08-06 shape: no packets at all. This is what a restart is for."""
+    engine, _nifty, _matrix = _two_artifact_engine()
+    engine.freshness.start(0)
+    engine.observe_feed_health(6_000)
+
+    assert engine.feed_health(6_000) == "TRANSPORT_STALE"
+    with pytest.raises(CaptureStalledError):
+        engine.observe_feed_health(70_000)
+
+
+def test_a_quiet_market_is_not_a_fault_and_never_restarts():
+    """Packets arriving, every artifact updating, values simply not moving."""
+    engine, nifty, matrix = _two_artifact_engine()
+    engine.freshness.start(0)
+
+    identical = [
+        {"instrument_token": nifty.tokens[0], "last_price": 1.0},
+        {"instrument_token": matrix.tokens[0], "last_price": 2.0},
+    ]
+    for ts in range(0, 120_000, 1_000):
+        engine.apply_ticks(identical, ts)
+        engine.freshness.observe(identical, ts)  # digest never changes -> content stale
+        engine.observe_feed_health(ts)
+
+    assert engine.feed_health(119_000) == "QUIET"
+    assert engine.escalations == 0

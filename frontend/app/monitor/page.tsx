@@ -1,5 +1,7 @@
 "use client";
 
+import { useMemo } from "react";
+
 import { CompressionActivity } from "@/components/monitor/CompressionActivity";
 import { DataLossDiagnostics } from "@/components/monitor/DataLossDiagnostics";
 import { FrameIntegrity } from "@/components/monitor/FrameIntegrity";
@@ -14,10 +16,32 @@ import { UnderlyingHealth } from "@/components/monitor/UnderlyingHealth";
 import { useOperatorEvents } from "@/components/operator-events/OperatorEventsProvider";
 import { PageFrame } from "@/components/ui/PageFrame";
 import { useMonitorTelemetry } from "@/hooks/useMonitorTelemetry";
+import { liveSessionSummary } from "@/lib/monitor/viewModel";
 
 export default function MonitorPage() {
   const telemetry = useMonitorTelemetry();
   const { logs } = useOperatorEvents();
+
+  // While capture runs, fold the in-progress session into the history panel so its
+  // Frames column keeps counting the frames actually written to the .bin files.
+  const liveSession = useMemo(
+    () =>
+      telemetry.context.captureRunning &&
+      telemetry.live.globals !== null &&
+      telemetry.context.tradingDate !== null
+        ? liveSessionSummary(
+            telemetry.context.tradingDate,
+            telemetry.live.globals,
+            telemetry.live.rows,
+          )
+        : null,
+    [
+      telemetry.context.captureRunning,
+      telemetry.context.tradingDate,
+      telemetry.live.globals,
+      telemetry.live.rows,
+    ],
+  );
 
   return (
     <PageFrame>
@@ -78,7 +102,7 @@ export default function MonitorPage() {
           globals={telemetry.live.globals}
           expectedFrames={telemetry.context.expectedFrames}
         />
-        <SessionHistory sessions={telemetry.history.sessions} />
+        <SessionHistory sessions={telemetry.history.sessions} liveSession={liveSession} />
 
         <StorageHistory history={telemetry.history.capture} />
         <CompressionActivity
