@@ -26,7 +26,7 @@ const FUTURE_LABELS = ["Current future", "Mid future", "Far future"];
 const STOCK_LEGS: StockLegName[] = ["spot", ...FUTURE_LEGS];
 const MAX_STOCK_ROWS = 2_000;
 const DEPTH_LEVELS = 5;
-const FUTURE_LEG_COUNT = 3;
+export const FUTURE_LEG_COUNT = 3;
 const SCALAR_KEYS = [
   "ltp",
   "oi",
@@ -41,10 +41,48 @@ const SCALAR_KEYS = [
   "ohlc_close",
 ] as const;
 
-function isNumberArray(value: unknown, count: number): value is number[] {
+export function isNumberArray(value: unknown, count: number): value is number[] {
   return Array.isArray(value) &&
     value.length === count &&
     value.every((item) => typeof item === "number" && Number.isFinite(item));
+}
+
+/**
+ * Validate the four-leg columnar block shared by the stock and index-F&O boards.
+ *
+ * Both wire formats carry an identical `legs` object, so this gate is deliberately shared:
+ * a schema change to the leg encoding must not be able to pass one board and fail the
+ * other.
+ */
+export function hasValidLegs(legs: unknown, count: number): boolean {
+  if (!legs || typeof legs !== "object" || Array.isArray(legs)) return false;
+  return STOCK_LEGS.every((legName) => {
+    const leg = (legs as Record<string, unknown>)[legName];
+    if (!leg || typeof leg !== "object" || Array.isArray(leg)) return false;
+    const { scalars, depth } = leg as { scalars?: unknown; depth?: unknown };
+    if (!scalars || typeof scalars !== "object" || Array.isArray(scalars)) return false;
+    if (!SCALAR_KEYS.every((key) => isNumberArray((scalars as Record<string, unknown>)[key], count))) return false;
+    return Array.isArray(depth) && depth.length === DEPTH_LEVELS && depth.every((level) => {
+      if (!level || typeof level !== "object" || Array.isArray(level)) return false;
+      return ["bid_price", "bid_qty", "bid_orders", "ask_price", "ask_qty", "ask_orders"].every(
+        (key) => isNumberArray((level as Record<string, unknown>)[key], count),
+      );
+    });
+  });
+}
+
+/** Expiry arrays: one list of up to three future expiries per row. */
+export function hasValidExpiries(value: unknown, count: number): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length === count &&
+    value.every(
+      (expiries) =>
+        Array.isArray(expiries) &&
+        expiries.length <= FUTURE_LEG_COUNT &&
+        expiries.every((expiry) => typeof expiry === "string"),
+    )
+  );
 }
 
 export function normalizeStockBoard(value: unknown): StockBoardPayload | null {
@@ -62,39 +100,17 @@ export function normalizeStockBoard(value: unknown): StockBoardPayload | null {
     !Number.isFinite(board.timestamp) ||
     !Array.isArray(board.tradingsymbols) ||
     !Array.isArray(board.names) ||
-    !Array.isArray(board.future_expiries) ||
     board.tradingsymbols.length !== count ||
     board.names.length !== count ||
-    board.future_expiries.length !== count ||
+    !hasValidExpiries(board.future_expiries, count) ||
     !isNumberArray(board.live_spread, count) ||
     !isNumberArray(board.daily_spread, count) ||
     !board.tradingsymbols.slice(0, count).every((item) => typeof item === "string") ||
-    !board.names.slice(0, count).every((item) => typeof item === "string") ||
-    !board.future_expiries.every(
-      (expiries) =>
-        Array.isArray(expiries) &&
-        expiries.length <= FUTURE_LEG_COUNT &&
-        expiries.every((expiry) => typeof expiry === "string"),
-    )
+    !board.names.slice(0, count).every((item) => typeof item === "string")
   ) {
     return null;
   }
-  const legs = board.legs;
-  if (!legs || typeof legs !== "object" || Array.isArray(legs)) return null;
-  const validLegs = STOCK_LEGS.every((legName) => {
-    const leg = (legs as Record<string, unknown>)[legName];
-    if (!leg || typeof leg !== "object" || Array.isArray(leg)) return false;
-    const { scalars, depth } = leg as { scalars?: unknown; depth?: unknown };
-    if (!scalars || typeof scalars !== "object" || Array.isArray(scalars)) return false;
-    if (!SCALAR_KEYS.every((key) => isNumberArray((scalars as Record<string, unknown>)[key], count))) return false;
-    return Array.isArray(depth) && depth.length === DEPTH_LEVELS && depth.every((level) => {
-      if (!level || typeof level !== "object" || Array.isArray(level)) return false;
-      return ["bid_price", "bid_qty", "bid_orders", "ask_price", "ask_qty", "ask_orders"].every(
-        (key) => isNumberArray((level as Record<string, unknown>)[key], count),
-      );
-    });
-  });
-  return validLegs ? value as StockBoardPayload : null;
+  return hasValidLegs(board.legs, count) ? value as StockBoardPayload : null;
 }
 
 /** Project one stock row for the table. */

@@ -106,15 +106,19 @@ test("a healthy feed shows no banner at all", () => {
 
 test("market phase and feed health are shown as separate dimensions", () => {
   // PRE_OPEN + HEALTHY is a perfectly normal state; conflating the two is what made a
-  // routine pre-open look like a dead feed.
+  // routine pre-open look like a dead feed. Phase sits on the panel heading because it is
+  // the denominator for every figure below it; feed health stays in its own strip.
   render(
     <DataLossDiagnostics
       globals={globalsFrom({ market_phase: "PRE_OPEN", feed_health: "HEALTHY" })}
     />,
   );
+  const phase = screen.getByLabelText("Market phase");
+  expect(phase).toHaveTextContent("PRE_OPEN");
+  expect(phase.closest(".panel-heading")).not.toBeNull();
   const strip = screen.getByLabelText("Feed health");
-  expect(strip).toHaveTextContent("PRE_OPEN");
   expect(strip).toHaveTextContent("feed healthy");
+  expect(strip).not.toHaveTextContent("PRE_OPEN");
 });
 
 test("a dead transport reads differently from a quiet market", () => {

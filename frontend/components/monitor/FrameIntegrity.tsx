@@ -103,7 +103,7 @@ export function FrameIntegrity({
           )}
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-3">
+      <div className="monitor-integrity-scroll min-h-0 flex-1 overflow-auto p-3">
         {rows.length === 0 ? (
           <StateMessage title="Awaiting telemetry">
             Per-stream completeness appears once capture reports status.

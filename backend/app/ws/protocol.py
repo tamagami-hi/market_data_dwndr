@@ -23,6 +23,12 @@ TYPE_MARKET_HEADER = "MarketHeader"
 TYPE_OPTION_GRID = "OptionGrid"
 TYPE_OPTION_GRID_DELTA = "OptionGridDelta"
 TYPE_STOCK_BOARD = "StockBoard"
+# Index futures + index spot, published on the same `stocks` topic as StockBoard. It is a
+# separate message type rather than extra rows on StockBoard because the two are
+# independent capture domains with independently evolvable schemas (an index row has an
+# `underlying`/`spot_symbol` identity and no tradingsymbol), and because a subscriber must
+# be able to render one without waiting for the other.
+TYPE_INDEX_FNO_BOARD = "IndexFnoBoard"
 TYPE_CAPTURE_STATUS = "CaptureStatus"
 TYPE_HEARTBEAT = "Heartbeat"
 TYPE_SESSION_STATUS = "SessionStatus"

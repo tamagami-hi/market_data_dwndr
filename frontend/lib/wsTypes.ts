@@ -24,6 +24,7 @@ export const MSG = {
   OPTION_GRID: "OptionGrid",
   OPTION_GRID_DELTA: "OptionGridDelta",
   STOCK_BOARD: "StockBoard",
+  INDEX_FNO_BOARD: "IndexFnoBoard",
   CAPTURE_STATUS: "CaptureStatus",
   HEARTBEAT: "Heartbeat",
   SESSION_STATUS: "SessionStatus",
@@ -163,6 +164,33 @@ export interface StockDepthSnapshot {
   spot_depth: DepthLevel[];
   futures: StockDepthFuture[];
 }
+
+/**
+ * The index-F&O board: each configured index's spot plus its nearest futures.
+ *
+ * Identical wire shape to `StockBoardPayload` — same four legs, same columnar encoding —
+ * so both boards render through one code path. Only the identity arrays differ: an index
+ * row is named by `underlyings[i]` (NIFTY, BANKNIFTY, …) and `spot_symbols[i]`, because
+ * the on-disk index record carries no tradingsymbol.
+ */
+export interface IndexFnoBoardPayload {
+  timestamp: number;
+  count: number;
+  underlyings: string[];
+  spot_symbols: string[];
+  future_expiries: string[][];
+  legs: Record<StockLegName, LegColumns>;
+  live_spread: number[];
+  daily_spread: number[];
+}
+
+/**
+ * One index projected out of the columnar board.
+ *
+ * Structurally a `StockRow` so the shared row renderers accept it unchanged:
+ * `tradingsymbol` carries the underlying and `name` the spot symbol.
+ */
+export type IndexFnoRow = StockRow;
 
 export interface PerUnderlyingStatus {
   underlying: string;

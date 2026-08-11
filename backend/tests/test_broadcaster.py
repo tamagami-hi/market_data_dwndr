@@ -12,10 +12,17 @@ from app.capture.snapshot import CaptureSnapshot
 from app.chain.assembler import build_option_chain
 from app.chain.config import get_index_config
 from app.chain.table import IndexTable
+from app.index_fno.board import build_index_fno_board
+from app.index_fno.matrix import IndexFnoMatrix
 from app.stocks.board import build_board
 from app.stocks.depth import stock_depth_snapshot
 from app.stocks.matrix import StockMatrix
-from app.ws.protocol import TYPE_MARKET_HEADER, TYPE_OPTION_GRID, TYPE_STOCK_BOARD
+from app.ws.protocol import (
+    TYPE_INDEX_FNO_BOARD,
+    TYPE_MARKET_HEADER,
+    TYPE_OPTION_GRID,
+    TYPE_STOCK_BOARD,
+)
 from tests.test_board import _sample_instruments
 from tests.test_chain import _make_options
 from tests.test_table_matrix import _depth5, _full_tick
@@ -315,3 +322,91 @@ def test_display_worker_uses_copied_capture_frame_not_mutable_live_table():
     messages = broadcaster._build_snapshot_messages(snapshot)
     market_header = next(message for _, message in messages if message["type"] == "MarketHeader")
     assert market_header["payload"]["spot"] == 24500.0
+
+
+
+# --- index-F&O board ---------------------------------------------------------
+#
+# The domain was captured to disk and reported in health telemetry from the start, but its
+# frame reached no display path: `CaptureSnapshot.index_fno_frame` was read by nobody, so
+# the stocks page had no index rows to show. These tests pin the publish path.
+
+
+def _index_fno_matrix() -> IndexFnoMatrix:
+    from tests.test_index_fno import _dumps
+
+    board = build_index_fno_board(_dumps(), ["NIFTY", "BANKNIFTY", "SENSEX"])
+    return IndexFnoMatrix(board, 0.0691, "2026-08-10")
+
+
+def test_index_fno_message_mirrors_the_stock_board_shape():
+    """One display contract for both boards: same legs, same columnar encoding."""
+    matrix = _index_fno_matrix()
+    matrix.apply_tick(_full_tick(1001, 24_600.0, oi=8_000, buy=_depth5(24_599.9),
+                                 sell=_depth5(24_600.1)))  # NIFTY fut_current
+    matrix.apply_tick(_full_tick(1002, 24_700.0, oi=6_000))  # NIFTY fut_mid
+
+    bc = Broadcaster({}, None, FakeHub(), index_fno_matrix=matrix)
+    msg = bc.index_fno_message(ts=1_000)
+    assert msg["type"] == TYPE_INDEX_FNO_BOARD
+    p = msg["payload"]
+
+    # Identity is the underlying + its spot symbol; there is no tradingsymbol on disk.
+    assert p["underlyings"] == ["NIFTY", "BANKNIFTY", "SENSEX"]
+    assert p["spot_symbols"][0] == "NSE:NIFTY 50"
+    assert "tradingsymbols" not in p
+    assert p["count"] == 3
+    row = p["underlyings"].index("NIFTY")
+
+    # Same four legs, every scalar, all five depth levels — identical to StockBoard.
+    assert set(p["legs"]) == {"spot", "fut_current", "fut_mid", "fut_far"}
+    for leg in p["legs"].values():
+        assert len(leg["depth"]) == 5
+        for level in leg["depth"]:
+            assert set(level) == {
+                "bid_price", "bid_qty", "bid_orders", "ask_price", "ask_qty", "ask_orders",
+            }
+            assert len(level["bid_price"]) == p["count"]
+        for field in ("ltp", "oi", "volume", "ohlc_open", "ohlc_close"):
+            assert len(leg["scalars"][field]) == p["count"]
+
+    # Prices arrive in rupees, on the right row.
+    assert p["legs"]["fut_current"]["scalars"]["ltp"][row] == 24_600.0
+    assert p["legs"]["fut_mid"]["scalars"]["ltp"][row] == 24_700.0
+    assert p["legs"]["fut_current"]["depth"][0]["bid_price"][row] == 24_599.9
+    # The calendar spread between the two nearest futures.
+    assert p["live_spread"][row] == 100.0
+
+
+def test_index_fno_rides_the_stocks_topic_so_the_board_page_needs_one_connection():
+    matrix = _index_fno_matrix()
+    hub = FakeHub()
+    bc = Broadcaster({}, None, hub, index_fno_matrix=matrix)
+
+    asyncio.run(bc.broadcast_all(ts=1_000))
+
+    published = [(topic, m["type"]) for topic, m in hub.sent]
+    assert ("stocks", TYPE_INDEX_FNO_BOARD) in published
+
+
+def test_index_fno_frame_on_a_snapshot_is_published():
+    """The regression this closes: the frame existed but never reached the frontend."""
+    matrix = _index_fno_matrix()
+    bc = Broadcaster({}, None, FakeHub(), index_fno_matrix=matrix)
+    snapshot = CaptureSnapshot(1_000, (), None, index_fno_frame=matrix.snapshot(1_000))
+
+    published = bc._build_snapshot_messages(snapshot)
+
+    assert any(
+        topic == "stocks" and message["type"] == TYPE_INDEX_FNO_BOARD
+        for topic, message in published
+    )
+
+
+def test_no_index_fno_board_publishes_nothing_for_the_domain():
+    """Capture may run with the domain disabled; the page must simply see no index rows."""
+    bc = Broadcaster({}, None, FakeHub())
+
+    published = bc._build_snapshot_messages(_empty_snapshot(1_000))
+
+    assert all(message["type"] != TYPE_INDEX_FNO_BOARD for _topic, message in published)

@@ -7,6 +7,7 @@ import StockDepthPanel from "@/components/StockDepthPanel";
 import { MarketPageHeader } from "@/components/ui/MarketPageHeader";
 import { PageFrame } from "@/components/ui/PageFrame";
 import { StateMessage } from "@/components/ui/StateMessage";
+import { indexFnoAsStockBoard, normalizeIndexFnoBoard } from "@/lib/indexFnoBoard";
 import {
   areStockRowsEqual,
   depthFromBoard,
@@ -29,13 +30,42 @@ const LEG_LABELS: Record<StockLegName, string> = {
 };
 const STOCK_TABLE_MIN_WIDTH = 1_112;
 
+/**
+ * Expansion is tracked as a namespaced key rather than a bare symbol.
+ *
+ * Index rows and stock rows are separate domains that can legitimately carry the same
+ * name, and both feed the same single-open-row state and the same DOM `id`/`aria-controls`
+ * pair — so an un-namespaced key would open two rows at once and emit duplicate ids.
+ */
+type RowGroup = "stock" | "index";
+
+function rowKey(group: RowGroup, symbol: string): string {
+  return `${group}:${symbol}`;
+}
+
 export default function StocksPage() {
   const [board, setBoard] = useState<StockBoardPayload | null>(null);
   const [projectedRows, setProjectedRows] = useState<StockRow[]>([]);
+  // The index-F&O board arrives on the same `stocks` topic as a distinct message type and
+  // is relabelled into the stock shape, so both groups share every projection and renderer.
+  const [indexBoard, setIndexBoard] = useState<StockBoardPayload | null>(null);
+  const [indexProjectedRows, setIndexProjectedRows] = useState<StockRow[]>([]);
   const [payloadError, setPayloadError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const onEnvelope = useCallback((envelope: WsEnvelope) => {
+    if (envelope.type === MSG.INDEX_FNO_BOARD) {
+      const nextIndex = normalizeIndexFnoBoard(envelope.payload);
+      if (!nextIndex) {
+        setPayloadError("An index-F&O update was malformed. Showing the last valid board.");
+        return;
+      }
+      const adapted = indexFnoAsStockBoard(nextIndex);
+      setPayloadError(null);
+      setIndexBoard(adapted);
+      setIndexProjectedRows((current) => stockRows(adapted, current));
+      return;
+    }
     if (envelope.type !== MSG.STOCK_BOARD) return;
     const next = normalizeStockBoard(envelope.payload);
     if (!next) {
@@ -48,25 +78,40 @@ export default function StocksPage() {
   }, []);
   useTopicEnvelopes(stocksConnection, onEnvelope);
 
+  const matchesQuery = useCallback(
+    (row: StockRow, normalizedQuery: string) =>
+      !normalizedQuery ||
+      row.name.toUpperCase().includes(normalizedQuery) ||
+      row.tradingsymbol.toUpperCase().includes(normalizedQuery),
+    [],
+  );
+
   const rows = useMemo(() => {
     const normalizedQuery = query.trim().toUpperCase();
-    const filtered = normalizedQuery
-      ? projectedRows.filter(
-          (row) =>
-            row.name.toUpperCase().includes(normalizedQuery) ||
-            row.tradingsymbol.toUpperCase().includes(normalizedQuery),
-        )
-      : projectedRows;
+    const filtered = projectedRows.filter((row) => matchesQuery(row, normalizedQuery));
     return [...filtered].sort((left, right) => left.name.localeCompare(right.name));
-  }, [projectedRows, query]);
+  }, [matchesQuery, projectedRows, query]);
 
-  const toggle = useCallback((symbol: string) => {
-    setExpandedSymbol((current) => current === symbol ? null : symbol);
+  // Board order, NOT alphabetical: the index order is the configured capture order
+  // (NIFTY, BANKNIFTY, …), which is how the rest of the system reports these rows.
+  const indexRows = useMemo(() => {
+    const normalizedQuery = query.trim().toUpperCase();
+    return indexProjectedRows.filter((row) => matchesQuery(row, normalizedQuery));
+  }, [indexProjectedRows, matchesQuery, query]);
+
+  const toggle = useCallback((key: string) => {
+    setExpandedKey((current) => current === key ? null : key);
   }, []);
 
-  const boardStatus = board
-    ? `${rows.length} / ${board.count} stocks / updated ${formatClockTime(board.timestamp)}`
+  const stockStatus = board
+    ? `${rows.length} / ${board.count} stocks`
+    : null;
+  const indexStatus = indexBoard ? `${indexRows.length} / ${indexBoard.count} indices` : null;
+  const updatedAt = board ?? indexBoard;
+  const boardStatus = updatedAt
+    ? `${[stockStatus, indexStatus].filter(Boolean).join(" · ")} / updated ${formatClockTime(updatedAt.timestamp)}`
     : "waiting for board";
+  const totalRows = rows.length + indexRows.length;
 
   return (
     <PageFrame className="stocks-page-frame">
@@ -102,21 +147,44 @@ export default function StocksPage() {
       </div>
 
       {payloadError && <StateMessage title="Malformed stock data rejected" severity="warning" role="alert">{payloadError}</StateMessage>}
-      {rows.length === 0 ? (
+      {totalRows === 0 ? (
         <StateMessage title={query ? "No symbols match the filter" : "Waiting for the stock board"}>
           {query ? "Clear or change the symbol filter." : "Start backend capture to publish the live F&O board."}
         </StateMessage>
       ) : (
         <>
           <div className="space-y-2 md:hidden">
-            {rows.map((row) => {
-              const isExpanded = expandedSymbol === row.tradingsymbol;
+            {indexRows.length > 0 && (
+              <h2 className="label px-1 pt-1 text-secondary">Indices</h2>
+            )}
+            {indexRows.map((row) => {
+              const key = rowKey("index", row.tradingsymbol);
+              const isExpanded = expandedKey === key;
               return (
                 <MobileStockRow
-                  key={row.tradingsymbol}
+                  key={key}
                   row={row}
+                  group="index"
                   isExpanded={isExpanded}
-                  onToggle={() => toggle(row.tradingsymbol)}
+                  onToggle={() => toggle(key)}
+                  depth={isExpanded ? depthFromBoard(indexBoard, row.row) : null}
+                  scalars={isExpanded ? scalarGroups(indexBoard, row.row) : null}
+                />
+              );
+            })}
+            {indexRows.length > 0 && rows.length > 0 && (
+              <h2 className="label px-1 pt-2 text-secondary">Stocks</h2>
+            )}
+            {rows.map((row) => {
+              const key = rowKey("stock", row.tradingsymbol);
+              const isExpanded = expandedKey === key;
+              return (
+                <MobileStockRow
+                  key={key}
+                  row={row}
+                  group="stock"
+                  isExpanded={isExpanded}
+                  onToggle={() => toggle(key)}
                   depth={isExpanded ? depthFromBoard(board, row.row) : null}
                   scalars={isExpanded ? scalarGroups(board, row.row) : null}
                 />
@@ -131,7 +199,7 @@ export default function StocksPage() {
               className="data-table stock-board-table table-fixed"
               style={{ minWidth: STOCK_TABLE_MIN_WIDTH }}
             >
-              <caption className="sr-only">Live stock and futures summary</caption>
+              <caption className="sr-only">Live index, stock and futures summary</caption>
               <colgroup>
                 <col style={{ width: 190 }} />
                 <col style={{ width: 112 }} />
@@ -153,14 +221,35 @@ export default function StocksPage() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => {
-                  const isExpanded = expandedSymbol === row.tradingsymbol;
+                {indexRows.length > 0 && <GroupHeaderRow label="Indices" count={indexRows.length} />}
+                {indexRows.map((row) => {
+                  const key = rowKey("index", row.tradingsymbol);
+                  const isExpanded = expandedKey === key;
                   return (
                     <DesktopStockRow
-                      key={row.tradingsymbol}
+                      key={key}
                       row={row}
+                      group="index"
                       isExpanded={isExpanded}
-                      onToggle={() => toggle(row.tradingsymbol)}
+                      onToggle={() => toggle(key)}
+                      depth={isExpanded ? depthFromBoard(indexBoard, row.row) : null}
+                      scalars={isExpanded ? scalarGroups(indexBoard, row.row) : null}
+                    />
+                  );
+                })}
+                {indexRows.length > 0 && rows.length > 0 && (
+                  <GroupHeaderRow label="Stocks" count={rows.length} />
+                )}
+                {rows.map((row) => {
+                  const key = rowKey("stock", row.tradingsymbol);
+                  const isExpanded = expandedKey === key;
+                  return (
+                    <DesktopStockRow
+                      key={key}
+                      row={row}
+                      group="stock"
+                      isExpanded={isExpanded}
+                      onToggle={() => toggle(key)}
                       depth={isExpanded ? depthFromBoard(board, row.row) : null}
                       scalars={isExpanded ? scalarGroups(board, row.row) : null}
                     />
@@ -172,6 +261,24 @@ export default function StocksPage() {
         </>
       )}
     </PageFrame>
+  );
+}
+
+/**
+ * Section divider inside the single table body.
+ *
+ * One table rather than two keeps the seven columns aligned across both groups, which is
+ * the whole point of showing indices in the stock board's format. It is not sticky — only
+ * the column header is — so it scrolls away with its group.
+ */
+function GroupHeaderRow({ label, count }: { label: string; count: number }) {
+  return (
+    <tr className="stock-group-row">
+      <th scope="colgroup" colSpan={7} className="bg-surface-2 text-left">
+        <span className="label text-secondary">{label}</span>{" "}
+        <span className="ml-2 font-mono text-xs font-normal text-muted">{count}</span>
+      </th>
+    </tr>
   );
 }
 
@@ -252,18 +359,20 @@ function ScalarGroup({ label, values }: { label: string; values: Record<string, 
 
 const MobileStockRow = React.memo(function MobileStockRow({
   row,
+  group,
   isExpanded,
   onToggle,
   depth,
   scalars,
 }: {
   row: StockRow;
+  group: RowGroup;
   isExpanded: boolean;
   onToggle: () => void;
   depth: StockDepthSnapshot | null;
   scalars: ScalarGroups | null;
 }) {
-  const id = `mobile-stock-${row.tradingsymbol.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
+  const id = `mobile-${group}-${row.tradingsymbol.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
   return (
     <section className="disclosure">
       <button type="button" aria-expanded={isExpanded} aria-controls={id} onClick={onToggle} className="min-h-11 w-full px-3 py-2 text-left">
@@ -288,18 +397,20 @@ const MobileStockRow = React.memo(function MobileStockRow({
 
 const DesktopStockRow = React.memo(function DesktopStockRow({
   row,
+  group,
   isExpanded,
   onToggle,
   depth,
   scalars,
 }: {
   row: StockRow;
+  group: RowGroup;
   isExpanded: boolean;
   onToggle: () => void;
   depth: StockDepthSnapshot | null;
   scalars: ScalarGroups | null;
 }) {
-  const id = `desktop-stock-${row.tradingsymbol.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
+  const id = `desktop-${group}-${row.tradingsymbol.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
   return (
     <Fragment>
       <tr>

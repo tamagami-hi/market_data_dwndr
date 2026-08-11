@@ -75,6 +75,10 @@ function LossBreakdown({ globals }: { globals: GlobalStatus }) {
   ];
   return (
     <div className="border-b border-border px-3 py-2 text-xs" aria-label="Loss breakdown">
+      {/* One wrapping row rather than a totals line with the causes beneath it: the
+          causes are the explanation OF the Missing figure, and at this panel's width they
+          sit beside it instead of costing a second line. They still wrap as a group when
+          the panel is narrow. */}
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className="text-muted">
           Scheduled <span className="font-mono text-primary">{formatIndianNumber(scheduled, 0)}s</span>
@@ -86,18 +90,15 @@ function LossBreakdown({ globals }: { globals: GlobalStatus }) {
           Missing <span className="font-mono">{formatIndianNumber(missing, 0)}s</span>
           {" "}({formatPercent(globals.scheduled_loss_pct ?? 0, 2)})
         </span>
-      </div>
-      {missing > 0 && (
-        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-muted">
-          {causes
+        {missing > 0 &&
+          causes
             .filter(([, seconds]) => seconds > 0)
             .map(([label, seconds]) => (
-              <span key={label}>
+              <span key={label} className="text-muted">
                 {label} <span className="font-mono text-secondary">{formatIndianNumber(seconds, 0)}s</span>
               </span>
             ))}
-        </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -124,11 +125,27 @@ const FEED_HEALTH_SEVERITY: Record<string, "success" | "warning" | "danger" | "n
 };
 
 /**
- * Market phase and feed health side by side.
+ * Market phase, pinned to the panel heading.
  *
- * They are independent dimensions and conflating them is what let a normal pre-open look
- * like a dead feed: PRE_OPEN + HEALTHY and OPEN + TRANSPORT_STALE are both perfectly
- * meaningful, and an operator needs to read them separately to know whether to act.
+ * It is the denominator for everything below it — a figure like "missing 600s" means
+ * nothing until you know whether the exchange was open — so it belongs on the title line
+ * rather than in a strip that can be scrolled past. It stays deliberately separate from
+ * feed health (§23): PRE_OPEN + HEALTHY and OPEN + TRANSPORT_STALE are both meaningful,
+ * and conflating them is what let a routine pre-open look like a dead feed.
+ */
+function MarketPhaseTag({ globals }: { globals: GlobalStatus }) {
+  return (
+    <span className="shrink-0 whitespace-nowrap text-xs text-muted" aria-label="Market phase">
+      Phase <span className="font-mono text-secondary">{globals.market_phase ?? "--"}</span>
+    </span>
+  );
+}
+
+/**
+ * Feed health, and any datasets that have stopped updating.
+ *
+ * Market phase used to share this strip; it now sits on the panel heading, leaving this
+ * row to report only what the feed itself is doing.
  */
 function FeedHealthStrip({ globals }: { globals: GlobalStatus }) {
   const health = globals.feed_health ?? null;
@@ -148,9 +165,6 @@ function FeedHealthStrip({ globals }: { globals: GlobalStatus }) {
       className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-surface-2 px-3 py-1.5 text-xs"
       aria-label="Feed health"
     >
-      <span className="text-muted">
-        Phase <span className="font-mono text-secondary">{globals.market_phase ?? "--"}</span>
-      </span>
       <span className={tone}>
         {FEED_HEALTH_LABEL[health] ?? health}
       </span>
@@ -225,7 +239,12 @@ export function DataLossDiagnostics({ globals }: { globals: GlobalStatus | null 
     : [];
 
   return (
-    <Panel title="Data-loss diagnostics" subtitle="current session" className="h-full">
+    <Panel
+      title="Data-loss diagnostics"
+      subtitle="current session"
+      className="h-full"
+      action={globals ? <MarketPhaseTag globals={globals} /> : undefined}
+    >
       {items.length > 0 && globals ? (
         <>
           <FeedHealthStrip globals={globals} />

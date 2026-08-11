@@ -142,6 +142,51 @@ function stockBoard(): StockBoardPayload {
   };
 }
 
+function indexFnoBoard() {
+  const column = (value: number) => [value, value + 1_000];
+  const leg = (value: number) => ({
+    scalars: {
+      ltp: column(value),
+      oi: column(10),
+      volume: column(20),
+      buy_quantity: column(30),
+      sell_quantity: column(40),
+      oi_day_high: column(50),
+      oi_day_low: column(5),
+      ohlc_open: column(value),
+      ohlc_high: column(value + 1),
+      ohlc_low: column(value - 1),
+      ohlc_close: column(value),
+    },
+    depth: Array.from({ length: 5 }, () => ({
+      bid_price: column(value - 1),
+      bid_qty: column(10),
+      bid_orders: column(1),
+      ask_price: column(value + 1),
+      ask_qty: column(20),
+      ask_orders: column(2),
+    })),
+  });
+  return {
+    timestamp: Date.now(),
+    count: 2,
+    underlyings: ["NIFTY", "BANKNIFTY"],
+    spot_symbols: ["NSE:NIFTY 50", "NSE:NIFTY BANK"],
+    future_expiries: [
+      ["2026-08-25", "2026-09-29"],
+      ["2026-08-25", "2026-09-29", "2026-10-27"],
+    ],
+    legs: {
+      spot: leg(24_540),
+      fut_current: leg(24_600),
+      fut_mid: leg(24_700),
+      fut_far: leg(24_800),
+    },
+    live_spread: [100, 120],
+    daily_spread: [-5, 8],
+  };
+}
+
 function richTelemetry() {
   const capture = normalizeCaptureStatus({
     per_underlying: [{
@@ -566,6 +611,67 @@ test("renders stock summaries, symbol filtering, spreads, and complete expansion
   await user.type(filter, "missing");
   expect(screen.getByText("No symbols match the filter")).toBeInTheDocument();
   act(() => mocks.handlers.at(-1)!({ type: "StockBoard", payload: { count: 1 } }));
+});
+
+test("shows index F&O above stocks in the same seven-column format", async () => {
+  const user = userEvent.setup();
+  const view = render(<StocksPage />);
+  act(() => mocks.handlers.at(-1)!({ type: "IndexFnoBoard", payload: indexFnoBoard() }));
+  act(() => mocks.handlers.at(-1)!({ type: "StockBoard", payload: stockBoard() }));
+
+  // Both groups are labelled, and the index group comes first.
+  const indices = await screen.findByRole("columnheader", { name: /Indices/ });
+  const stocks = screen.getByRole("columnheader", { name: /Stocks 1/ });
+  expect(
+    indices.compareDocumentPosition(stocks) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+
+  // Index rows precede the stock rows inside the one shared table.
+  const table = view.container.querySelector(".stock-board-table")!;
+  const identities = [...table.querySelectorAll("tbody tr td:first-child")].map(
+    (cell) => cell.textContent ?? "",
+  );
+  expect(identities[0]).toContain("NIFTY");
+  expect(identities[1]).toContain("BANKNIFTY");
+  expect(identities.at(-1)).toContain("RELIANCE");
+
+  // Same columns, same cell renderers: an index row carries future summaries and spreads.
+  const niftyRow = table.querySelector('button[aria-controls^="desktop-index-NIFTY"]')!
+    .closest("tr")!;
+  expect(niftyRow.querySelectorAll("td")).toHaveLength(7);
+  expect(niftyRow.querySelector(".stock-future-summary")).not.toBeNull();
+  expect(niftyRow).toHaveTextContent("NSE:NIFTY 50");
+
+  // Status reports both boards.
+  const routeHeader = screen.getByRole("heading", { name: "Stocks Board" }).closest("header");
+  expect(routeHeader).toHaveTextContent("1 / 1 stocks");
+  expect(routeHeader).toHaveTextContent("2 / 2 indices");
+
+  // Expansion is namespaced per group, so opening an index row leaves stocks closed.
+  await user.click(within(niftyRow as HTMLElement).getByRole("button"));
+  expect(
+    table.querySelector('button[aria-controls^="desktop-index-NIFTY"]'),
+  ).toHaveAttribute("aria-expanded", "true");
+  expect(
+    table.querySelector('button[aria-controls^="desktop-stock-RELIANCE"]'),
+  ).toHaveAttribute("aria-expanded", "false");
+
+  // The filter applies to both groups; matching only an index hides the stock group.
+  await user.type(screen.getByRole("textbox", { name: "Filter stocks by symbol" }), "BANKNIFTY");
+  expect(screen.queryByRole("columnheader", { name: /Stocks 1/ })).toBeNull();
+  expect(screen.queryByText("No symbols match the filter")).toBeNull();
+  expect(
+    view.container.querySelector('button[aria-controls^="desktop-index-BANKNIFTY"]'),
+  ).not.toBeNull();
+});
+
+test("keeps the last valid index board when an update is malformed", async () => {
+  render(<StocksPage />);
+  act(() => mocks.handlers.at(-1)!({ type: "IndexFnoBoard", payload: indexFnoBoard() }));
+  expect((await screen.findAllByText(/NIFTY/)).length).toBeGreaterThan(0);
+  act(() => mocks.handlers.at(-1)!({ type: "IndexFnoBoard", payload: { count: 2 } }));
+  expect(screen.getByRole("alert")).toHaveTextContent("index-F&O update was malformed");
+  expect(screen.getAllByText("BANKNIFTY").length).toBeGreaterThan(0);
 });
 
 test("renders downloader automation and all connection states", async () => {

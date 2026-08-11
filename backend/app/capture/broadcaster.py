@@ -6,6 +6,7 @@ pushes tagged envelopes each capture tick:
 
     market-data   -> MarketHeader + OptionGrid (per index)
     stocks        -> StockBoard (spot + futures + calendar spread)
+                     IndexFnoBoard (index spot + index futures + calendar spread)
     capture-status-> CaptureStatus (from the monitor)
     session       -> Heartbeat
 
@@ -24,13 +25,16 @@ from dataclasses import dataclass
 from app.bin_codec.layout import (
     DEPTH_LEVEL_COLUMNS,
     INSTR_SCALAR_COLUMNS,
+    IndexFnoFrame,
     IndexFrame,
     IndexHeader,
+    InstrColumns,
     RawBlock,
     StockFrame,
 )
 from app.capture.snapshot import CaptureSnapshot
 from app.chain.table import IndexTable
+from app.index_fno.matrix import IndexFnoMatrix
 from app.reconstruct.greeks import reconstruct_greeks
 from app.reconstruct.metrics import reconstruct_chain_metrics
 from app.reconstruct.spreads import daily_spread, live_spread
@@ -46,6 +50,53 @@ class _StockDisplayRef:
     tradingsymbol: str
     name: str
     future_expiries: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _IndexFnoDisplayRef:
+    """One index row's display identity.
+
+    Mirrors :class:`_StockDisplayRef` but keyed on ``underlying``/``spot_symbol``: the
+    on-disk ``IndexFnoRef`` carries no tradingsymbol, so the index name is the identity.
+    """
+
+    underlying: str
+    spot_symbol: str
+    future_expiries: tuple[str, ...]
+
+
+def _leg_payloads(legs: dict[str, InstrColumns], n: int) -> dict[str, dict]:
+    """Columnar JSON for a 4-leg instrument board (stocks or index F&O).
+
+    One array per field, indexed by row, rather than a row-per-instrument object: at 210
+    stocks x 4 legs a row-shaped encoding would repeat ~41 JSON keys per instrument.
+    Column metadata comes from the BIN schema, so ``is_price`` alone decides the
+    paise -> rupees conversion and adding a column to the format streams it automatically.
+    """
+    rows = range(n)
+    payloads: dict[str, dict] = {}
+    for leg_name, leg in legs.items():
+        scalars = {
+            col.name: (
+                [_rupees(int(leg.scalars[col.name][i])) for i in rows]
+                if col.is_price
+                else [int(leg.scalars[col.name][i]) for i in rows]
+            )
+            for col in INSTR_SCALAR_COLUMNS
+        }
+        depth = [
+            {
+                col.name: (
+                    [_rupees(int(level[col.name][i])) for i in rows]
+                    if col.is_price
+                    else [int(level[col.name][i]) for i in rows]
+                )
+                for col in DEPTH_LEVEL_COLUMNS
+            }
+            for level in leg.depth
+        ]
+        payloads[leg_name] = {"scalars": scalars, "depth": depth}
+    return payloads
 
 
 def _copy_header(header: IndexHeader) -> IndexHeader:
@@ -111,6 +162,7 @@ class Broadcaster:
         hub,
         monitor=None,
         *,
+        index_fno_matrix: IndexFnoMatrix | None = None,
         clock=now_ms,
         stats_state_dir=None,
         trading_date: str | None = None,
@@ -118,6 +170,7 @@ class Broadcaster:
     ) -> None:
         self.index_tables = index_tables
         self.stock_matrix = stock_matrix
+        self.index_fno_matrix = index_fno_matrix
         self.hub = hub
         self.monitor = monitor
         self._clock = clock
@@ -136,6 +189,14 @@ class Broadcaster:
                 future_expiries=tuple(future.expiry for future in ref.futures),
             )
             for ref in (stock_matrix.stock_refs if stock_matrix is not None else ())
+        )
+        self._index_fno_refs = tuple(
+            _IndexFnoDisplayRef(
+                underlying=ref.underlying,
+                spot_symbol=ref.spot_symbol,
+                future_expiries=tuple(future.expiry for future in ref.futures),
+            )
+            for ref in (index_fno_matrix.index_refs if index_fno_matrix is not None else ())
         )
         self._latest_snapshot: CaptureSnapshot | None = None
         self._publish_task: asyncio.Task[None] | None = None
@@ -222,37 +283,17 @@ class Broadcaster:
         Column metadata comes from the BIN schema (`is_price` decides paise -> rupees), so
         adding a column to the format automatically streams it.
         """
-        legs = {
-            "spot": frame.spot,
-            "fut_current": frame.fut_current,
-            "fut_mid": frame.fut_mid,
-            "fut_far": frame.fut_far,
-        }
         n = len(self._stock_refs)
         rows = range(n)
-
-        leg_payloads: dict[str, dict] = {}
-        for leg_name, leg in legs.items():
-            scalars = {
-                col.name: (
-                    [_rupees(int(leg.scalars[col.name][i])) for i in rows]
-                    if col.is_price
-                    else [int(leg.scalars[col.name][i]) for i in rows]
-                )
-                for col in INSTR_SCALAR_COLUMNS
-            }
-            depth = [
-                {
-                    col.name: (
-                        [_rupees(int(level[col.name][i])) for i in rows]
-                        if col.is_price
-                        else [int(level[col.name][i]) for i in rows]
-                    )
-                    for col in DEPTH_LEVEL_COLUMNS
-                }
-                for level in leg.depth
-            ]
-            leg_payloads[leg_name] = {"scalars": scalars, "depth": depth}
+        leg_payloads = _leg_payloads(
+            {
+                "spot": frame.spot,
+                "fut_current": frame.fut_current,
+                "fut_mid": frame.fut_mid,
+                "fut_far": frame.fut_far,
+            },
+            n,
+        )
 
         return protocol.envelope(
             protocol.TYPE_STOCK_BOARD,
@@ -276,6 +317,61 @@ class Broadcaster:
             },
         )
 
+    def index_fno_message(self, ts: int) -> dict:
+        matrix = self.index_fno_matrix
+        assert matrix is not None
+        return self._index_fno_frame_message(matrix.snapshot(ts))  # copy; safe to read
+
+    def _index_fno_frame_message(self, frame: IndexFnoFrame) -> dict:
+        """Consolidated index-F&O board: index spot + up to 3 futures per index.
+
+        Identical wire shape to StockBoard (same 4 legs, same columnar encoding, same
+        paise -> rupees rule) so the frontend can render both with one code path. The only
+        difference is the identity arrays: an index row is named by ``underlying`` and its
+        ``spot_symbol``, because ``IndexFnoRef`` carries no tradingsymbol.
+
+        ``live_spread``/``daily_spread`` are the calendar spread between the two nearest
+        futures — the same reconstruction used for stocks, valid here because
+        :class:`IndexFnoFrame` deliberately mirrors the stock frame's leg layout.
+        """
+        n = len(self._index_fno_refs)
+        rows = range(n)
+        leg_payloads = _leg_payloads(
+            {
+                "spot": frame.spot,
+                "fut_current": frame.fut_current,
+                "fut_mid": frame.fut_mid,
+                "fut_far": frame.fut_far,
+            },
+            n,
+        )
+
+        return protocol.envelope(
+            protocol.TYPE_INDEX_FNO_BOARD,
+            {
+                "timestamp": frame.timestamp_unix_ms,
+                "count": n,
+                "underlyings": [ref.underlying for ref in self._index_fno_refs],
+                "spot_symbols": [ref.spot_symbol for ref in self._index_fno_refs],
+                "future_expiries": [
+                    list(ref.future_expiries) for ref in self._index_fno_refs
+                ],
+                "legs": leg_payloads,
+                "live_spread": [
+                    live_spread(frame, i)
+                    if len(self._index_fno_refs[i].future_expiries) >= 2
+                    else 0.0
+                    for i in rows
+                ],
+                "daily_spread": [
+                    daily_spread(frame, i)
+                    if len(self._index_fno_refs[i].future_expiries) >= 2
+                    else 0.0
+                    for i in rows
+                ],
+            },
+        )
+
     # -- async broadcast --------------------------------------------------- #
 
     async def broadcast_all(self, ts: int | None = None) -> None:
@@ -285,6 +381,8 @@ class Broadcaster:
                 await self.hub.broadcast("market-data", msg)
         if self.stock_matrix is not None:
             await self.hub.broadcast("stocks", self.stock_message(ts))
+        if self.index_fno_matrix is not None:
+            await self.hub.broadcast("stocks", self.index_fno_message(ts))
         if self.monitor is not None:
             await self.hub.broadcast("capture-status", self.monitor.snapshot())
         await self.hub.broadcast("session", protocol.heartbeat(ts))
@@ -372,6 +470,12 @@ class Broadcaster:
 
         if snapshot.stock_frame is not None:
             messages.append(("stocks", self._stock_frame_message(snapshot.stock_frame)))
+        # Shares the `stocks` topic so the board page needs one connection, and is built
+        # inside the same timing window because it is the same class of work.
+        if snapshot.index_fno_frame is not None and self._index_fno_refs:
+            messages.append(
+                ("stocks", self._index_fno_frame_message(snapshot.index_fno_frame))
+            )
         stocks_ms = (time.perf_counter() - greeks_start) * 1000.0 - greeks_ms
 
         if self.monitor is not None:

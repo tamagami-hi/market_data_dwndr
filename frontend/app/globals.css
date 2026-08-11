@@ -424,6 +424,16 @@ a {
   max-height: calc((14px + 10px * 1.35 + 1px) + 6 * (14px + 12px * 1.35 + 1px));
 }
 
+/* Frame integrity carries one row per stream, and the universe is now eight artifacts
+   (six indices + STOCKS + INDICES_FnO), so an uncapped list stretched the panel past its
+   paired Session-history table. Five rows stay visible and the rest scroll. Row math:
+   each row is a 12px/16px label line + 2px margin + a 6px bar = 24px, rows are separated
+   by a 6px flex gap, and the region's own 12px top and bottom padding sits inside the box
+   (border-box). */
+.monitor-integrity-scroll {
+  max-height: calc(24px + 5 * 24px + 4 * 6px);
+}
+
 /* Thirteen columns of session accounting, and most of them hold two or three characters
    ("0", "12", "0.04%"). At the shared 12px header size the HEADINGS — not the data — set
    those column widths, and the table overflowed its panel horizontally at every width

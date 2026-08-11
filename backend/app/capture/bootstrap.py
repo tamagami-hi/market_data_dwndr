@@ -350,6 +350,7 @@ def bootstrap_capture(
             stock_matrix,
             hub,
             monitor=monitor,
+            index_fno_matrix=index_fno_matrix,
             clock=clock,
             stats_state_dir=getattr(settings, "stats_dir", None),
             trading_date=trading_date,

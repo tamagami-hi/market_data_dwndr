@@ -668,21 +668,31 @@ class CaptureEngine:
             )
 
     def _escalate_stale(self, now: int, spell_ms: int) -> None:
-        """Swap the token if possible, then exit for a clean restart (budget permitting)."""
+        """Swap the token if possible, then exit for a clean restart.
+
+        Recovery is **never abandoned while the market session expects data**. The restart
+        budget used to be an absolute per-day cap, and because the count is persisted in a
+        ledger and carried across restarts, three escalations early in the morning left
+        capture online but permanently deaf for the rest of the session — the 72- and
+        91-minute holes on 2026-08-05/06. A gap is recoverable data loss; a process that
+        has stopped trying to fetch is not, so the budget now only decides when to start
+        shouting, not when to give up.
+
+        This is unbounded by design: a feed that is down all session restarts roughly once
+        per ``stale_exit_ms`` plus bootstrap. That is the accepted cost of never stopping.
+        Note that escalation is only reachable while ``is_capture_expected`` holds (see
+        ``observe_feed_health``), so there is no path here that runs outside the session.
+        """
         spell_s = spell_ms // 1000
         if self.escalation_limit and self.escalations >= self.escalation_limit:
-            # Bounded restarts: a feed that cannot be restored must not thrash the
-            # container all day. Stay up, keep suppressing stale writes, and report it.
-            if not self.recovery_abandoned:
-                self.recovery_abandoned = True
-                self.exhausted = True
-                logger.critical(
-                    "live feed stale for %ds and the day's restart budget (%d) is spent; "
-                    "abandoning recovery — capture stays up but is not receiving data",
-                    spell_s,
-                    self.escalation_limit,
-                )
-            return
+            logger.critical(
+                "live feed stale for %ds and the nominal restart budget (%d) is already "
+                "spent, but the market session is open — restarting anyway rather than "
+                "abandoning recovery (escalation %d)",
+                spell_s,
+                self.escalation_limit,
+                self.escalations + 1,
+            )
 
         self.escalations += 1
         # Best-effort: give the replacement process a fresh token to start from. This is

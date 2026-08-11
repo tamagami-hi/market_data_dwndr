@@ -197,8 +197,13 @@ def test_pre_open_staleness_never_escalates():
     assert engine.stale_spell_ms(900_000) >= 60_000  # tracked, just not acted on
 
 
-def test_escalation_is_abandoned_after_the_restart_budget():
-    """Bounded restarts: a permanently dead feed must not thrash the container."""
+def test_recovery_is_never_abandoned_while_the_market_is_trading():
+    """A spent budget must not stop us fetching: gaps are tolerable, going deaf is not.
+
+    The budget is persisted per trading date and carried across restarts, so the old
+    absolute cap meant three escalations before 10:00 left capture online but permanently
+    deaf for the rest of the session — the 72- and 91-minute holes on 2026-08-05/06.
+    """
     recorded = []
     engine = _stale_engine(
         escalations_before=3,
@@ -208,10 +213,30 @@ def test_escalation_is_abandoned_after_the_restart_budget():
     engine.freshness.start(0)
     engine.observe_feed_health(5_000)
 
-    engine.observe_feed_health(70_000)  # past the deadline, budget spent
-    assert engine.recovery_abandoned is True
-    assert engine.exhausted is True
-    assert recorded == []  # no further escalation recorded
+    # Past the deadline with the budget already spent: it still restarts.
+    with pytest.raises(CaptureStalledError):
+        engine.observe_feed_health(70_000)
+    assert engine.recovery_abandoned is False
+    assert engine.exhausted is False
+    assert engine.escalations == 4  # counted beyond the budget, not capped at it
+    assert recorded == [1]  # and still recorded for the session history
+
+
+def test_recovery_keeps_escalating_for_a_feed_that_is_down_all_session():
+    """Unbounded by design: every deadline breach gets another restart attempt."""
+    engine = _stale_engine(escalation_limit=3)
+    engine.freshness.start(0)
+
+    for attempt in range(1, 7):
+        # Each restart re-bootstraps, so the spell restarts from the new process's clock.
+        engine._stale_spell_start_ms = None
+        engine._fresh_since_ms = None
+        base = attempt * 100_000
+        engine.observe_feed_health(base)
+        with pytest.raises(CaptureStalledError):
+            engine.observe_feed_health(base + 61_000)
+        assert engine.escalations == attempt
+        assert engine.recovery_abandoned is False
 
 
 def test_escalation_refreshes_the_token_without_destroying_it():

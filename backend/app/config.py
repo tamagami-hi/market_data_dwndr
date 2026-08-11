@@ -199,10 +199,11 @@ class Settings(BaseSettings):
         ge=0,
         le=50,
         description=(
-            "How many restart escalations to allow for one trading date before giving up "
-            "and staying online (reporting exhausted/recovery_abandoned) instead of "
-            "restarting the container all day. 0 = unlimited. Tunable via "
-            "CAPTURE_STALE_EXIT_MAX_RESTARTS."
+            "Restart escalations for one trading date after which the engine logs at "
+            "CRITICAL that the nominal budget is spent. It does NOT cap recovery: while "
+            "the market session is open capture keeps restarting for a dead feed, because "
+            "a process that has stopped trying to fetch is worse than a recoverable gap. "
+            "0 = never warn. Tunable via CAPTURE_STALE_EXIT_MAX_RESTARTS."
         ),
     )
     capture_stale_recovery_confirm_seconds: float = Field(
