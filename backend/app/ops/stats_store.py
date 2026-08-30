@@ -212,21 +212,121 @@ def record_session_summary(
     state_dir: str | os.PathLike[str],
     summary: dict,
 ) -> Path:
-    """Append one completed-session summary to the session-history log.
+    """Record one completed-session summary, merged with any earlier row for the date.
 
-    One line per capture session (keyed by trading date), holding the per-session
-    data-loss figures: grid gaps/seconds lost, elapsed-based loss, dropped batches,
-    reconnects. Re-recording the same trading date replaces the earlier entry so a
-    mid-day restart does not create duplicates.
+    One line per trading date. Re-recording the same date used to *replace* the earlier
+    row outright, which lost real information: several counters
+    (``ticks_received``, ``reconnects``, ``dropped_batches``, ``unmatched_ticks`` …) are
+    process-local and are not carried across a restart, so the surviving row was whichever
+    generation happened to stop last. That is why the dashboard's ticks/sec column ranged
+    28.7–927.3 with no physical meaning.
+
+    Cumulative counters are therefore merged with ``max`` while the day-level figures —
+    which are already whole-day via the carried counters and the on-disk frame count — take
+    the newest value.
     """
     trading_date = str(summary.get("trading_date") or "unknown")
-    history = [r for r in load_session_history(state_dir) if r.get("trading_date") != trading_date]
-    history.append(summary)
+    history = load_session_history(state_dir)
+    previous = next(
+        (r for r in reversed(history) if r.get("trading_date") == trading_date), None
+    )
+    merged = _merge_session_summary(previous, summary)
+    history = [r for r in history if r.get("trading_date") != trading_date]
+    history.append(merged)
     history = history[-MAX_SESSION_HISTORY:]
     path = session_history_path(state_dir)
     text = "\n".join(json.dumps(row) for row in history) + "\n"
     _atomic_write_text(path, text)
     return path
+
+
+# Counters that accumulate over a trading date but reset with the process, so the day's
+# true total is the maximum seen across generations, never the last one's value.
+_CUMULATIVE_SESSION_FIELDS = (
+    "captures",
+    "frames_written",
+    "uptime_ms",
+    "grid_gaps",
+    "grid_seconds_lost",
+    "stale_seconds",
+    "stale_events",
+    "awaiting_first_tick_seconds",
+    "restart_downtime_seconds",
+    "dropped_batches",
+    "unmatched_ticks",
+    "ticks_received",
+    "reconnects",
+    "in_process_reconnects",
+    "token_refreshes",
+    "longest_stale_spell_seconds",
+    "escalations",
+    "disk_bytes",
+    "missing_seconds",
+    "not_running_seconds",
+)
+
+
+def _merge_session_summary(previous: dict | None, latest: dict) -> dict:
+    """Merge a new session summary over an earlier one for the same trading date."""
+    if not previous:
+        return dict(latest)
+    merged = {**previous, **latest}
+    for field in _CUMULATIVE_SESSION_FIELDS:
+        old, new = previous.get(field), latest.get(field)
+        if isinstance(old, (int, float)) and isinstance(new, (int, float)):
+            merged[field] = max(old, new)
+    merged["generations"] = int(previous.get("generations") or 1) + 1
+    return merged
+
+
+RECONCILIATION_FILE = "reconciliation-history.jsonl"
+MAX_RECONCILIATION_HISTORY = 365
+
+
+def reconciliation_history_path(stats_dir_path: str | os.PathLike[str]) -> Path:
+    return Path(stats_dir_path) / RECONCILIATION_FILE
+
+
+def record_reconciliation(
+    state_dir: str | os.PathLike[str],
+    record: dict,
+) -> Path:
+    """Persist the archive-derived completeness record for one trading date.
+
+    Kept in its own log, separate from the telemetry-derived session history, precisely so
+    the two can be compared: when they disagree, the archive is right.
+    """
+    trading_date = str(record.get("trading_date") or "unknown")
+    history = [
+        r
+        for r in load_reconciliation_history(state_dir)
+        if r.get("trading_date") != trading_date
+    ]
+    history.append(record)
+    history = history[-MAX_RECONCILIATION_HISTORY:]
+    path = reconciliation_history_path(state_dir)
+    _atomic_write_text(path, "\n".join(json.dumps(row) for row in history) + "\n")
+    return path
+
+
+def load_reconciliation_history(state_dir: str | os.PathLike[str]) -> list[dict]:
+    """Return every archive reconciliation record (oldest first); empty if none/corrupt."""
+    path = reconciliation_history_path(state_dir)
+    if not path.exists():
+        return []
+    rows: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            logger.warning("skipping a corrupt reconciliation history line")
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    return rows
 
 
 def load_session_history(state_dir: str | os.PathLike[str]) -> list[dict]:

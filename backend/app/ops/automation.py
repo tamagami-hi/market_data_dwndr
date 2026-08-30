@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, replace
-from datetime import time
+from datetime import date, time
+from pathlib import Path
 
 from app.ops.calendar import TradingCalendar
 from app.session import now_ms
@@ -17,6 +18,10 @@ ACTION_FETCH_BROKER_TOKEN = "FETCH_BROKER_TOKEN"
 ACTION_START_CAPTURE = "START_CAPTURE"
 ACTION_STOP_CAPTURE = "STOP_CAPTURE"
 ACTION_RUN_EOD = "RUN_EOD"
+
+# How often a *persisting* action failure is re-logged (with a running count) instead of
+# emitting an identical line on every poll.
+FAILURE_SUMMARY_INTERVAL_S = 300
 
 
 @dataclass(frozen=True)
@@ -134,7 +139,14 @@ class DailyAutomationService:
         self._last_action: str | None = None
         self._last_error: str | None = None
         self._last_compression: dict | None = None
+        self._last_reconciliation: dict | None = None
         self._last_tick_at_ms: int | None = None
+        # Repeat-failure suppression, so a condition that persists for an hour is logged
+        # as a duration rather than once per poll.
+        self._failure_signature: tuple[str, str] | None = None
+        self._failure_repeats = 0
+        self._failure_first_ms: int | None = None
+        self._failure_logged_ms: int | None = None
         self._lock = asyncio.Lock()
         self._stop_event: asyncio.Event | None = None
         self._task: asyncio.Task | None = None
@@ -187,6 +199,9 @@ class DailyAutomationService:
                 await self.capture_controller.stop()
             elif action == ACTION_RUN_EOD:
                 loop = asyncio.get_running_loop()
+                # Archive-truth completeness FIRST: compression removes the raw ``.bin``,
+                # and this is the one loss figure not derived from process telemetry.
+                await asyncio.to_thread(self._reconcile_session_from_archive)
 
                 def _on_progress(state: dict) -> None:
                     # Called from the compression worker thread; hand the
@@ -256,10 +271,104 @@ class DailyAutomationService:
                 )
             else:
                 self._last_error = "capture automation action failed; inspect backend logs"
+            self._log_action_failure(action, exc)
+            return False
+
+    def _reconcile_session_from_archive(self) -> dict | None:
+        """Reconcile the day's owed grid against the frames actually on disk.
+
+        Runs at EOD, before compression removes the raw ``.bin``. This is the only
+        completeness figure in the system that survives a crash, a container kill or a
+        reboot, because both of its inputs do: the schedule comes from configuration plus
+        the trading date, and the frame timestamps come from the archive. Every live
+        percentage is bounded by what the process observed and therefore cannot see a
+        session it was absent for.
+        """
+        try:
+            from app.ops import stats_store
+            from app.ops.reconcile_session import reconcile_session
+            from app.ops.sessions import (
+                SESSION_EQUITY_DERIV,
+                build_session_registry,
+            )
+
+            trading_date = self._state.eod_in_progress_date or self.calendar.trading_date(
+                self._clock()
+            )
+            day = date.fromisoformat(trading_date)
+            settings = self.settings
+
+            artifact_paths: dict[str, Path] = {
+                name: settings.indices_dir / name / f"{trading_date}.bin"
+                for name in getattr(settings, "indices", ())
+            }
+            artifact_paths["STOCKS"] = settings.stocks_dir / f"{trading_date}.bin"
+            if getattr(settings, "indices_fno_enabled", True):
+                artifact_paths["INDICES_FnO"] = (
+                    settings.indices_fno_dir / f"{trading_date}.bin"
+                )
+            # Only artifacts that produced something are reconciled; a domain that was
+            # never configured for the day is not a hole in it.
+            present = {
+                name: path
+                for name, path in artifact_paths.items()
+                if any(p.exists() for p in [path, *path.parent.glob(f"{path.stem}.p*.bin")])
+            }
+            if not present:
+                logger.info("no capture files for %s to reconcile", trading_date)
+                return None
+
+            registry = build_session_registry(
+                settings, {name: SESSION_EQUITY_DERIV for name in present}
+            )
+            windows = registry.scheduled_windows_on(next(iter(present)), day)
+            record = reconcile_session(present, windows, trading_date=trading_date)
+            self._last_reconciliation = record
+
+            stats_root = getattr(settings, "stats_dir", None)
+            if stats_root is not None:
+                stats_store.record_reconciliation(stats_root, record)
+            return record
+        except Exception:  # noqa: BLE001 - reconciliation must never block the EOD sweep
+            logger.warning("archive reconciliation failed", exc_info=True)
+            return None
+
+    def _log_action_failure(self, action: str, exc: BaseException) -> None:
+        """Log a failed action once per distinct cause, not once per poll.
+
+        A broker session that Kite refuses can persist for over an hour. Emitting the same
+        WARNING every 60 seconds buried the signal (98 identical lines on 2026-08-28) and
+        never escalated. Repeats are summarised at a fixed interval with a running count,
+        so the log shows the *duration* of the condition instead of its cadence.
+        """
+        signature = (action, type(exc).__name__)
+        now = self._clock()
+        if signature != self._failure_signature:
+            self._failure_signature = signature
+            self._failure_repeats = 0
+            self._failure_first_ms = now
+            self._failure_logged_ms = now
             logger.warning(
                 "daily automation action failed: %s (%s)", action, type(exc).__name__
             )
-            return False
+            return
+        self._failure_repeats += 1
+        since_ms = now - (self._failure_logged_ms or now)
+        if since_ms < FAILURE_SUMMARY_INTERVAL_S * 1_000:
+            logger.debug(
+                "daily automation action still failing: %s (%s)", action, type(exc).__name__
+            )
+            return
+        self._failure_logged_ms = now
+        elapsed_s = max(0, (now - (self._failure_first_ms or now)) // 1000)
+        logger.error(
+            "daily automation action %s has been failing for %ds (%s, %d attempts). "
+            "This is not self-healing: check the broker session.",
+            action,
+            elapsed_s,
+            type(exc).__name__,
+            self._failure_repeats + 1,
+        )
 
     def status(self) -> dict:
         phase = "waiting"
@@ -282,6 +391,9 @@ class DailyAutomationService:
             "eod_completed_date": self._state.eod_completed_date,
             "eod_in_progress_date": self._state.eod_in_progress_date,
             "compression": self._last_compression,
+            # Archive-derived completeness for the last reconciled trading date. The one
+            # loss figure that is not bounded by what this process happened to observe.
+            "reconciliation": self._last_reconciliation,
         }
 
     def start(self) -> None:

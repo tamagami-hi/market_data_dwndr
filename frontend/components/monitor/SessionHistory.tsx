@@ -6,13 +6,23 @@ import { StateMessage } from "@/components/ui/StateMessage";
 import type { SessionSummary } from "@/lib/api";
 import { formatBytes, formatIndianNumber, formatPercent, formatUptime } from "@/lib/numberFormat";
 
+/** Schedule-relative loss: owed seconds with no frame, including time the process was not
+ * running at all. ``data_loss_pct`` is bounded by what the process itself observed, so an
+ * outage that delays the start shrinks its own denominator and vanishes — which is how a
+ * session that was 14.69% missing reported 0.77%. */
+function scheduleLoss(session: { scheduled_loss_pct?: number; data_loss_pct: number }): number {
+  return session.scheduled_loss_pct ?? session.data_loss_pct;
+}
+
 function SessionDetails({ session }: { session: SessionSummary }) {
   const uptimeSeconds = (session.uptime_ms ?? 0) / 1000;
   const averageTicks = uptimeSeconds >= 1 ? session.ticks_received / uptimeSeconds : 0;
   const fields = [
     ["Frames written", formatIndianNumber(session.frames_written, 0)],
     ["Frames expected", formatIndianNumber(session.frames_expected, 0)],
-    ["Full-session loss", formatPercent(session.frame_loss_pct, 2)],
+    ["Loss vs schedule", formatPercent(scheduleLoss(session), 2)],
+    ["Loss vs observed window", formatPercent(session.data_loss_pct, 2)],
+    ["Full-session progress", formatPercent(session.frame_loss_pct, 2)],
     ["Stale spells", formatIndianNumber(session.stale_events, 0)],
     ["Elapsed seconds", formatIndianNumber(session.grid_seconds_elapsed, 0)],
     ["Dropped batches", formatIndianNumber(session.dropped_batches, 0)],
@@ -122,7 +132,7 @@ export const SessionHistory = memo(function SessionHistory({
                 <tr>
                   <th className="text-left">Session</th>
                   <th className="text-right">Frames</th>
-                  <th className="text-right">Data loss</th>
+                  <th className="text-right">Loss vs schedule</th>
                   <th className="text-right">Gap loss</th>
                   <th className="text-right">Lost s</th>
                   <th className="text-right">Gaps</th>
@@ -146,8 +156,11 @@ export const SessionHistory = memo(function SessionHistory({
                     <td className="text-right font-mono text-secondary">
                       {formatIndianNumber(session.frames_written, 0)}
                     </td>
-                    <td className={`text-right font-mono ${session.data_loss_pct >= 1 ? "text-danger" : session.data_loss_pct > 0 ? "text-warning" : "text-muted"}`}>
-                      {formatPercent(session.data_loss_pct, 2)}
+                    {/* Schedule-relative: the only figure that can see a session the
+                        process was absent for. Falls back to the process-relative number
+                        for rows recorded before it existed. */}
+                    <td className={`text-right font-mono ${scheduleLoss(session) >= 1 ? "text-danger" : scheduleLoss(session) > 0 ? "text-warning" : "text-muted"}`}>
+                      {formatPercent(scheduleLoss(session), 2)}
                     </td>
                     <td className={`text-right font-mono ${session.session_loss_pct >= 1 ? "text-danger" : session.session_loss_pct > 0 ? "text-warning" : "text-muted"}`}>
                       {formatPercent(session.session_loss_pct, 2)}

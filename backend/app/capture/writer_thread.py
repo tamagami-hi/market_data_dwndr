@@ -57,6 +57,7 @@ class FileWriterThread(threading.Thread):
         self._started_ok = threading.Event()
         self._error: BaseException | None = None
         self._stop_requested = False
+        self._header_flushed = False
 
     @property
     def frames_written(self) -> int:
@@ -66,7 +67,11 @@ class FileWriterThread(threading.Thread):
     def run(self) -> None:  # pragma: no cover - exercised via integration test
         try:
             self._writer.open()
-            self._writer.write_header(self._header)
+            # Bind the axis now — this validates the file and surfaces an axis conflict at
+            # startup — but do NOT emit the header record yet. The header is what fixes a
+            # file's fixed-width axis, so a generation that never receives a tick must
+            # leave no header (and no file content) behind at all.
+            self._writer.bind_header(self._header)
             self._started_ok.set()
         except BaseException as exc:  # noqa: BLE001
             self._error = exc
@@ -77,6 +82,9 @@ class FileWriterThread(threading.Thread):
                 item = self._queue.get()
                 if item is _STOP:
                     break
+                if not self._header_flushed:
+                    self._writer.flush_header()
+                    self._header_flushed = True
                 self._writer.append_frame(item)
                 self.frames_appended += 1
                 self.last_write_ms = now_ms()

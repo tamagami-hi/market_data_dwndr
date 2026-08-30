@@ -65,6 +65,21 @@ def compress_file(
             if remove_src:
                 src.unlink()
             return dst
+        # The existing archive does not match this raw file. Before replacing it, refuse
+        # the case where doing so would DESTROY data: an archive that decompresses to more
+        # bytes than the raw file holds is a longer, earlier capture of the same date, and
+        # overwriting it with a shorter one is unrecoverable loss that leaves every counter
+        # looking healthy. (Reachable whenever capture restarts after an EOD sweep.)
+        try:
+            existing_bytes = decompressed_size(dst)
+        except (OSError, zstd.ZstdError):
+            existing_bytes = None
+        if existing_bytes is not None and existing_bytes > src.stat().st_size:
+            raise ValueError(
+                f"refusing to replace {dst.name}: the existing archive holds "
+                f"{existing_bytes} bytes but the raw file only has {src.stat().st_size}; "
+                "overwriting would discard already-archived frames"
+            )
     cctx = zstd.ZstdCompressor(level=level, threads=_clamp_threads(threads))
     temp_path: Path | None = None
     try:
@@ -93,6 +108,22 @@ def compress_file(
             temp_path.unlink(missing_ok=True)
         raise
     return dst
+
+
+def decompressed_size(src: str | os.PathLike[str]) -> int:
+    """Number of raw bytes a ``.zst`` archive expands to, streamed (constant memory).
+
+    Used to refuse an archive overwrite that would shorten an already-published file.
+    """
+    total = 0
+    dctx = zstd.ZstdDecompressor()
+    with open(src, "rb") as handle, dctx.stream_reader(handle) as reader:
+        while True:
+            chunk = reader.read(1 << 20)
+            if not chunk:
+                break
+            total += len(chunk)
+    return total
 
 
 def decompress_to_bytes(src: str | os.PathLike[str]) -> bytes:

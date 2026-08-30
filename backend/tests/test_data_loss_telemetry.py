@@ -12,6 +12,20 @@ from app.capture.monitor import (
 from app.ops import stats_store
 from tests.test_capture import _nifty_table
 
+# A minimal batch that proves the feed delivered something. Capture suppresses writes
+# until the first tick arrives (an all-zero table is not market data, and the first frame
+# also writes the file header), so any rig that expects frames must deliver one. The
+# content is deliberately distinct from the recovery ticks used below, so seeding does not
+# accidentally make a later batch look like an unchanged (frozen) one.
+_FIRST_TICK = [{"instrument_token": 999_999, "last_price": 0.5}]
+
+
+def _seed_first_tick(engine, at_ms: int = 0) -> None:
+    """Start the freshness clock and deliver one batch, as the live consumer would."""
+    engine.freshness.start(at_ms)
+    engine.freshness.observe(_FIRST_TICK, at_ms)
+
+
 # --- pure helpers -------------------------------------------------------------
 
 
@@ -27,7 +41,7 @@ def test_expected_frames_elapsed_counts_grid_seconds():
 
 def test_capture_snapshot_tracks_first_last_and_stale_seconds():
     engine = CaptureEngine({}, None, {}, None, stale_after_ms=5_000)
-    engine.freshness.start(0)
+    _seed_first_tick(engine)
 
     engine.capture_snapshot(1_000)
     engine.capture_snapshot(2_000)
@@ -64,7 +78,7 @@ def _monitor(engine, bridge=None, **kwargs):
 
 def test_global_metrics_exposes_data_loss_fields():
     engine = CaptureEngine({}, None, {}, None, stale_after_ms=5_000)
-    engine.freshness.start(0)
+    _seed_first_tick(engine)
     engine.capture_snapshot(1_000)
     engine.capture_snapshot(2_000)
     engine.grid_gaps = 2
@@ -367,7 +381,9 @@ def test_suppression_can_be_disabled_for_legacy_behaviour(tmp_path):
         stale_after_ms=5_000,
         suppress_stale_writes=False,
     )
-    engine.freshness.start(0)
+    # The opt-out governs *stale* frames only; the pre-first-tick gate is unconditional,
+    # because an all-zero table is fabricated from nothing rather than a frozen quote.
+    _seed_first_tick(engine)
     assert engine.capture_once(10_000) == 1, "opt-out must restore the old write-anyway path"
     writer.stop(join=True)
     assert engine.stale_seconds == 0
@@ -376,7 +392,7 @@ def test_suppression_can_be_disabled_for_legacy_behaviour(tmp_path):
 
 def test_stale_events_counts_spells_not_seconds():
     engine = CaptureEngine({}, None, {}, None, stale_after_ms=5_000)
-    engine.freshness.start(0)
+    _seed_first_tick(engine)
     # Spell 1: two consecutive stale seconds.
     engine.capture_snapshot(10_000)
     engine.capture_snapshot(11_000)

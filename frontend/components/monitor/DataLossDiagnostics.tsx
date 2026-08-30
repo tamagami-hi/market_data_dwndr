@@ -67,7 +67,12 @@ function LossBreakdown({ globals }: { globals: GlobalStatus }) {
   if (scheduled <= 0) return null;
   const captured = globals.captured_seconds ?? 0;
   const missing = globals.missing_seconds ?? 0;
+  // Each bucket is a counter the engine incremented once, at the moment the second was
+  // missed. "write fail" previously also carried restart downtime, so a session in which
+  // no write ever failed reported "write fail 147s"; restart downtime now sits inside
+  // `downtime` where it belongs.
   const causes: Array<[string, number]> = [
+    ["no feed yet", globals.awaiting_first_tick_seconds ?? 0],
     ["feed stale", globals.stale_feed_seconds ?? 0],
     ["downtime", globals.downtime_seconds ?? 0],
     ["write fail", globals.write_path_seconds ?? 0],
@@ -205,15 +210,15 @@ export function DataLossDiagnostics({ globals }: { globals: GlobalStatus | null 
           severity: globals.stale_events ? "warning" as const : "success" as const,
         },
         {
-          label: "Elapsed loss",
+          label: "Gap loss",
           value: formatPercent(globals.session_loss_pct ?? 0, 3),
-          detail: "gaps only",
+          detail: "vs observed, excl. stale",
           severity: lossSeverity(globals.session_loss_pct),
         },
         {
-          label: "Data loss",
+          label: "Loss vs observed",
           value: formatPercent(globals.data_loss_pct ?? 0, 3),
-          detail: "incl. stale",
+          detail: "incl. stale — cannot see downtime",
           severity: lossSeverity(globals.data_loss_pct),
         },
         {

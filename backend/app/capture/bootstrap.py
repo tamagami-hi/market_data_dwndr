@@ -34,6 +34,7 @@ from app.index_fno.board import discover_index_fno_board
 from app.index_fno.matrix import IndexFnoMatrix
 from app.kite.errors import KiteAuthenticationError, is_authentication_error
 from app.kite.instruments import InstrumentStore
+from app.kite.ticker import CONNECT_TIMEOUT_S, TickerBridge, TickerConnectFailed
 from app.ops.calendar import TradingCalendar
 from app.ops.sessions import SESSION_EQUITY_DERIV, build_session_registry
 from app.ops.stats_store import load_capture_snapshot, load_escalations, record_escalation
@@ -49,7 +50,7 @@ class CaptureContext:
     """Everything needed to run (and observe) a capture session."""
 
     engine: CaptureEngine
-    bridge: object  # TickerBridge
+    bridge: TickerBridge
     monitor: CaptureMonitor
     index_tables: dict[str, IndexTable]
     stock_matrix: StockMatrix | None
@@ -215,10 +216,32 @@ def bootstrap_capture(
     # capture window (when the process runs). Those differ by design — the process starts
     # early to get its socket up — and using the wider window would understate day-progress
     # and quietly disagree with the scheduled loss figures.
+    #
+    # An explicit EXPECTED_FRAMES_PER_SESSION override wins, because an operator setting it
+    # to correct the metric must actually see an effect (it used to be unreachable behind
+    # an ``or`` short-circuit). A *disabled* session owes nothing, so it must never fall
+    # back to a full-day baseline against zero captures — that reported 100% loss for an
+    # artifact deliberately switched off.
     session_frames = session_registry.scheduled_seconds(
         next(iter(artifact_sessions), "STOCKS")
     )
-    expected_frames = session_frames or getattr(settings, "expected_frames_per_session", 0)
+    override = getattr(settings, "expected_frames_override", None)
+    if override:
+        expected_frames = int(override)
+        logger.info("frame baseline overridden by EXPECTED_FRAMES_PER_SESSION=%d", override)
+    elif session_frames:
+        expected_frames = session_frames
+    elif not deriv.enabled:
+        expected_frames = 0  # nothing owed: a disabled session cannot be "missing" data
+    else:
+        expected_frames = getattr(settings, "expected_frames_per_session", 0)
+
+    if not getattr(settings, "market_holidays", ()):  # noqa: SIM102 - explicit is clearer
+        logger.warning(
+            "MARKET_HOLIDAYS is empty: any weekday exchange holiday will be treated as a "
+            "full trading day (23,100 owed seconds, zero captures, 100%% reported loss) "
+            "and capture/EOD will still run on it"
+        )
 
     escalations_before = 0
     stats_root = getattr(settings, "stats_dir", None)
@@ -254,6 +277,10 @@ def bootstrap_capture(
         stale_recovery_confirm_ms=int(
             round(getattr(settings, "capture_stale_recovery_confirm_seconds", 15.0) * 1000)
         ),
+        reconnect_after_ms=int(
+            round(getattr(settings, "capture_reconnect_after_seconds", 10.0) * 1000)
+        ),
+        reconnect_limit_per_hour=getattr(settings, "capture_reconnect_max_per_hour", 6),
         recovery_armed=session_registry.any_stale_armed,
         capture_expected=session_registry.any_capture_expected,
         token_refresher=token_refresher,
@@ -357,8 +384,6 @@ def bootstrap_capture(
         )
 
 
-    from app.kite.ticker import TickerBridge
-
     bridge = TickerBridge(
         settings.kite_api_key,
         access_token,
@@ -368,6 +393,8 @@ def bootstrap_capture(
         clock=clock,
     )
     monitor.bridge = bridge
+    # The socket-replacement rung, tried before escalating to a process restart.
+    engine.set_reconnect_fn(bridge.reconnect)
 
     return CaptureContext(
         engine=engine,
@@ -388,8 +415,16 @@ async def run_capture(
     stop_event,
     *,
     interval_s: float = 1.0,
+    connect_timeout_s: float = CONNECT_TIMEOUT_S,
 ) -> None:  # pragma: no cover - live loop, integration-only
-    """Run capture until stopped, surfacing a ticker authentication failure."""
+    """Run capture until stopped, surfacing a ticker authentication failure.
+
+    The 1 Hz grid is entered only after the socket has *proven* it is live. Starting the
+    grid on an unconfirmed socket is what turned a dead feed into a ~295-second hole plus
+    five zero-filled frames every affected session: nothing read ``bridge.connected``, so
+    the first signal was the freshness monitor 5 s later and the first *action* was the
+    40 s escalation deadline.
+    """
     context.bridge.bind_loop()
     try:
         context.bridge.start()
@@ -397,6 +432,11 @@ async def run_capture(
         context.bridge.stop()
         if is_authentication_error(exc):
             raise KiteAuthenticationError("Kite ticker rejected the active access token") from exc
+        raise
+    try:
+        await _await_live_feed(context.bridge, connect_timeout_s)
+    except BaseException:
+        context.bridge.stop()
         raise
     engine_task = asyncio.create_task(
         context.engine.run(
@@ -429,3 +469,35 @@ async def run_capture(
             engine_task.cancel()
             await asyncio.gather(engine_task, return_exceptions=True)
         context.bridge.stop()
+
+
+async def _await_live_feed(bridge: TickerBridge, timeout_s: float) -> None:
+    """Wait for a confirmed subscription, or fail with the reason.
+
+    Races the confirmation against an authentication failure so a rejected token is
+    reported as such rather than as a generic connect timeout.
+    """
+    auth = asyncio.create_task(bridge.auth_failed.wait())
+    live = asyncio.create_task(bridge.connect_confirmed.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {auth, live}, timeout=timeout_s, return_when=asyncio.FIRST_COMPLETED
+        )
+        if auth in done:
+            raise KiteAuthenticationError("Kite ticker rejected the active access token")
+        if live in done:
+            logger.info(
+                "feed live: subscription confirmed after %d connect attempt(s)",
+                getattr(bridge, "connect_attempts", 1),
+            )
+            return
+        raise TickerConnectFailed(
+            f"ticker did not confirm a live subscription within {timeout_s:g}s "
+            f"({len(getattr(bridge, 'tokens', ()))} tokens); refusing to start the "
+            "1 Hz grid against a socket that never connected"
+        )
+    finally:
+        for task in (auth, live):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(auth, live, return_exceptions=True)

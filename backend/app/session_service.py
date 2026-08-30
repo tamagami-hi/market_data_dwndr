@@ -43,6 +43,18 @@ logger = logging.getLogger(__name__)
 # recovery path must never block behind a login or another refresh.
 SESSION_LOCK_TIMEOUT_S = 5.0
 
+# Auth states, reported by ``SessionService.status()`` and consumed by ``/health``.
+#
+# ``AUTH_BLOCKED`` is the state that was missing. On 2026-08-28 the token broker answered
+# HTTP 200 with an access token on every 60-second poll from 08:30, and Kite rejected each
+# one with 403 Forbidden until 10:08 — 54 minutes of an open session with no capture. The
+# only trace was one WARNING per poll; ``/health`` stayed 200 and the headline loss metric
+# read 0.77%. "The broker has no session yet" is a wait; "the broker's session is rejected
+# by Kite" is an administrator action item, and the two must not look the same.
+AUTH_OK = "OK"
+AUTH_NO_SESSION = "NO_SESSION"
+AUTH_BLOCKED = "AUTH_BLOCKED"
+
 LoginFn = Callable[..., SessionState]
 BrokerFetcher = Callable[[], str | None]
 BrokerValidator = Callable[[str], None]
@@ -70,6 +82,12 @@ class SessionService:
         self._rate_resolver = rate_resolver or (lambda: resolve_daily_risk_free_rate(settings))
         self._previous_token_attempted_dates: frozenset[str] = frozenset()
         self._session_lock = threading.RLock()
+        # Auth-state tracking, so a broker session that Kite refuses is a first-class,
+        # alertable condition instead of a log line repeated once a minute.
+        self._auth_state = AUTH_OK
+        self._auth_state_since_ms: int | None = None
+        self._auth_last_error: str | None = None
+        self._auth_failures = 0
         self.calendar = TradingCalendar(
             holidays=set(getattr(settings, "market_holidays", [])),
             timezone_name=settings.timezone,
@@ -103,6 +121,36 @@ class SessionService:
             )
         finally:
             client.close()
+
+    # -- auth state ---------------------------------------------------------- #
+
+    def _set_auth_state(self, state: str, *, error: str | None = None) -> bool:
+        """Record the current auth state. Returns True when the state *changed*.
+
+        Callers use the return value to log the transition once, rather than emitting the
+        same warning on every poll of a condition that can persist for an hour.
+        """
+        self._auth_last_error = error
+        if state == AUTH_OK:
+            self._auth_failures = 0
+        else:
+            self._auth_failures += 1
+        if state == self._auth_state:
+            return False
+        self._auth_state = state
+        self._auth_state_since_ms = self._clock()
+        return True
+
+    @property
+    def auth_state(self) -> str:
+        return self._auth_state
+
+    def auth_blocked_seconds(self, now: int | None = None) -> int:
+        """How long the auth state has been non-OK (0 when healthy)."""
+        if self._auth_state == AUTH_OK or self._auth_state_since_ms is None:
+            return 0
+        reference = now if now is not None else self._clock()
+        return max(0, (reference - self._auth_state_since_ms) // 1000)
 
     def acquire_broker_session(self) -> SessionState | None:
         """Reuse a valid prior token, otherwise fetch and validate the shared token."""
@@ -184,6 +232,7 @@ class SessionService:
     def _acquire_broker_session_unlocked(self) -> SessionState | None:
         existing = self.active_session()
         if existing is not None and existing.access_token:
+            self._set_auth_state(AUTH_OK)
             return existing
 
         trading_date = self.trading_date()
@@ -191,9 +240,32 @@ class SessionService:
         if access_token is None:
             access_token = self._broker_fetcher()
             if not access_token:
+                # The broker is reachable but has nothing authenticated to hand back.
+                # A wait, not a fault: an administrator has simply not logged in yet.
+                if self._set_auth_state(AUTH_NO_SESSION):
+                    logger.warning(
+                        "broker has no authenticated session for %s yet; waiting",
+                        trading_date,
+                    )
                 return None
-            self._broker_validator(access_token)
+            try:
+                self._broker_validator(access_token)
+            except Exception as exc:
+                # The broker HANDED US a token and Kite refused it. This is the 403 shape:
+                # retrying cannot fix it, only an administrator re-login through the
+                # broker can, so it is escalated rather than absorbed.
+                changed = self._set_auth_state(AUTH_BLOCKED, error=type(exc).__name__)
+                if changed:
+                    logger.error(
+                        "AUTH_BLOCKED: the broker returned an access token for %s that "
+                        "Kite rejected (%s). Capture cannot start until an administrator "
+                        "logs in again through the broker.",
+                        trading_date,
+                        type(exc).__name__,
+                    )
+                raise
 
+        self._set_auth_state(AUTH_OK)
         # Fetch today's risk-free rate from the calspread broker (env RISK_FREE_RATE is
         # the fallback). Only when neither is available do we reuse a prior stored rate.
         fetched_rate = self._rate_resolver()
@@ -258,6 +330,12 @@ class SessionService:
             "risk_free_rate_as_of": session.risk_free_rate_as_of if session else None,
             "capture_ready": session.capture_ready if session else False,
             "access_token_at": session.access_token_at if session else None,
+            # Auth health, so "the broker's token is rejected" is visible to /health and
+            # the dashboard rather than only to whoever is reading the log.
+            "auth_state": self._auth_state,
+            "auth_blocked_seconds": self.auth_blocked_seconds(now),
+            "auth_last_error": self._auth_last_error,
+            "auth_failures": self._auth_failures,
         }
 
     def login(

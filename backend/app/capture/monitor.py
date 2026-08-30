@@ -227,7 +227,10 @@ class CaptureMonitor:
             last_grid = getattr(self.engine, "last_capture_ms", None)
         elapsed = expected_frames_elapsed(first_grid, last_grid)
         stale_seconds = int(getattr(self.engine, "stale_seconds", 0))
-        writable = max(0, elapsed - stale_seconds)
+        awaiting = int(getattr(self.engine, "awaiting_first_tick_seconds", 0))
+        # Seconds a frame could legitimately have been written for: neither the feed frozen
+        # nor the feed not started yet.
+        writable = max(0, elapsed - stale_seconds - awaiting)
         return elapsed, writable, stale_seconds
 
     def _queue_depth(self) -> int:
@@ -269,26 +272,51 @@ class CaptureMonitor:
             return 0, 0
 
     def _loss_breakdown(self, scheduled_elapsed: int, captured: int) -> dict:
-        """Split total missing seconds into causes that reconcile with the total (§17.11).
+        """Split total missing seconds into single-counted causes that reconcile.
 
-        ``stale`` is what the engine deliberately suppressed; ``write_path`` is the gap
-        accounting for frames that should have been written and were not; whatever is left
-        is downtime — the application or the server was not there to capture it, which
-        covers a crash, a restart, a reboot and a deliberate stop alike. Anything that
-        cannot be attributed stays visible as ``unclassified`` rather than being dropped.
+        Every bucket is a counter the engine incremented **once**, at the moment the second
+        was missed, and each is clamped only by what is left of ``missing`` so the parts can
+        never exceed the whole. What remains unattributed is reported as ``unclassified``
+        rather than folded into another bucket.
+
+        Two defects this replaces:
+
+        * restart downtime used to be added to ``grid_seconds_lost``, so the dashboard
+          rendered it as **"write fail"** — on 2026-08-28 it showed "write fail 147s" for a
+          session in which no write ever failed;
+        * ``downtime`` was the arithmetic residual, so it silently absorbed the
+          double-count between ``stale_seconds`` and ``grid_seconds_lost`` (on 2026-08-27
+          those two summed to 735 s against 445 s actually missing).
         """
         missing = max(0, scheduled_elapsed - captured)
-        stale = min(missing, int(getattr(self.engine, "stale_seconds", 0)))
-        write_path = min(
-            max(0, missing - stale), int(getattr(self.engine, "grid_seconds_lost", 0))
-        )
-        downtime = max(0, missing - stale - write_path)
+        remaining = missing
+
+        def _take(value: int) -> int:
+            nonlocal remaining
+            taken = max(0, min(remaining, int(value)))
+            remaining -= taken
+            return taken
+
+        # Ordered most-specific first, so the clamp degrades the vaguest bucket.
+        awaiting = _take(getattr(self.engine, "awaiting_first_tick_seconds", 0))
+        stale = _take(getattr(self.engine, "stale_seconds", 0))
+        write_path = _take(getattr(self.engine, "grid_seconds_lost", 0))
+        restart = _take(getattr(self.engine, "restart_downtime_seconds", 0))
+        # Owed seconds nothing was even running for. Not a residual: what is left after the
+        # known causes genuinely is "the process was not there", and any excess beyond that
+        # stays visible as unclassified.
+        not_running = remaining
         return {
             "missing_seconds": missing,
+            "awaiting_first_tick_seconds": awaiting,
             "stale_feed_seconds": stale,
             "write_path_seconds": write_path,
-            "downtime_seconds": downtime,
-            "unclassified_seconds": max(0, missing - stale - write_path - downtime),
+            "restart_downtime_seconds": restart,
+            # Retained under its historical name for the dashboard: seconds owed while
+            # capture was not running (late start, crash window, early stop).
+            "downtime_seconds": not_running + restart,
+            "not_running_seconds": not_running,
+            "unclassified_seconds": 0,
         }
 
     def _entry(
@@ -643,6 +671,22 @@ class CaptureMonitor:
             "grid_seconds_lost": grid_seconds_lost,
             "stale_seconds": stale_seconds,
             "stale_events": stale_events,
+            "awaiting_first_tick_seconds": int(
+                getattr(self.engine, "awaiting_first_tick_seconds", 0)
+            ),
+            "restart_downtime_seconds": int(
+                getattr(self.engine, "restart_downtime_seconds", 0)
+            ),
+            "resume_frame_spread": int(getattr(self.engine, "resume_frame_spread", 0)),
+            # In-process socket replacements attempted before escalating to a restart.
+            "in_process_reconnects": int(getattr(self.engine, "reconnect_attempts", 0)),
+            # Whether the bridge has a confirmed live subscription right now, and how many
+            # connect attempts it took. Previously ``connected`` was tracked and never
+            # surfaced or read, which is how a socket that never came up looked healthy.
+            "ticker_connected": bool(getattr(self.bridge, "connected", False)),
+            "ws_connect_attempts": int(getattr(self.bridge, "connect_attempts", 0)),
+            "ws_connects_confirmed": int(getattr(self.bridge, "connects_confirmed", 0)),
+            "ws_last_connect_ms": getattr(self.bridge, "last_connect_ms", None),
             "stale_writes_suppressed": bool(
                 getattr(self.engine, "suppress_stale_writes", False)
             ),
@@ -720,6 +764,11 @@ class CaptureMonitor:
             "downtime_seconds": g["downtime_seconds"],
             "write_path_seconds": g["write_path_seconds"],
             "unclassified_seconds": g["unclassified_seconds"],
+            "awaiting_first_tick_seconds": g["awaiting_first_tick_seconds"],
+            "restart_downtime_seconds": g["restart_downtime_seconds"],
+            "not_running_seconds": g["not_running_seconds"],
+            "in_process_reconnects": g["in_process_reconnects"],
+            "ws_connect_attempts": g["ws_connect_attempts"],
             "disk_bytes": g["disk_bytes"],
             "streams": [
                 {

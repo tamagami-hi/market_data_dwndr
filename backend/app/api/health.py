@@ -26,7 +26,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app import __version__
+from app.ops.calendar import PHASE_OPEN
 from app.session import now_ms
+from app.session_service import AUTH_BLOCKED, AUTH_NO_SESSION, AUTH_OK
 
 # Per-component codes carried inside the JSON list (independent of the HTTP status).
 CODE_OK = 200
@@ -42,6 +44,115 @@ def _market_phase(app_state) -> str | None:
         return service.status().get("market_phase")
     except Exception:  # noqa: BLE001 - a probe must never raise
         return None
+
+
+# Grace after the session opens before "owed but not capturing" becomes *dead* rather than
+# degraded. Bootstrap plus one automation tick is a few seconds; this is deliberately
+# generous while still far below the 54 minutes that went unnoticed on 2026-08-28.
+NOT_CAPTURING_DEAD_AFTER_S = 120
+
+
+def _auth_check(app_state, controller) -> dict:
+    """Report broker-session health, and escalate an unmet obligation to *dead*.
+
+    Two distinct failures live here, and neither had a signal before:
+
+    * the broker hands over a token Kite refuses (``AUTH_BLOCKED``) — an administrator
+      must re-login, retrying will never fix it;
+    * the market session is open, frames are owed, and capture is not running for any
+      reason at all.
+
+    The second is the one that matters most: it is the only check that notices a *whole
+    missing session*, which every loss percentage on the dashboard structurally cannot see
+    (their denominators are all bounded by what the process itself observed).
+    """
+    service = getattr(app_state, "session_service", None)
+    if service is None:
+        return {
+            "component": "broker_session",
+            "status": "idle",
+            "code": CODE_OK,
+            "message": "backend unconfigured; no broker session to assess",
+        }
+    try:
+        status = service.status()
+    except Exception:  # noqa: BLE001 - a probe must never raise
+        return {
+            "component": "broker_session",
+            "status": "ok",
+            "code": CODE_OK,
+            "message": "broker session status unavailable",
+        }
+
+    auth_state = status.get("auth_state") or AUTH_OK
+    blocked_s = int(status.get("auth_blocked_seconds") or 0)
+    phase = status.get("market_phase")
+    running = bool(controller is not None and getattr(controller, "running", False))
+    detail = {
+        "auth_state": auth_state,
+        "auth_blocked_seconds": blocked_s,
+        "auth_last_error": status.get("auth_last_error"),
+        "capture_running": running,
+        "market_phase": phase,
+    }
+
+    # Frames are owed and nothing is capturing them. Anything else is secondary.
+    if phase == PHASE_OPEN and not running:
+        if blocked_s >= NOT_CAPTURING_DEAD_AFTER_S or auth_state == AUTH_BLOCKED:
+            reason = (
+                "the broker's access token is rejected by Kite; an administrator must "
+                "log in again through the broker"
+                if auth_state == AUTH_BLOCKED
+                else f"no usable broker session ({auth_state})"
+            )
+            return {
+                "component": "broker_session",
+                "status": "dead",
+                "code": CODE_DEAD,
+                "message": (
+                    f"market session is OPEN and capture is NOT running ({blocked_s}s): "
+                    f"{reason}. Every second in this state is unrecoverable data loss."
+                ),
+                **detail,
+            }
+        return {
+            "component": "broker_session",
+            "status": "stale",
+            "code": CODE_STALE,
+            "message": (
+                f"market session is OPEN but capture has not started yet ({blocked_s}s, "
+                f"{auth_state}); escalates to dead after {NOT_CAPTURING_DEAD_AFTER_S}s"
+            ),
+            **detail,
+        }
+
+    if auth_state == AUTH_BLOCKED:
+        return {
+            "component": "broker_session",
+            "status": "stale",
+            "code": CODE_STALE,
+            "message": (
+                f"AUTH_BLOCKED for {blocked_s}s: the broker returned an access token that "
+                "Kite rejected. An administrator must log in again through the broker "
+                "before the session opens."
+            ),
+            **detail,
+        }
+    if auth_state == AUTH_NO_SESSION:
+        return {
+            "component": "broker_session",
+            "status": "ok",
+            "code": CODE_OK,
+            "message": f"waiting for the broker to publish a session ({blocked_s}s)",
+            **detail,
+        }
+    return {
+        "component": "broker_session",
+        "status": "ok",
+        "code": CODE_OK,
+        "message": "broker session usable",
+        **detail,
+    }
 
 
 def _capture_check(controller) -> dict:
@@ -163,7 +274,12 @@ def build_health(app_state) -> tuple[dict, int]:
         "code": CODE_OK,
         "message": "event loop responsive",
     }
-    checks = [process_check, _capture_check(controller), _freshness_check(controller)]
+    checks = [
+        process_check,
+        _auth_check(app_state, controller),
+        _capture_check(controller),
+        _freshness_check(controller),
+    ]
 
     if any(c["status"] == "dead" for c in checks):
         overall, http_status = "dead", CODE_DEAD

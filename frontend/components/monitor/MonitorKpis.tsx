@@ -88,12 +88,16 @@ export function MonitorKpis({
       />
       <Metric
         compact
-        label="Frame loss"
-        value={globals ? formatPercent(globals.frame_loss_pct, 2) : "--"}
-        // Severity keys off TOTAL data loss (gaps + stale), not the full-day completeness
-        // figure in the value and not the gaps-only elapsed loss: a feed that froze at the
-        // open writes nothing, which only data_loss_pct reflects.
-        severity={lossSeverity(globals?.data_loss_pct ?? globals?.session_loss_pct)}
+        label="Loss vs schedule"
+        // Value and severity now come from the SAME metric, and it is the schedule-relative
+        // one: the tile used to print full-day progress while its colour was keyed to
+        // data_loss_pct, so it could be red for a reason unrelated to the number shown.
+        value={
+          globals
+            ? formatPercent(globals.scheduled_loss_pct ?? globals.frame_loss_pct, 2)
+            : "--"
+        }
+        severity={lossSeverity(globals?.scheduled_loss_pct ?? globals?.frame_loss_pct)}
         detail={
           globals
             ? `${formatIndianNumber(globals.frames_written, 0)} / ${formatIndianNumber(

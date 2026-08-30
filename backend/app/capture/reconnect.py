@@ -102,6 +102,19 @@ class FreshnessMonitor:
         # Observability counters.
         self.frozen_batches = 0
 
+    @property
+    def has_ticked(self) -> bool:
+        """True once any batch at all has been delivered.
+
+        Distinguishes "the feed has not started yet" from "the feed has gone stale".
+        Before the fix these were the same state, and because staleness is only declared
+        after ``stale_after_ms``, the first five seconds of a socket that never connected
+        counted as *fresh* — so five all-zero frames per artifact were written and
+        archived, and (worse) the first of them wrote the file header. On 2026-08-26/27
+        that header was the one the rest of the day's frames were then judged against.
+        """
+        return self.last_tick_ms is not None
+
     def start(self, now_ms: int) -> None:
         """Seed the reference clock so pre-first-tick staleness is measured from here."""
         if self._started_ms is None:

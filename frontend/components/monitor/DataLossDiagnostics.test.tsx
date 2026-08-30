@@ -23,8 +23,11 @@ test("separates gap-only loss from total loss including stale seconds", () => {
   render(<DataLossDiagnostics globals={globals} />);
 
   const stale = screen.getByText("Stale seconds").closest(".metric");
-  const elapsed = screen.getByText("Elapsed loss").closest(".metric");
-  const total = screen.getByText("Data loss").closest(".metric");
+  // Both tiles are denominator-explicit now: the old "Elapsed loss" / "Data loss" pair
+  // read as two measures of the same thing, which is how a schedule-relative 14.69% and a
+  // process-relative 0.77% for one session came to be compared with each other.
+  const elapsed = screen.getByText("Gap loss").closest(".metric");
+  const total = screen.getByText("Loss vs observed").closest(".metric");
   expect(within(stale as HTMLElement).getByText("188")).toBeInTheDocument();
   expect(stale).toHaveTextContent("18.8% of session not written");
   expect(within(elapsed as HTMLElement).getByText("0.000%")).toBeInTheDocument();

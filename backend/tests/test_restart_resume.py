@@ -114,10 +114,42 @@ def test_engine_resume_restores_frames_first_timestamp_and_carried_counters(tmp_
     assert engine.captures == 600
     assert engine.first_capture_ms == session_start, "session start comes from the file"
     assert engine.stale_seconds == 3
-    # Carried 7 lost seconds + the ~29s restart hole, counted as one extra gap.
+    # One extra gap for the restart hole, on top of the 2 carried.
     assert engine.grid_gaps == 3
-    assert engine.grid_seconds_lost == 7 + result["downtime_seconds"]
-    assert 25 <= result["downtime_seconds"] <= 30
+    # Restart downtime has its own counter. Folding it into ``grid_seconds_lost`` made the
+    # dashboard label it "write fail", and double-counted the suppressed seconds already
+    # held in ``stale_seconds``.
+    assert engine.grid_seconds_lost == 7, "carried write-path loss must not absorb downtime"
+    assert engine.restart_downtime_seconds == result["downtime_seconds"]
+    # The grid resyncs to the *next* whole boundary after ``now`` (``run()`` computes
+    # ``((now // interval) + 1) * interval``), so the second containing ``now`` is not
+    # captured either and the hole is 31 s, not 30. The old ``- 1`` under-counted it.
+    assert result["downtime_seconds"] == 31
+
+
+def test_carried_counters_are_restored_with_max_not_assignment(tmp_path):
+    """A throttled snapshot is a lower bound; it must never erase live accounting.
+
+    The persisted snapshot is written at most once a minute, so on every escalation up to
+    a minute of stale/gap accounting never reaches disk. Assigning it back on resume threw
+    away whatever the new process had already counted — which is how a session with three
+    restarts reported 67 stale seconds against a real ~105.
+    """
+    path = tmp_path / "NIFTY" / "2026-07-28.bin"
+    table = nifty_table()
+    _write_frames(path, table, 10, start_ts=1_700_000_000_000, step=1_000)
+    writer = build_index_writer(table, path)
+    engine = CaptureEngine(
+        {"NIFTY": table}, None, {"NIFTY": writer}, None, clock=lambda: 1_700_000_020_000
+    )
+    engine.stale_seconds = 40
+    engine.grid_gaps = 5
+
+    engine.resume_from_disk({"stale_seconds": 12, "grid_gaps": 1, "stale_events": 4})
+
+    assert engine.stale_seconds == 40, "a smaller carried value must not overwrite"
+    assert engine.stale_events == 4, "an absent live value still takes the carried one"
+    assert engine.grid_gaps >= 5
 
 
 def test_resume_is_a_no_op_on_a_fresh_day(tmp_path):

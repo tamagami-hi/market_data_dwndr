@@ -350,6 +350,18 @@ export interface GlobalStatus {
   write_path_seconds?: number;
   /** Missing with no determinable cause — visible rather than forced into a category. */
   unclassified_seconds?: number;
+  /** Missing because the feed had never delivered a batch yet (socket never came up). */
+  awaiting_first_tick_seconds?: number;
+  /** Missing across a process restart, kept separate from write-path loss. */
+  restart_downtime_seconds?: number;
+  /** Owed seconds with nothing running at all (late start, crash window, early stop). */
+  not_running_seconds?: number;
+  /** Sockets replaced in place before escalating to a process restart. */
+  in_process_reconnects?: number;
+  /** Whether the bridge currently holds a confirmed, subscribed socket. */
+  ticker_connected?: boolean;
+  /** Connect attempts made for this capture session. */
+  ws_connect_attempts?: number;
   // --- per-session data loss ---
   /** Times the 1 Hz grid fell so far behind it had to resync (lost whole seconds). */
   grid_gaps?: number;

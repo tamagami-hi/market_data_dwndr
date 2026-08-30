@@ -23,8 +23,11 @@ class _BlockingWriter:
     def open(self):
         return self
 
-    def write_header(self, _header) -> None:
+    def bind_header(self, _header) -> None:
         return None
+
+    def flush_header(self) -> bool:
+        return True
 
     def append_frame(self, _frame) -> None:
         self.append_started.set()
@@ -41,8 +44,11 @@ class _FailingWriter:
     def open(self):
         return self
 
-    def write_header(self, _header) -> None:
+    def bind_header(self, _header) -> None:
         return None
+
+    def flush_header(self) -> bool:
+        return True
 
     def append_frame(self, _frame) -> None:
         raise OSError("simulated disk failure")

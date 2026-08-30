@@ -42,6 +42,39 @@ frame := u32 payload_len   payload[payload_len]
 - At market close the whole file is compressed with **zstd level 17** →
   `<date>.bin.zst` (a zstd stream of the same framed bytes).
 
+### 2.1 Axis segments (`<date>.pN.bin`)
+
+Every data frame in a file **must** match the axis its own header declares — the strike
+count for an index chain, the row count for the stocks matrix and the index-F&O grid. The
+header fixes that axis and is written only once, but the in-memory axis is rebuilt on every
+bootstrap, and for an index chain it legitimately changes: `option_chain_filter` re-centres
+the ATM ± 50 window on spot and clips it against the available strike list, so a mid-day
+restart can produce a different strike count.
+
+Appending those frames behind the original header silently mis-attributes every column,
+because `header.strikes[j]` no longer describes column `j`. Measured in the production
+archive on 2026-08-30: **8 of 15 NIFTY sessions affected, ~128,110 frames**, and on
+2026-08-26/27 the header came from a five-frame generation so 99.98% of the day was
+mis-mapped. Nothing detected it — the frames decode fine and every counter reads healthy.
+
+So when the axis changes, capture **rolls to a new segment** rather than appending:
+
+```
+MARKET_DATA/INDICES/NIFTY/2026-08-27.bin      # header axis 97
+MARKET_DATA/INDICES/NIFTY/2026-08-27.p2.bin   # header axis 96, its own header
+MARKET_DATA/INDICES/NIFTY/2026-08-27.p3.bin   # header axis 94
+```
+
+- Segments are ordinary `.bin` files in the same directory, so the EOD sweep archives them
+  unchanged (it globs `*.bin` recursively) and the reader opens each one normally.
+- Segment selection is by axis, not by sequence: an oscillating window reuses the segment
+  that already matches, so files do not fan out (`resolve_segment_path`).
+- Completeness must union the timestamps across all segments for a date — see
+  `app.ops.reconcile_session.segment_paths`.
+- A generation that never receives a tick writes **no header and no file**: the header is
+  what fixes the axis, so it has to be earned by data.
+- Reopening a file with a mismatched axis raises `HeaderAxisMismatch` rather than appending.
+
 ---
 
 ## 3. Index option-chain file  (`MARKET_DATA/INDICES/<INDEX>/<date>.bin`)
@@ -55,7 +88,7 @@ u32       schema_version     = 1
 String    trading_date                     // "2026-07-21"
 String    underlying                       // "NIFTY"
 String    expiry_date                      // "2026-07-24"
-f64       risk_free_rate                   // risk-free rate (login entry)
+f64       risk_free_rate                   // daily rate source/fallback
 Vec<i64>  strikes                          // ~101 strikes in paise, ascending, fixed for the day
 ```
 

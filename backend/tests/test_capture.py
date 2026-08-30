@@ -374,6 +374,9 @@ async def test_live_loop_never_awaits_frontend_publishing():
             self.timestamps.append(snapshot.timestamp_unix_ms)
 
     engine = CaptureEngine({}, None, {}, None)  # real wall-clock (grid-driven scheduler)
+    # Writes are suppressed until the feed has delivered something, so this rig — which
+    # is about publish cadence, not the write gate — seeds one batch.
+    engine.freshness.observe([{"instrument_token": 1, "last_price": 1}], engine._clock())
     stop_event = asyncio.Event()
     broadcaster = BestEffortBroadcaster()
 

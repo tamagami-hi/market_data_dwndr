@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from pathlib import Path
 
 from app.bin_codec.scan import scan_frames
 from app.capture import feed_health
@@ -92,6 +93,8 @@ class CaptureEngine:
         suppress_stale_writes: bool = True,
         stale_exit_ms: int = 0,
         stale_recovery_confirm_ms: int = 15_000,
+        reconnect_after_ms: int = 0,
+        reconnect_limit_per_hour: int = 6,
         recovery_armed=None,
         capture_expected=None,
         token_refresher=None,
@@ -113,6 +116,8 @@ class CaptureEngine:
         self.captures = 0
         # Frames already on disk when this process started (set by resume_from_disk).
         self.resumed_frames = 0
+        # Divergence between the best and worst artifact's frame count at resume time.
+        self.resume_frame_spread = 0
         # --- data-loss accounting (the 1 Hz grid is the ground truth) ----------- #
         # A "gap" is a resync event: we fell so far behind that whole grid seconds
         # could not be written. These were previously log-only, so a session's real
@@ -136,6 +141,15 @@ class CaptureEngine:
         # Number of distinct stale spells (one long freeze vs many brief blips).
         self.stale_events = 0
         self._in_stale_spell = False
+        # Grid seconds owed while the feed had never delivered a single batch. Its own
+        # bucket, because "never started" and "stopped moving" call for different actions:
+        # the first means the socket is wrong, the second means the market or feed is.
+        self.awaiting_first_tick_seconds = 0
+        self._reported_awaiting_first_tick = False
+        self._ticks_ever_applied = False
+        # Restart downtime, kept separate from ``grid_seconds_lost`` so the two are never
+        # summed into a figure larger than the hole that actually exists.
+        self.restart_downtime_seconds = 0
         self.suppress_stale_writes = bool(suppress_stale_writes)
         # Time (ms) spent building+enqueuing the most recent snapshot — pipeline health.
         self.last_snapshot_ms = 0.0
@@ -156,6 +170,17 @@ class CaptureEngine:
         self._stale_spell_start_ms: int | None = None
         self._fresh_since_ms: int | None = None
         self.longest_stale_spell_seconds = 0
+        # -- in-process reconnect rung -------------------------------------------- #
+        # Between "wait and hope the SDK recovers" and "SIGTERM the process" there was
+        # nothing, so every mid-day stall cost a full restart (~47 s). Replacing the socket
+        # in place costs ~2 s and fixes the common case. Rate-limited, because a reconnect
+        # storm against the broker is its own outage.
+        self.reconnect_after_ms = max(0, int(reconnect_after_ms))
+        self.reconnect_limit_per_hour = max(0, int(reconnect_limit_per_hour))
+        self.reconnect_attempts = 0
+        self._reconnect_fn = None
+        self._reconnect_times_ms: list[int] = []
+        self._broadcaster = None
         # Recovery is only armed while the market is genuinely trading. Capture starts at
         # MARKET_OPEN (09:10 in the deployment) but NSE does not trade until 09:15, so an
         # ungated deadline would exit the process every minute of every pre-open.
@@ -211,6 +236,11 @@ class CaptureEngine:
         """
         applied = 0
         stamp = now if now is not None else self._clock()
+        if ticks:
+            # Proof the feed has delivered something. Tracked here as well as on the
+            # freshness monitor so the "never ticked" gate holds for any caller, not only
+            # the live consumer that happens to update both.
+            self._ticks_ever_applied = True
         for tick in ticks:
             owners = self._owners.get(tick.get("instrument_token"))
             if not owners:
@@ -223,6 +253,15 @@ class CaptureEngine:
                 if name is not None:
                     self.artifact_last_update_ms[name] = stamp
         return applied
+
+    def has_received_data(self) -> bool:
+        """True once any tick batch has reached the engine from any entry point.
+
+        Guards the pre-first-tick write suppression. Deliberately tolerant about *how* the
+        data arrived (routed through :meth:`apply_ticks`, or observed by the freshness
+        monitor) so the gate cannot be bypassed by a caller that only exercises one.
+        """
+        return bool(self._ticks_ever_applied or self.freshness.has_ticked)
 
     def artifact_names(self) -> tuple[str, ...]:
         """Every logical dataset this engine persists."""
@@ -321,6 +360,10 @@ class CaptureEngine:
         writers = [*self.index_writers.values()]
         if self.stock_writer is not None:
             writers.append(self.stock_writer)
+        if self.index_fno_writer is not None:
+            # Previously omitted, so a day whose only frames were in the index-F&O file
+            # resumed as "nothing on disk" and re-derived its counters from zero.
+            writers.append(self.index_fno_writer)
 
         scans = []
         for writer in writers:
@@ -328,7 +371,21 @@ class CaptureEngine:
             if path is not None:
                 scans.append(scan_frames(path))
 
-        frames = max((int(getattr(w, "frames_on_disk", 0)) for w in writers), default=0)
+        per_artifact = [int(getattr(w, "frames_on_disk", 0)) for w in writers]
+        frames = max(per_artifact, default=0)
+        # ``max`` keeps a resume working when an artifact was skipped in an earlier
+        # generation, but it also hides a lagging file. Record the spread so divergence is
+        # visible instead of silently flattened into the healthiest artifact's count.
+        self.resume_frame_spread = frames - min(per_artifact, default=0)
+        if self.resume_frame_spread > 0:
+            logger.warning(
+                "artifact frame counts diverge on resume by %d frame(s): %s",
+                self.resume_frame_spread,
+                ", ".join(
+                    f"{getattr(w, 'name', '?')}={n}"
+                    for w, n in zip(writers, per_artifact, strict=False)
+                ),
+            )
         first_candidates = [s.first_timestamp_ms for s in scans if s.first_timestamp_ms]
         # Counters that leave no trace on disk are restored first, so they survive even a
         # restart with nothing written yet — the case a stale-from-open session produces.
@@ -348,17 +405,21 @@ class CaptureEngine:
         self.resumed_frames = frames
 
         # The restart is itself a hole in the grid. Count the wall-clock seconds between
-        # the last frame on disk and now as lost, so the resumed session's loss figure
-        # reflects the downtime instead of pretending the feed was continuous.
+        # the last frame on disk and now as downtime, so the resumed session's loss figure
+        # reflects it instead of pretending the feed was continuous. Tracked in its own
+        # counter: folding it into ``grid_seconds_lost`` made the dashboard report restart
+        # downtime as a write failure, and double-counted the suppressed seconds that
+        # preceded the restart (``stale_seconds`` already holds those).
         last_candidates = [s.last_timestamp_ms for s in scans if s.last_timestamp_ms]
         downtime_s = 0
         if last_candidates:
             last_frame_ms = max(last_candidates)
             self.last_capture_ms = last_frame_ms
-            downtime_s = max(0, (self._clock() - last_frame_ms) // 1000 - 1)
+            # Seconds strictly between the last written frame and the current grid second.
+            downtime_s = max(0, (self._clock() - last_frame_ms) // 1000)
             if downtime_s > 0:
                 self.grid_gaps += 1
-                self.grid_seconds_lost += downtime_s
+                self.restart_downtime_seconds += downtime_s
 
         logger.info(
             "resumed mid-session: %d frames already on disk, session first frame %s, "
@@ -377,18 +438,27 @@ class CaptureEngine:
     def _apply_carried(self, carried: dict | None) -> int | None:
         """Restore off-disk counters from the last persisted snapshot.
 
+        Restored with ``max`` rather than assignment. The snapshot is written on a
+        throttle, so it is always a *lower bound* on the true counts; assigning it could
+        only ever discard accounting this process had already accumulated (the reason a
+        session with three restarts reported 67 stale seconds against a real ~105).
+
         Returns the carried grid start timestamp (or ``None``), which the caller folds
         into the elapsed baseline.
         """
         if not carried:
             return None
-        self.grid_gaps = int(carried.get("grid_gaps") or 0)
-        self.grid_seconds_lost = int(carried.get("grid_seconds_lost") or 0)
-        self.stale_seconds = int(carried.get("stale_seconds") or 0)
-        self.stale_events = int(carried.get("stale_events") or 0)
-        self.longest_stale_spell_seconds = int(
-            carried.get("longest_stale_spell_seconds") or 0
-        )
+
+        def _carry(attr: str, key: str) -> None:
+            setattr(self, attr, max(int(getattr(self, attr, 0)), int(carried.get(key) or 0)))
+
+        _carry("grid_gaps", "grid_gaps")
+        _carry("grid_seconds_lost", "grid_seconds_lost")
+        _carry("stale_seconds", "stale_seconds")
+        _carry("stale_events", "stale_events")
+        _carry("longest_stale_spell_seconds", "longest_stale_spell_seconds")
+        _carry("awaiting_first_tick_seconds", "awaiting_first_tick_seconds")
+        _carry("restart_downtime_seconds", "restart_downtime_seconds")
         grid_start = carried.get("first_grid_ms")
         if grid_start is None:
             return None
@@ -428,7 +498,14 @@ class CaptureEngine:
         # Freshness is evaluated BEFORE anything is enqueued: the decision to write has
         # to be made on the same timestamp the frame is stamped with.
         stale = self.freshness.is_stale(ts)
-        suppress = not scheduled or (stale and self.suppress_stale_writes)
+        # A frame built before the first tick has ever arrived contains nothing but the
+        # zero-initialised table. It is not market data, and writing it also writes the
+        # file header from an empty generation — so it is suppressed and accounted for
+        # separately from staleness (which means "we had data and it stopped moving").
+        awaiting_first_tick = not self.has_received_data()
+        suppress = (
+            not scheduled or awaiting_first_tick or (stale and self.suppress_stale_writes)
+        )
         if scheduled:
             self._track_grid_second(ts)
 
@@ -444,6 +521,18 @@ class CaptureEngine:
             # Not expected data. The board is still handed to the display worker so the
             # dashboard can render it, but nothing is persisted or counted.
             self.unscheduled_seconds += 1
+        elif awaiting_first_tick:
+            # Owed, but the feed has never delivered anything: an honest hole, not a
+            # frame of zeros. Counted in its own bucket so it is never confused with a
+            # feed that was working and stopped.
+            self.awaiting_first_tick_seconds += 1
+            if not self._reported_awaiting_first_tick:
+                self._reported_awaiting_first_tick = True
+                logger.warning(
+                    "no tick has arrived yet; suppressing frame writes until the feed "
+                    "delivers its first batch (the header is not written from an empty "
+                    "table)"
+                )
         elif suppress:
             self.stale_seconds += 1
             if not self._in_stale_spell:
@@ -456,6 +545,12 @@ class CaptureEngine:
                     self.stale_events,
                 )
         else:
+            if self._reported_awaiting_first_tick:
+                self._reported_awaiting_first_tick = False
+                logger.info(
+                    "first tick received; writing frames (%d second(s) waited)",
+                    self.awaiting_first_tick_seconds,
+                )
             if self._in_stale_spell:
                 self._in_stale_spell = False
                 logger.info(
@@ -568,12 +663,74 @@ class CaptureEngine:
         return max(0, now - self._stale_spell_start_ms)
 
     def recovery_armed(self, now: int) -> bool:
-        """True when a stale feed is genuinely a fault worth restarting the process for."""
+        """True when a stale feed is genuinely a fault worth acting on.
+
+        Two independent ways to arm, and the second is the important one:
+
+        * the artifact's session says enough time has passed since the open
+          (``open_at + CAPTURE_RECOVERY_ARM_DELAY_SECONDS``) — the original, purely
+          time-based gate;
+        * **the feed has already proven it can deliver inside this session.** Evidence
+          beats elapsed time. The time-based gate alone meant a feed that died at the open
+          could not be acted on for the full arm delay, which is precisely what turned a
+          detectable ~47-second fault into a ~295-second hole on six of nine sessions.
+        """
         try:
-            return bool(self._recovery_armed(now))
+            if self._recovery_armed(now):
+                return True
         except Exception:  # noqa: BLE001 - a gate failure must not disable capture
             logger.warning("recovery arming check failed; treating as disarmed", exc_info=True)
             return False
+        return bool(self.has_received_data() and self.is_capture_expected(now))
+
+    def set_reconnect_fn(self, reconnect_fn) -> None:
+        """Wire the in-process socket replacement used before escalating to a restart."""
+        self._reconnect_fn = reconnect_fn
+
+    def _reconnect_budget_left(self, now: int) -> int:
+        """Remaining in-process reconnect attempts in the trailing hour."""
+        if self.reconnect_limit_per_hour <= 0:
+            return 0
+        window_start = now - 3_600_000
+        self._reconnect_times_ms = [t for t in self._reconnect_times_ms if t >= window_start]
+        return max(0, self.reconnect_limit_per_hour - len(self._reconnect_times_ms))
+
+    def _try_reconnect(self, now: int, spell_ms: int) -> bool:
+        """Replace the socket in place. Returns True when an attempt was made.
+
+        Deliberately does **not** clear the stale spell: a reconnect that does not restore
+        the feed must still reach the escalation deadline. It only defers the next attempt.
+        """
+        if self._reconnect_fn is None or self.reconnect_after_ms <= 0:
+            return False
+        if spell_ms < self.reconnect_after_ms:
+            return False
+        if self.stale_exit_ms and spell_ms >= self.stale_exit_ms:
+            return False  # past the deadline: restart rather than keep trying in-process
+        last = self._reconnect_times_ms[-1] if self._reconnect_times_ms else None
+        if last is not None and (now - last) < self.reconnect_after_ms:
+            return False
+        if self._reconnect_budget_left(now) <= 0:
+            logger.warning(
+                "in-process reconnect budget for the hour is spent (%d); leaving recovery "
+                "to the restart escalation",
+                self.reconnect_limit_per_hour,
+            )
+            return False
+        self._reconnect_times_ms.append(now)
+        self.reconnect_attempts += 1
+        logger.warning(
+            "feed stale for %ds; replacing the socket in place (in-process reconnect "
+            "%d, %d left this hour) before escalating to a restart",
+            spell_ms // 1000,
+            self.reconnect_attempts,
+            self._reconnect_budget_left(now),
+        )
+        try:
+            self._reconnect_fn()
+        except Exception:  # noqa: BLE001 - a failed reconnect must not mask escalation
+            logger.warning("in-process reconnect failed", exc_info=True)
+        return True
 
     def is_capture_expected(self, now: int) -> bool:
         """True when the artifact's market session expects a frame at ``now``."""
@@ -644,6 +801,8 @@ class CaptureEngine:
         # Only ever restart a feed that is stale *right now*: a spell kept open by the
         # confirm window must not take down a process whose ticks have resumed.
         if not stale or self.stale_exit_ms <= 0 or spell_ms < self.stale_exit_ms:
+            if stale and self.recovery_armed(now) and self._try_reconnect(now, spell_ms):
+                return
             self._report_stale_artifacts(now, spell_ms)
             return
         if not self.recovery_armed(now):
@@ -695,6 +854,11 @@ class CaptureEngine:
             )
 
         self.escalations += 1
+        # Flush telemetry BEFORE raising. The snapshot is written on a throttle, so without
+        # this the last minute of stale/gap accounting never reaches disk and the restarted
+        # process carries a stale lower bound (the reason a three-restart session reported
+        # 67 stale seconds against a real ~105).
+        self._persist_telemetry_now()
         # Best-effort: give the replacement process a fresh token to start from. This is
         # a *swap*, never a delete — the old ladder invalidated the persisted session
         # before fetching, so a broker that returned nothing (every recorded day) left
@@ -714,6 +878,16 @@ class CaptureEngine:
             f"(escalation {self.escalations}/{self.escalation_limit or '∞'}); "
             "restarting the process for a clean session and fresh token"
         )
+
+    def _persist_telemetry_now(self) -> None:
+        """Force the throttled monitor snapshot to disk (best effort, never raises)."""
+        persist = getattr(self._broadcaster, "persist_snapshot_now", None)
+        if persist is None:
+            return
+        try:
+            persist()
+        except Exception:  # noqa: BLE001 - telemetry must never block recovery or shutdown
+            logger.debug("could not force-persist the capture snapshot", exc_info=True)
 
     async def run(
         self,
@@ -736,6 +910,12 @@ class CaptureEngine:
         """
         self.start_writers()
         consumer = asyncio.create_task(self._consume(bridge))
+        self._broadcaster = broadcaster
+        # The socket-replacement rung needs the live bridge; wiring it here keeps the
+        # engine constructible without one (unit rigs) while the live loop always has it.
+        reconnect_fn = getattr(bridge, "reconnect", None)
+        if reconnect_fn is not None and self._reconnect_fn is None:
+            self.set_reconnect_fn(reconnect_fn)
         interval_ms = max(1, int(round(interval_s * 1000)))
         # Align the grid to the next whole-interval boundary from now.
         now0 = self._clock()
@@ -781,6 +961,8 @@ class CaptureEngine:
             # Drain + durably persist everything queued before returning (no loss).
             consumer.cancel()
             await asyncio.gather(consumer, return_exceptions=True)
+            # Final telemetry write, so the day's counters do not end a minute stale.
+            self._persist_telemetry_now()
             try:
                 # ``stop_writers`` joins each writer thread (up to 5s each), which would
                 # block the event loop for tens of seconds on a slow disk. Run it in a
@@ -800,38 +982,72 @@ class CaptureEngine:
 
 
 def build_index_writer(table: IndexTable, path) -> FileWriterThread:
-    """Convenience: a writer thread for an index table's file (fsync per frame)."""
-    from app.bin_codec.writer import IndexBinWriter
+    """Convenience: a writer thread for an index table's file (fsync per frame).
 
+    Resolves the segment first: if today's file already commits to a different strike
+    count (the ATM window re-centred while the process was down), the frames go to a fresh
+    ``<date>.pN.bin`` with its own header instead of onto the stale axis.
+    """
+    from app.bin_codec.scan import AXIS_INDEX
+    from app.bin_codec.writer import IndexBinWriter, resolve_segment_path
+
+    header = table.header()
+    target = resolve_segment_path(path, int(header.strikes.shape[0]), AXIS_INDEX)
+    if target != Path(path):
+        logger.warning(
+            "%s: strike axis changed to %d; rolling to segment %s so the existing "
+            "header's axis is not mis-applied to new frames",
+            table.chain.underlying,
+            int(header.strikes.shape[0]),
+            target.name,
+        )
     return FileWriterThread(
-        IndexBinWriter(path, sync=True),
-        table.header(),
+        IndexBinWriter(target, sync=True),
+        header,
         name=f"idx-{table.chain.underlying}",
-        frames_on_disk=scan_frames(path).frames,
+        frames_on_disk=scan_frames(target).frames,
     )
 
 
 def build_stock_writer(matrix: StockMatrix, path) -> FileWriterThread:
     """Convenience: a writer thread for the stock matrix file (fsync per frame)."""
-    from app.bin_codec.writer import StockBinWriter
+    from app.bin_codec.scan import AXIS_STOCK
+    from app.bin_codec.writer import StockBinWriter, resolve_segment_path
 
+    header = matrix.header()
+    target = resolve_segment_path(path, len(header.stocks), AXIS_STOCK)
+    if target != Path(path):
+        logger.warning(
+            "STOCKS: board size changed to %d rows; rolling to segment %s",
+            len(header.stocks),
+            target.name,
+        )
     return FileWriterThread(
-        StockBinWriter(path, sync=True),
-        matrix.header(),
+        StockBinWriter(target, sync=True),
+        header,
         name="stocks",
-        frames_on_disk=scan_frames(path).frames,
+        frames_on_disk=scan_frames(target).frames,
     )
 
 
 def build_index_fno_writer(matrix, path) -> FileWriterThread:
     """Convenience: a writer thread for the consolidated index-F&O file (fsync per frame)."""
-    from app.bin_codec.writer import IndexFnoBinWriter
+    from app.bin_codec.scan import AXIS_INDEX_FNO
+    from app.bin_codec.writer import IndexFnoBinWriter, resolve_segment_path
 
+    header = matrix.header()
+    target = resolve_segment_path(path, len(header.indices), AXIS_INDEX_FNO)
+    if target != Path(path):
+        logger.warning(
+            "INDICES_FnO: index count changed to %d; rolling to segment %s",
+            len(header.indices),
+            target.name,
+        )
     return FileWriterThread(
-        IndexFnoBinWriter(path, sync=True),
-        matrix.header(),
+        IndexFnoBinWriter(target, sync=True),
+        header,
         name="index-fno",
-        frames_on_disk=scan_frames(path).frames,
+        frames_on_disk=scan_frames(target).frames,
     )
 
 

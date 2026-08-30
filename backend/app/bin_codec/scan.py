@@ -63,6 +63,7 @@ def scan_frames(
     file_path = Path(path)
     if not file_path.exists() or file_path.stat().st_size == 0:
         return FrameScan()
+    file_size = file_path.stat().st_size
 
     frames = 0
     first_ts: int | None = None
@@ -90,7 +91,14 @@ def scan_frames(
             tag, timestamp = _TAG_TS.unpack(prefix)
             remaining = length - _TAG_TS.size
             if remaining:
-                handle.seek(remaining, os.SEEK_CUR)
+                # ``seek`` past EOF succeeds silently, so the payload tail has to be
+                # *proven* present. Without this a frame torn mid-payload was counted as
+                # good and the file reported untruncated, while the reader — which checks
+                # properly — discards it. That made ``frames_on_disk`` one too high and
+                # could take ``last_timestamp_ms`` from a record nothing can read.
+                if handle.seek(remaining, os.SEEK_CUR) > file_size:
+                    truncated = True
+                    break
             if tag == layout.TAG_DATA:
                 frames += 1
                 if first_ts is None:
@@ -106,3 +114,49 @@ def scan_frames(
         truncated=truncated,
         timestamps=tuple(collected),
     )
+
+
+# Axis kinds, matching the three header layouts.
+AXIS_INDEX = "index"  # IndexHeader: ... String expiry, f64 rate, Vec<i64> strikes
+AXIS_STOCK = "stock"  # StockHeader: ... f64 rate, u64 n_stocks
+AXIS_INDEX_FNO = "index_fno"  # IndexFnoHeader: ... f64 rate, u64 n_indices
+
+
+def read_header_axis(path: str | os.PathLike[str], kind: str) -> int | None:
+    """Length of the axis the file's existing header declares, or ``None`` if empty.
+
+    "Axis" is the fixed-width dimension every data frame in the file must match: the
+    strike count for an index chain, the row count for the stocks matrix and the
+    index-F&O grid.
+
+    This exists because the header is written **once**, when the file is empty, while the
+    in-memory axis is rebuilt on every bootstrap. The ATM ± 50 window re-centres as spot
+    moves and clips against the available strike list, so a mid-day restart could legally
+    produce a *different* strike count — and frames were then appended at the new width
+    behind a header still describing the old one. Nothing detected it: the frames decode
+    fine (Vec lengths are self-describing) but map onto the wrong strikes for the rest of
+    the file. On 2026-08-26 and 2026-08-27 that was 99.98% of the day's NIFTY frames.
+
+    Reads only the first record, so it is cheap enough to call on every writer open.
+    """
+    file_path = Path(path)
+    if not file_path.exists() or file_path.stat().st_size == 0:
+        return None
+    with open(file_path, "rb") as handle:
+        raw_len = handle.read(_LEN.size)
+        if len(raw_len) < _LEN.size:
+            return None
+        (length,) = _LEN.unpack(raw_len)
+        payload = handle.read(length)
+    if len(payload) < length:
+        return None
+    cursor = layout.Cursor(payload)
+    if cursor.u32() != layout.TAG_HEADER:
+        return None
+    cursor.u32()  # schema_version
+    cursor.string()  # trading_date
+    if kind == AXIS_INDEX:
+        cursor.string()  # underlying
+        cursor.string()  # expiry_date
+    cursor.f64()  # risk_free_rate
+    return int(cursor.u64())  # Vec/list element count = the axis length

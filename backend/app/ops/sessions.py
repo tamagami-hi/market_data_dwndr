@@ -160,6 +160,24 @@ class MarketSession:
             _seconds_between(start, end) for start, end in self.scheduled_intervals()
         )
 
+    def scheduled_windows_on(
+        self, calendar: TradingCalendar, trading_date: date
+    ) -> tuple[tuple[int, int], ...]:
+        """Absolute ``[start_ms, end_ms)`` windows this session owes on ``trading_date``.
+
+        The archive-truth reconciliation needs the owed grid as wall-clock milliseconds,
+        not as ``time`` objects, so it can be intersected with the frame timestamps that
+        actually reached disk. Returns ``()`` on a non-trading day or a disabled session.
+        """
+        if not self.enabled:
+            return ()
+        if not calendar.is_trading_day(_at(trading_date, time(12, 0), calendar)):
+            return ()
+        return tuple(
+            (_at(trading_date, start, calendar), _at(trading_date, end, calendar))
+            for start, end in self.scheduled_intervals()
+        )
+
     def scheduled_seconds_between(
         self, calendar: TradingCalendar, start_ms: int, end_ms: int
     ) -> int:
@@ -301,6 +319,10 @@ class SessionRegistry:
         return self.session_for(artifact).scheduled_seconds_between(
             self.calendar, start_ms, end_ms
         )
+
+    def scheduled_windows_on(self, artifact: str, trading_date) -> tuple[tuple[int, int], ...]:
+        """Absolute owed windows for ``artifact`` on ``trading_date`` (a ``date``)."""
+        return self.session_for(artifact).scheduled_windows_on(self.calendar, trading_date)
 
 
 def build_session_registry(settings, artifacts: dict[str, str] | None = None) -> SessionRegistry:

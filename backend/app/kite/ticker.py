@@ -24,6 +24,30 @@ logger = logging.getLogger(__name__)
 
 MODE_FULL = "full"
 
+# How long a freshly started ticker may take to report ``on_connect`` before the caller
+# treats the socket as dead. A healthy connect is observed in ~1 s in production, so this
+# is generous; the point is that it is *bounded* (see ``TickerBridge.await_connected``).
+CONNECT_TIMEOUT_S = 15.0
+
+# Bounds on kiteconnect's own internal retry, pinned rather than inherited so the
+# in-process reconnect rung can take over from a socket the SDK cannot recover.
+SDK_RECONNECT_MAX_TRIES = 5
+SDK_RECONNECT_MAX_DELAY_S = 10
+
+
+class TickerConnectFailed(RuntimeError):
+    """Raised when a ticker never reports a live subscription within the deadline.
+
+    The failure this exists for is silent: ``kiteconnect.KiteTicker.connect(threaded=True)``
+    only starts the process-global Twisted reactor ``if not reactor.running``, and its
+    ``close()`` never stops that reactor. So the *second* ticker created in one process
+    used to schedule ``connectWS`` from the main thread onto a reactor already running in
+    another thread — an unsynchronised cross-thread reactor call that is never serviced.
+    No exception, no callback, no ticks: capture ran a full 1 Hz grid against a socket that
+    had never connected. ``_connect_ticker`` fixes the cause; this exception makes any
+    residual variant loud instead of costing a 295-second hole.
+    """
+
 
 class Ticker(Protocol):
     """Minimal surface of ``kiteconnect.KiteTicker`` the bridge relies on."""
@@ -51,7 +75,42 @@ TokenProvider = Callable[[str | None], str | None]
 def _default_ticker_factory(api_key: str, access_token: str) -> Ticker:
     from kiteconnect import KiteTicker
 
-    return KiteTicker(api_key, access_token)
+    ticker = KiteTicker(api_key, access_token)
+    # Pin the SDK's internal retry instead of inheriting whatever its defaults are: the
+    # in-process reconnect rung (see ``CaptureEngine.observe_feed_health``) needs the SDK
+    # to give up reasonably promptly so a replacement socket can be built, rather than
+    # retrying opaquely for minutes behind a feed we already know is dead.
+    try:
+        ticker.reconnect_max_tries = SDK_RECONNECT_MAX_TRIES
+        ticker.reconnect_max_delay = SDK_RECONNECT_MAX_DELAY_S
+    except Exception:  # noqa: BLE001 - never let telemetry tuning break the connect
+        logger.debug("could not pin ticker reconnect parameters", exc_info=True)
+    return ticker
+
+
+def _connect_ticker(ticker: Ticker) -> None:
+    """Connect ``ticker``, correctly servicing an already-running global reactor.
+
+    ``connect(threaded=True)`` is safe only when it is the *first* connect in the process,
+    because it both schedules the connection and starts the reactor. Once the reactor is
+    running, the only thread-safe way to touch it is ``callFromThread``, so the connect is
+    performed on the reactor thread itself. Without this, every capture session after the
+    first in a given process gets a dead feed.
+
+    Falls back to a plain threaded connect when Twisted is absent (unit-test fakes).
+    """
+    try:
+        from twisted.internet import reactor
+    except Exception:  # noqa: BLE001 - no Twisted (fake tickers in tests)
+        ticker.connect(threaded=True)
+        return
+    if getattr(reactor, "running", False):
+        # Reactor already up from an earlier ticker in this process: hand the connect to
+        # the reactor thread rather than calling into it from here.
+        logger.info("reactor already running; connecting ticker on the reactor thread")
+        reactor.callFromThread(ticker.connect, threaded=True)
+        return
+    ticker.connect(threaded=True)
 
 
 class TickerBridge:
@@ -76,6 +135,11 @@ class TickerBridge:
         self._clock = clock
         self.queue: asyncio.Queue[list[dict]] = asyncio.Queue(maxsize=queue_maxsize)
         self.auth_failed = asyncio.Event()
+        # Set once a ticker has actually reported a live, subscribed socket. Nothing used
+        # to read ``connected``, so a socket that never came up was indistinguishable from
+        # a healthy one until the freshness monitor noticed 5 s later — and then only the
+        # 40 s escalation could act. Callers now await this before entering the grid.
+        self.connect_confirmed = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ticker: Ticker | None = None
         self.connected = False
@@ -84,6 +148,9 @@ class TickerBridge:
         self.ticks_received = 0
         self.dropped_batches = 0
         self.reconnects = 0
+        self.connect_attempts = 0
+        self.connects_confirmed = 0
+        self.last_connect_ms: int | None = None
         # Token lifecycle: when the current in-memory token was set + refresh telemetry.
         self._token_set_ms: int = self._clock()
         self.token_refreshes = 0
@@ -109,6 +176,16 @@ class TickerBridge:
             self.connected = False
             return
         self.connected = True
+        self.connects_confirmed += 1
+        self.last_connect_ms = self._clock()
+        self._signal_connected()
+
+    def _signal_connected(self) -> None:
+        """Publish the confirmed connection to the event loop (thread-safe)."""
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self.connect_confirmed.set)
+        else:  # no loop bound (unit tests calling start() outside asyncio)
+            self.connect_confirmed.set()
 
     def _on_close(self, ws: Any, code: Any = None, reason: Any = None) -> None:
         logger.warning("ticker closed: code=%s reason=%s", code, reason)
@@ -167,7 +244,27 @@ class TickerBridge:
         ticker.on_error = self._on_error
         ticker.on_reconnect = self._on_reconnect
         self._ticker = ticker
-        ticker.connect(threaded=True)
+        self.connect_attempts += 1
+        self.connect_confirmed.clear()
+        _connect_ticker(ticker)
+
+    async def await_connected(self, timeout: float = CONNECT_TIMEOUT_S) -> None:
+        """Block until the ticker reports a live subscription, or fail loudly.
+
+        This is the guard that turns the old silent dead feed into an immediate, named
+        failure. Without it the capture grid would start against a socket that never
+        connected and write frames from empty tables until the freshness monitor and then
+        the 40 s escalation deadline eventually noticed.
+        """
+        if self.connect_confirmed.is_set():
+            return
+        try:
+            await asyncio.wait_for(self.connect_confirmed.wait(), timeout=timeout)
+        except TimeoutError as exc:
+            raise TickerConnectFailed(
+                f"ticker did not confirm a live subscription within {timeout:g}s "
+                f"(attempt {self.connect_attempts}, {len(self.tokens)} tokens)"
+            ) from exc
 
     def reconnect(self) -> None:
         """Tear down the current ticker and start a fresh one (self-driven recovery).

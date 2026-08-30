@@ -226,7 +226,30 @@ class Settings(BaseSettings):
             "Capture starts at MARKET_OPEN but the exchange's continuous session begins "
             "later (MARKET_OPEN=09:10 vs NSE 09:15), and no ticks before then is normal — "
             "without this grace the process would exit every minute of every pre-open. "
-            "Tunable via CAPTURE_RECOVERY_ARM_DELAY_SECONDS."
+            "NOTE: recovery also arms on EVIDENCE — as soon as the feed has delivered any "
+            "tick inside the session — so this delay no longer gates a feed that worked "
+            "and then died. Tunable via CAPTURE_RECOVERY_ARM_DELAY_SECONDS."
+        ),
+    )
+    capture_reconnect_after_seconds: float = Field(
+        default=10.0,
+        ge=0,
+        le=600,
+        description=(
+            "Seconds of continuous feed-wide staleness before the socket is replaced "
+            "IN PROCESS, ahead of the restart escalation. Costs ~2s against ~47s for a "
+            "process restart, and fixes the common mid-day stall. 0 disables the rung and "
+            "restores restart-only recovery. CAPTURE_RECONNECT_AFTER_SECONDS."
+        ),
+    )
+    capture_reconnect_max_per_hour: int = Field(
+        default=6,
+        ge=0,
+        le=120,
+        description=(
+            "Cap on in-process socket replacements per rolling hour, so a broker-side "
+            "problem cannot turn into a reconnect storm. Once spent, recovery falls back "
+            "to the restart escalation. CAPTURE_RECONNECT_MAX_PER_HOUR."
         ),
     )
     # --- session-oriented timing (see app/ops/sessions.py) --------------------------

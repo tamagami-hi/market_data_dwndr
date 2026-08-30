@@ -163,12 +163,18 @@ def test_a_feed_outage_leaves_a_hole_not_fabricated_frames(rig):
 
 
 def test_a_session_that_never_receives_a_tick_writes_nothing(rig):
-    """No ticks at all must produce a near-empty file, not a day of zero-filled frames.
+    """No ticks at all must produce an EMPTY file, not zero-filled frames.
 
-    This is the 09:00 shape of the 2026-07-31 incident: the ticker connects, the grid
-    starts, and nothing ever arrives. Previously this wrote a full session of frames
-    holding the initial all-zero table, which is indistinguishable from real data — and
-    which compressed 3.7x better than a normal day, the only trace it left.
+    This is the 09:15 shape of the recurring incident: the ticker never connects, the grid
+    starts, and nothing ever arrives. It used to write the handful of frames that landed
+    before the staleness threshold tripped — frames holding the initial all-zero table,
+    byte-indistinguishable from real data. Worse, the *first* of them wrote the file
+    header, so on 2026-08-26/27 the whole day's frames were judged against a strike axis
+    established by a five-frame all-zero generation.
+
+    Now a frame is written only once the feed has actually delivered something, so the
+    file stays empty and the seconds are attributed to ``awaiting_first_tick_seconds``
+    rather than being misreported as a stale feed.
     """
     engine, clock, index_path, _stock_path = rig
     bridge = ScriptedBridge([None] * 30)
@@ -176,15 +182,14 @@ def test_a_session_that_never_receives_a_tick_writes_nothing(rig):
     asyncio.run(_drive(engine, bridge, clock))
     engine.stop_writers()
 
-    with IndexBinReader(index_path) as reader:
-        written = len(reader)
-    # Only the seconds before the staleness threshold trips may exist; 28 are suppressed.
-    assert written == 2
-    assert engine.stale_seconds == 28
-    assert engine.captures == 2
-    # And the outage was acted on rather than absorbed: it is tracked as one continuous
-    # stale spell (measured from the first stale grid second), which is what
-    # restart-first recovery escalates on.
+    assert not index_path.exists() or index_path.stat().st_size == 0, (
+        "a session with no ticks must not create a header or any frames"
+    )
+    assert engine.captures == 0
+    assert engine.awaiting_first_tick_seconds == 30
+    assert engine.stale_seconds == 0, "never-started is not the same failure as gone-stale"
+    # The outage is still acted on rather than absorbed: one continuous stale spell,
+    # measured from the first stale grid second, is what restart-first recovery escalates.
     assert engine.stale_spell_ms(clock.now) == 27 * INTERVAL_MS
     assert engine.degraded is True
 
