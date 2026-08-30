@@ -25,8 +25,11 @@ tied to execution, strategies, and risk is dropped.
 
 - **`/monitor` — Capture Monitor (new, the "data saving" view).** Per-underlying status,
   global panels, and continuously refreshed capture history across live + archive storage.
-- **`/login` — Downloader initialization.** Read-only token-broker fetch/validation and
-  automatic capture-readiness progress; no manual input (the risk-free rate is fetched daily).
+- **`/login` — Downloader initialization (target auth behavior; status-only retrieval exists
+  today).** Read-only Calspread session retrieval/validation
+  and automatic capture-readiness progress; no broker credentials or TOTP input. When auth is
+  blocked, it instructs the administrator to relogin through Calspread (the risk-free rate is
+  fetched daily).
 - `/option-chain` — live option-chain table + status panel (reused).
 - `/stocks` — live stock board (spot + 3 futures, live spread computed on read).
 - `/historical` — download form, progress, dataset catalog (reused).

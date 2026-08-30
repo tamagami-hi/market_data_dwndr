@@ -65,17 +65,24 @@ Batches:
 **Depends on:** Phase 1.
 
 Batches:
-- [x] `kite/auth.py` — `.env` api_key/secret; login-URL → `request_token` → `access_token`; capture the day's **risk-free rate**; persist to session state ([[session-state]]).
+- [x] Current implementation includes `kite/auth.py` direct-login helpers. Target design:
+  Calspread performs login; downloader retrieves the existing token, validates it using the API
+  key, and persists a restart cache. Direct API-secret/TOTP/request-token handling is legacy
+  implementation drift ([[broker-session-authentication]], [[session-state]]).
 - [x] `kite/instruments.py` — fetch instrument dump per exchange; cache + **daily archive** to `_instruments/` ([[storage-layout]]).
 - [x] `chain/filter.py` + `chain/assembler.py` — `get_spot_atm(step)`, `option_chain_filter`, per-index table + token map ([[option-chain-selection]]).
 - [x] `stocks/board.py` — CalSpread discovery (spot + 3 nearest futures) ([[stocks-capture]]).
 
-> Logic verified with fixtures + mocked Kite (token exchange, instrument CSV). Live
+> Existing logic is verified with fixtures + mocked Kite. Target auth verification must cover
+> same-token idempotence, restart reuse, `AUTH_BLOCKED`, and adoption only of a different
+> validated Calspread token. Live
 > end-to-end verification against real Kite credentials is pending (no creds in CI).
 
 **Deliverables:** auth, instruments, chain assembler, stock board modules + tests.
 **DoD:**
-- Login yields a usable `access_token`; risk-free rate stored in session state.
+- Calspread session retrieval yields a validated usable `access_token`; repeated retrieval of
+  the same token does not claim rotation or restart uplinks; risk-free rate is stored in daily
+  session state.
 - For each index (NIFTY/BANKNIFTY/FINNIFTY/SENSEX) the filter returns exactly the ATM ± 50 window on real instrument data.
 - Board lists ~all F&O stocks, each with spot + up to 3 futures.
 

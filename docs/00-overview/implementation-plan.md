@@ -27,9 +27,9 @@ market_data_dwndr/
 │   ├── pyproject.toml
 │   └── app/
 │       ├── main.py            # FastAPI app + lifespan
-│       ├── config.py          # pydantic settings (.env: KITE_API_KEY/SECRET, MARKET_DATA_PATH)
+│       ├── config.py          # settings; API secret remains only for legacy direct login
 │       ├── kite/
-│       │   ├── auth.py        # login flow: api_key/secret -> request_token -> access_token
+│       │   ├── auth.py        # legacy direct-login helper; target uses Calspread session sync
 │       │   ├── instruments.py # instrument dump fetch + daily archive
 │       │   ├── ticker.py      # KiteTicker bridge -> asyncio.Queue
 │       │   └── historical.py  # REST historical download
@@ -56,11 +56,15 @@ market_data_dwndr/
 
 ## `.env` auth + morning start
 
-`.env` holds `KITE_API_KEY`, `KITE_API_SECRET`, `MARKET_DATA_PATH`. Kite issues a
-**daily `access_token`** (resets ~06:00). Morning start (~06:30): open the login link →
-authorize → the app exchanges the `request_token` for the day's `access_token` (using
-the secret) and caches it. The **same screen captures the risk-free rate**, which is
-written into every file header that day.
+Calspread performs broker authentication and retains Kite's resulting access token. The target
+downloader holds `KITE_API_KEY`, the Calspread session-source configuration, and data paths; it
+retrieves Calspread's existing token, validates it, and caches it for restart continuity.
+Repeated retrieval returns the same token until an administrator relogs in through Calspread.
+The risk-free rate is retrieved separately and written into every file header that day.
+
+The current repository still contains direct API-secret/request-token login code. It is legacy
+implementation drift, not the target authentication architecture. See
+[[broker-session-authentication]].
 
 ## Phases (BIN codec first — everything depends on it)
 
@@ -73,7 +77,7 @@ Backend skeleton (FastAPI, `.env` config), frontend skeleton, this `docs/` vault
 (write → read → identical integers); zstd `.zst` re-index test.
 
 ### Phase 2 — Kite integration + discovery
-`.env` auth/login; instrument dump + daily archive; option-chain assembly
+Calspread session retrieval/validation; instrument dump + daily archive; option-chain assembly
 ([[option-chain-selection]]); CalSpread board discovery ([[stocks-capture]]).
 
 ### Phase 3 — Live capture

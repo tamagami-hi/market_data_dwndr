@@ -428,7 +428,9 @@ This is particularly important around:
 
 Keep the current restart-first recovery philosophy.
 
-Do not reintroduce complex destructive in-process token-refresh/reconnect ladders unless separately proven necessary.
+Do not reintroduce destructive in-process token-refresh ladders: this downloader has no token
+refresh authority. Transport reconnect may be reconsidered only if separately proven reliable,
+and it must reuse the same credential revision.
 
 The expected failure model remains conceptually:
 

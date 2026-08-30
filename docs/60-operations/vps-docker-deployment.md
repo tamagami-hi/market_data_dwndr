@@ -75,8 +75,11 @@ APP_UID=10001
 APP_GID=10001
 ```
 
-Also set the Kite credentials, the rotated broker passcode, and `KITE_USER_ID`. Set in
-`frontend/.env.local`:
+Target runtime settings are `KITE_API_KEY`, `KITE_EXPECTED_USER_ID`, the Calspread session
+URL/passcode, rate source/fallback, storage, and network settings. The current code still
+requires `KITE_API_SECRET`, `KITE_USER_ID`, and `KITE_PASSWORD` for its legacy direct-login
+path; treat those as transitional compatibility fields pending removal, not target deployment
+credentials. Set in `frontend/.env.local`:
 
 ```dotenv
 NEXT_PUBLIC_BACKEND_URL=http://<tailscale-ip>:<backend-port>
@@ -118,7 +121,7 @@ change (see `docs/60-operations/lan-and-public-domain-routing.md`).
 
 This project only downloads market data, so it does **not** need a static egress IP:
 Kite's static-IP whitelist (Apr 2026) applies only to order-placement endpoints, which
-live in the separate `algo_engine` service. Token fetch/validation goes through
+live in the separate `algo_engine` service. Existing-session retrieval/validation goes through
 calspread.online (our own AWS-hosted platform) and never required a static IP.
 
 ## 4. Validate, build, and start
@@ -199,6 +202,9 @@ git pull --ff-only
 ./release_manager/rollback.sh
 ```
 
-Before deployment, rotate the broker passcode and revoke/regenerate the Kite token that
-were previously exposed. Never put either value in Compose, Dockerfiles, build args, or
-tracked files; they belong only in the mode-0600 backend env file.
+Before deployment after credential exposure, rotate the Calspread endpoint passcode and have an
+administrator revoke/relogin through Calspread so it publishes a different Kite token. Repeated
+retrieval alone does not regenerate the token. Never put either value in Compose, Dockerfiles,
+build args, or tracked files; the target architecture scopes the passcode to `md-control` and
+the access token to the control/uplink credential mount. See
+[[broker-session-authentication]].

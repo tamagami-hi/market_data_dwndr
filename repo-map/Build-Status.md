@@ -10,8 +10,10 @@ related: ["[[build-guide]]", "[[Code-Map]]", "[[progress-log]]"]
 
 # 📊 Build Status
 
-> [!success] Overall — complete
-> Phases 0–7 implemented + tested; Next.js frontend built; automated login wired.
+> [!warning] Overall — capture complete; auth target migration pending
+> Phases 0–7 are implemented and tested and the Next.js frontend is built. The Calspread-only
+> authority boundary is locked in documentation, but legacy direct login remains and
+> same-token idempotence/`AUTH_BLOCKED` are not implemented.
 > **Backend: 159 tests passing, ruff clean.** **Frontend: `next build` + `eslint` clean.**
 > The only unexercised paths need live Kite credentials (WS/REST); those are covered by
 > mocks/fixtures + a synthetic tick stream.
@@ -36,9 +38,9 @@ related: ["[[build-guide]]", "[[Code-Map]]", "[[progress-log]]"]
 | algo_engine cross-verification | ✅ | parity confirmed; 3 BS gaps fixed → [[change-log]] |
 | Next.js frontend (`/monitor`, `/option-chain`, `/stocks`, `/login`) | ✅ | ported from `algo_engine/frontend_stack` |
 | WS broadcaster (Greeks-enriched) | ✅ | `capture/broadcaster.py` |
-| Automated login (env creds + terminal TOTP) | ✅ | `kite/login.py` (`md-login`) |
-| `/api/auth` + startup resume + login UI | ✅ | `api/auth.py`, `session_service.py`, `frontend/app/login` |
-| Live capture bootstrap (`md-capture` + `/api/capture`) | ✅ | login→instruments→chains+board→ticker→1 Hz engine, broadcasting |
+| Legacy direct login (env creds + terminal TOTP) | ⚠️ | Implemented in `kite/login.py` (`md-login`), but conflicts with the Calspread-only target boundary |
+| Calspread session sync + startup resume + status UI | ⚠️ | Retrieval exists; same-token idempotence/`AUTH_BLOCKED` target still requires implementation |
+| Live capture bootstrap (`md-capture` + `/api/capture`) | ✅ | validated session→instruments→chains+board→ticker→1 Hz engine, broadcasting |
 | Live end-to-end against real Kite creds | ⏳ | needs real credentials |
 | Docker-compose (backend + frontend) | 💡 | optional deploy convenience |
 
@@ -49,6 +51,7 @@ related: ["[[build-guide]]", "[[Code-Map]]", "[[progress-log]]"]
 - [x] Live L1/L5 apply → snapshot → file grows → replay → `test_capture`
 - [x] Greeks match reference within tolerance; IV round-trips → `test_reconstruct_bs`
 - [x] Historical job resumes without duplicate rows → `test_historical_jobs`
-- [x] Automated login flow (mocked) + `/api/auth` → `test_login`, `test_auth_api`
+- [x] Legacy login flow (mocked) + `/api/auth` → `test_login`, `test_auth_api`; target
+  Calspread-only authority tests remain follow-on work ([[broker-session-authentication]])
 
 _Run:_ `cd backend && pytest` · `cd frontend && npm run build && npm run lint`

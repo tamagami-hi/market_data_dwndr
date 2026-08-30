@@ -2,7 +2,9 @@
 
 - [ ] Add RED boundary, retry, rate-age, lifecycle, depth, and release-bundle tests.
 - [ ] Extend env validation and backward-compatible session state.
-- [ ] Add broker-only session acquisition and daily risk-free-rate fetch (calspread).
+- [ ] Add Calspread existing-session retrieval, validation, persistence, same-token idempotence,
+  `WAITING_FOR_ADMIN` when no Calspread session exists, and `AUTH_BLOCKED` after confirmed
+  rejection of a known revision; fetch the daily risk-free rate separately.
 - [ ] Wire DailyAutomationService into FastAPI lifespan.
 - [ ] Guard scheduled/manual capture readiness and serialize stop-before-EOD.
 - [ ] Expose automation and capture-readiness messaging in the frontend.

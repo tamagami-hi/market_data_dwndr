@@ -29,7 +29,7 @@ related: ["[[overview-and-scope]]", "[[bin-structure-spec]]", "[[implementation-
 | 13 | VIX | Kept (raw). |
 | 14 | Compression | zstd level 17 at end of day. ([[bin-format]]) |
 | 15 | WebSocket lib | **KiteTicker** (decodes 5-level depth + reconnect), bridged into an asyncio queue. ([[tech-stack-and-efficiency]]) |
-| 16 | Auth | The backend polls and validates the shared Kite token during 08:30–09:00 IST; env-seeded credentials + user-entered TOTP remain the fallback. The risk-free rate is fetched daily from the calspread broker. ([[config-and-env]]) |
+| 16 | Auth | **Calspread is the sole Kite login/session authority.** The downloader retrieves and validates Calspread's existing token, then reuses it across process and feed restarts. Retrieval does not rotate it; only administrator relogin through Calspread can expose a different token. Feed recovery never changes credentials. Explicit Kite rejection enters `AUTH_BLOCKED` until a different Calspread token validates. The target downloader holds no Kite API secret, password, TOTP, or request-token exchange path. ([[broker-session-authentication]], [[config-and-env]]) |
 | 17 | BIN tooling | Python `struct` + NumPy custom codec + `zstandard` (no bincode lib, no msgpack, no Parquet). ([[tech-stack-and-efficiency]]) |
 | 18 | Frontend | Reused option-chain/historical UI + a new **Capture Monitor** dashboard. ([[frontend]]) |
 | 19 | Knowledge base | `docs/` (domain folders) + `logs/` + `repo-map/` (Obsidian vault). |

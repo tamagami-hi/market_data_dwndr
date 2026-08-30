@@ -18,8 +18,9 @@ Open the **repo root** (`market_data_dwndr/`) as an Obsidian vault so wikilinks 
 across `docs/`, `logs/`, `repo-map/`, and the code under `backend/` + `frontend/`.
 New here? Read [[vault-guide]].
 
-> [!success] Project status — **build complete**
-> All phases 0–7 implemented and tested; frontend built; automated login wired.
+> [!warning] Project status — **capture build complete; auth target migration pending**
+> Phases 0–7 are implemented and tested and the frontend is built. Calspread retrieval exists,
+> but direct-login removal, credential revisions, and `AUTH_BLOCKED` remain follow-on work.
 > Backend: **159 tests green, ruff clean**. Frontend: `next build` + `eslint` clean.
 > Details: [[Build-Status]] · [[progress-log]].
 
@@ -53,5 +54,7 @@ New here? Read [[vault-guide]].
 
 ## 🔎 By concern
 - **Prices are integers** — paise (×100); floats only for the risk-free rate → [[lossless-and-precision]]
-- **Login is automated** — env-seeded creds + terminal/UI TOTP → [[config-and-env]], [[session-state]]
+- **Target auth is Calspread-authoritative** — downloader retrieves and validates the existing
+  session; current local login/TOTP is legacy drift → [[broker-session-authentication]],
+  [[config-and-env]], [[session-state]]
 - **Nothing derived is stored** — Greeks/IV recomputed on read → [[reconstruction]]

@@ -10,22 +10,26 @@ trading). See the knowledge base under [`../docs`](../docs) and the phase/batch 
 cd backend
 uv venv                      # or: python -m venv .venv
 uv sync --extra dev           # locked runtime + dev dependencies
-cp .env.example .env         # then fill in credentials and both data paths
+cp .env.example .env         # then fill in Calspread/session-source config and data paths
 ```
 
-## Login and daily initialization
+## Calspread session synchronization and daily initialization
 
 With `KITE_TOKEN_BROKER_URL` and `KITE_TOKEN_BROKER_PASSCODE` configured, the lifespan
-scheduler fetches and validates the daily token automatically during the configured
+scheduler retrieves and validates Calspread's existing token during the configured
 trading-day window. The frontend `/login` page is a read-only initialization view: it
 shows broker configuration, fetch/validation state, capture readiness, and whether the
 downloader is running. It does not start login or capture.
 
-`md-login` remains an operational fallback for an explicit unauthenticated broker
-response. It performs a Kite credentials login plus the mandatory TOTP (entered on the
-terminal, no echo). The risk-free rate is fetched from the calspread broker (env
-fallback) — it is never prompted. A valid session for today hard-blocks the login
-(mirroring the automated fetcher) until it becomes invalid.
+Calspread is the target architecture's sole Kite login/session authority. Repeating a lookup
+normally returns the same access token until an administrator relogs in through Calspread.
+Backend, WS, REST, and container restarts reuse that token; feed recovery never requests a
+different one. The risk-free rate is fetched from the Calspread rate endpoint (env fallback).
+
+The commands below describe a legacy direct-login implementation that still exists in code.
+They are not the target operational fallback and must not be copied into distributed services.
+When Calspread has no session or Kite rejects its current token, the target operation is for an
+administrator to relogin through Calspread.
 
 Run it interactively inside the backend container (needs a TTY for the hidden prompts):
 
@@ -42,6 +46,9 @@ docker exec -it <backend-container> md-login --manual   # enter all 4 creds + TO
 
 Broker tokens are validated by the exchange step before persistence. Credentials are
 read via `getpass` (no echo, never in shell history or argv).
+
+See [`broker-session-authentication.md`](../docs/60-operations/broker-session-authentication.md)
+for the canonical target design and its `AUTH_BLOCKED` recovery state.
 
 
 This service only downloads market data, so it needs no static egress IP: Kite's
@@ -67,7 +74,7 @@ Use TLS and API authentication before changing `HTTP_HOST` to a network-facing a
 ## Capture
 
 The FastAPI lifespan owns the production 1 Hz capture through `DailyAutomationService`:
-it acquires a validated session, starts capture inside the configured market window,
+it retrieves or reuses a validated Calspread session, starts capture inside the configured market window,
 stops and flushes at close, and runs EOD archiving. The HTTP surface is intentionally
 read-only for normal operation:
 
@@ -87,9 +94,10 @@ md-capture
 md-capture --ignore-market-hours
 ```
 
-Production capture requires a validated daily session, normally acquired automatically
-from the configured token broker. Run `md-login` only when that automatic source remains
-unavailable and an explicit fallback is needed.
+Production capture requires a validated Calspread session, normally retrieved automatically
+from the configured endpoint. In the target architecture, an unavailable or rejected session
+requires administrator login through Calspread; `md-login` is legacy implementation drift, not
+the fallback design.
 
 At EOD, raw files remain under `MARKET_DATA_PATH` until a `.bin.zst` has been written,
 stream-verified, and atomically published under `ARCHIVE_DATA_PATH`. The archive keeps
@@ -110,7 +118,7 @@ pytest
 app/
   main.py          FastAPI app + /health + /monitor + WS hub
   config.py        pydantic-settings (.env)
-  session.py       daily session-state (access_token + risk-free rate)
+  session.py       transitional combined token cache + daily risk-free-rate state
   logging_config.py
   bin_codec/       BIN layout/writer/reader/compress (Phase 1)  <- foundation
   kite/            auth, instruments, ticks, ticker bridge (Phase 2/3)

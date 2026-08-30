@@ -12,18 +12,23 @@ related: ["[[operations-runbook]]", "[[session-state]]", "[[implementation-plan]
 
 Configuration is via **pydantic-settings** reading a `.env` file (typed, validated).
 
+> **Implementation status:** The variable table distinguishes current legacy requirements from
+> target settings. `KITE_EXPECTED_USER_ID`, credential revisions, and `AUTH_BLOCKED` are target
+> design and are not implemented yet; current direct-login settings remain transitional.
+
 ## `.env` variables
 
 | Var | Required | Example | Purpose |
 |---|---|---|---|
 | `KITE_API_KEY` | ✅ | `abcd1234` | Kite Connect app key |
-| `KITE_API_SECRET` | ✅ | `wxyz5678` | Used to exchange `request_token` → `access_token` |
+| `KITE_EXPECTED_USER_ID` | target | `AB1234` | Non-secret account binding used by `md-control` to reject a token for the wrong broker account |
+| `KITE_API_SECRET` | legacy code only | `wxyz5678` | Current direct-login implementation still requires it; target downloader removes it because token exchange belongs to Calspread |
 | `MARKET_DATA_PATH` | ✅ | `/data/MARKET_DATA` | Output root ([[storage-layout]]) |
 | `ARCHIVE_DATA_PATH` | ✅ | `/data/z_market_data` | Separate root for verified `.bin.zst` archives |
-| `KITE_USER_ID` | login | `AB1234` | Zerodha login id (automated `md-login`) |
-| `KITE_PASSWORD` | login | `••••` | Zerodha password (automated `md-login`) |
-| `KITE_TOKEN_BROKER_URL` | – | `https://calspread.online/api/kite/token` | Backend-only existing-session lookup; set with passcode |
-| `KITE_TOKEN_BROKER_PASSCODE` | – | `••••` | Secret `x-token-passcode`; rotate and set with broker URL |
+| `KITE_USER_ID` | legacy code only | `AB1234` | Current login-oriented setting; target replaces its validation role with non-secret `KITE_EXPECTED_USER_ID` |
+| `KITE_PASSWORD` | legacy code only | `••••` | Must move out of this downloader; Calspread owns broker login |
+| `KITE_TOKEN_BROKER_URL` | – | `https://calspread.online/api/kite/token` | Backend-only lookup of the existing Calspread-held session |
+| `KITE_TOKEN_BROKER_PASSCODE` | – | `••••` | Authenticates `md-control` to Calspread; it is not a Kite credential |
 | `RELEASE_MAINTENANCE_TOKEN` | release | `••••` | At least 32 characters; authenticates the internal capture drain API |
 | `RELEASE_MAINTENANCE_TTL_SECONDS` | – | `900` | Persistent drain lease lifetime; release tooling requires 600–900 seconds |
 | `RISK_FREE_RATE` | – | `0.0691` | Fallback risk-free rate (decimal) used only when `KITE_RATE_BROKER_URL` is unavailable |
@@ -32,8 +37,8 @@ Configuration is via **pydantic-settings** reading a `.env` file (typed, validat
 | `STOCK_UNIVERSE` | – | `all` | `all` or a comma allow-list |
 | `CAPTURE_HZ` | – | `1` | Snapshot cadence (default 1) |
 | `ZSTD_LEVEL` | – | `17` | EOD compression level |
-| `AUTH_POLL_START` / `AUTH_POLL_END` | – | `08:30` / `09:00` | Trading-day shared-token polling window (IST) |
-| `AUTH_POLL_INTERVAL_SECONDS` | – | `60` | Delay between token-broker attempts inside the auth window |
+| `AUTH_POLL_START` / `AUTH_POLL_END` | – | `08:30` / `09:00` | Legacy names for the trading-day Calspread session-sync window (IST) |
+| `AUTH_POLL_INTERVAL_SECONDS` | – | `60` | Delay between existing-session lookup attempts inside the sync window |
 | `MARKET_OPEN` / `MARKET_CLOSE` | – | `09:00` / `15:30` | Automated capture window (IST; close is exclusive) |
 | `TIMEZONE` | – | `Asia/Kolkata` | Exchange timezone |
 | `LOG_LEVEL` | – | `INFO` | Logging verbosity |
@@ -47,11 +52,11 @@ Configuration is via **pydantic-settings** reading a `.env` file (typed, validat
 > `NEXT_PUBLIC_BACKEND_URL` is the single source for both HTTP and WebSocket URLs and must
 > point at `http(s)://<host>:<HTTP_PORT>`.
 
-> The `access_token` is **not** in `.env` — it is obtained by `md-login` and kept in
-> session state ([[session-state]]), because it changes daily. The login *credentials*
-> (`KITE_USER_ID` / `KITE_PASSWORD`) are seeded from `.env`
-> so the automated login can run without a browser (algo_engine keeps these encrypted in
-> Postgres; here they come from the environment).
+> The `access_token` is **not** in `.env`. Calspread is the sole Kite login/session authority,
+> and this downloader only retrieves and caches Calspread's existing token. Retrieval does not
+> imply rotation; only administrator relogin through Calspread changes the token. The target
+> downloader stores no Kite API secret, password, TOTP, or request-token exchange capability.
+> Current settings and login commands that require them are legacy implementation drift.
 
 ## Private VPS access
 
@@ -62,22 +67,28 @@ bind the backend and frontend only to loopback, Tailscale, or another trusted pr
 network. The release-maintenance API keeps its dedicated
 `X-Release-Maintenance-Token` credential.
 
-## Daily authentication automation
+## Daily Calspread session synchronization
 
-On trading days the backend does not contact the token broker before 08:30. From
+On trading days the backend does not contact the Calspread session endpoint before 08:30. From
 08:30 (inclusive) until 09:00 (exclusive), it periodically calls the configured HTTPS
 endpoint, validates any returned token directly with Kite, and persists it. Capture
 starts at 09:00 only when the token and the risk-free rate are
-present. The local TOTP flow remains an explicit operator fallback.
+present. The target fallback is administrator relogin through Calspread, not a local TOTP flow.
+
+This polling retrieves an already-established session. Repeated calls normally return the same
+token, including across backend restarts. A feed stall never invokes this flow. If Kite
+explicitly rejects the current token, the system enters `AUTH_BLOCKED` and an administrator
+must relogin through Calspread; retrieving the unchanged token cannot recover capture.
 
 On configured market holidays and weekends, the backend does not poll the broker,
 start capture, or run EOD work. Keep `MARKET_HOLIDAYS` synchronized with the official
 exchange calendar before each calendar year.
 
-If the backend starts late on a market day, it first validates the most
-recent persisted access token. If that token is no longer usable, shared-token polling
-continues at the configured interval for the remainder of the capture window; capture
-starts automatically as soon as a valid session is available.
+If the backend starts late on a market day, it first validates the most recent persisted access
+token. A working cache remains usable when Calspread is temporarily unavailable. If Kite rejects
+the cached token, session synchronization continues only to observe an administrator-created
+change; the same token remains blocked. Capture starts when a different token is available and
+validates.
 
 The risk-free rate is fetched once per trading day from `KITE_RATE_BROKER_URL` (it
 returns a percent, which the backend converts to a decimal, reusing the
@@ -98,33 +109,24 @@ expires automatically, so an interrupted deployment cannot block capture indefin
 Generate the shared secret with `openssl rand -hex 32`. Keep it in ignored environment
 files and pass it to the request without placing its value in logs or process arguments.
 
-## Manual fallback (`md-login`)
+## Legacy local-login path
 
-`app/kite/login.py` checks the shared token broker first, falls back to a headless Kite
-login when the broker explicitly reports no active session, and writes today's state:
+The current repository still contains `md-login`, Kite password/TOTP handling, and
+`request_token` → `access_token` exchange code. It conflicts with the target trust boundary
+and must not be treated as the operational fallback or copied into new services.
 
-```
-md-login                 # or:  python -m app.kite.login
-md-login --date 2026-07-21 --rate 0.0691
-```
+In the target architecture, an unauthenticated or rejected Calspread session produces
+`WAITING_FOR_ADMIN` or `AUTH_BLOCKED`. The operator logs in through `calspread.online`; this
+downloader then retrieves and validates the resulting token. Removal of the legacy path is a
+separate code migration and is not implemented by this documentation change.
 
-Flow:
-1. Backend calls the configured HTTPS broker with `x-token-passcode`. A valid access
-   token is verified against Kite with this backend's API key and user id, then skips
-   to step 4.
-2. On an explicit unauthenticated broker response, `POST /api/login`
-   `{user_id, password}` → `request_id`
-3. The user enters the **TOTP** in the frontend or terminal; `POST /api/twofa`
-   `{user_id, request_id, twofa_value}` verifies it
-4. The user confirms the daily risk-free rate
-5. For the fallback, `GET /connect/login?v=3&api_key=…` → `request_token`, then
-   `POST api.kite.trade/session/token` with `checksum = SHA-256(api_key+request_token+api_secret)`
-   → `access_token`, persisted to `_state/session-<date>.json`
-
-All outbound Kite calls go through one shared HTTP client. This project only downloads
-market data (login, quotes, instruments, WebSocket ticker), so it does **not** require a
+Market-data Kite calls use `KITE_API_KEY + access_token`. This project only downloads
+market data (quotes, instruments, WebSocket ticker), so it does **not** require a
 static egress IP — Kite's static-IP whitelist (Apr 2026) applies only to order-placement
 endpoints, which live in the separate `algo_engine` service.
+
+See [[broker-session-authentication]] for the canonical authority, state-machine, and secret
+distribution design.
 
 ## `.gitignore` (must-haves)
 

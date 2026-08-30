@@ -24,8 +24,8 @@ cover it. Paths are relative to the repo root. See [[Build-Status]] for phase st
 backend/app/
 ├── main.py                 FastAPI app: /health, /monitor, /api/auth, /ws/*, lifespan resume
 ├── config.py               pydantic-settings (env), derived MARKET_DATA paths
-├── session.py              SessionState + load/save (daily access_token + risk-free rate)
-├── session_service.py      app facade: status() / login() / login_url()
+├── session.py              transitional combined token cache + daily risk-free-rate state
+├── session_service.py      session sync facade; also contains legacy direct-login/refresh paths
 ├── logging_config.py       central logging
 ├── bin_codec/              ← [[bin-structure-spec]] (the foundation)
 │   ├── layout.py           primitives, enum tags, dtypes, column order, frame models
@@ -33,8 +33,8 @@ backend/app/
 │   ├── reader.py           scan → ts index, nearest-ts, ranges, mmap/.zst, truncation-safe
 │   └── compress.py         whole-file zstd L17, verified raw removal
 ├── kite/                   ← Kite integration
-│   ├── auth.py             checksum, auth header, KiteAuthenticator (resume/exchange)
-│   ├── login.py            automated login (login→twofa TOTP→request_token→exchange), md-login
+│   ├── auth.py             auth header plus legacy request-token exchange helper
+│   ├── login.py            legacy direct login/TOTP/request-token exchange and md-login
 │   ├── instruments.py      instrument dump fetch/parse + daily archive
 │   ├── ticks.py            full-tick field extraction (paise, OHLC, depth)
 │   ├── ticker.py           KiteTicker → asyncio.Queue bridge

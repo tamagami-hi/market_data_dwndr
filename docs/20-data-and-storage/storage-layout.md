@@ -58,7 +58,8 @@ ARCHIVE_DATA_PATH/STOCKS_HIS/2026-01-15.bin.zst
 - **Compression:** raw `.bin` during the session; whole file → `.bin.zst` (zstd L17)
   under `ARCHIVE_DATA_PATH` at end of day. The raw file is removed only after the
   archive is streamed, verified, and atomically published on its destination disk.
-- **Risk-free rate:** the day's risk-free rate (entered at login) is written into every
+- **Risk-free rate:** the day's rate (resolved independently from the Calspread rate endpoint
+  or configured fallback) is written into every
   file's header so each file is self-contained and Greeks are reconstructable.
 
 ## Instrument-master archive (`_instruments/`)

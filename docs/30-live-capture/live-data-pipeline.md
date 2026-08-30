@@ -305,9 +305,10 @@ themselves plus the last persisted telemetry snapshot.
   cannot reset it.
 - **Escalation**: a spell longer than `CAPTURE_STALE_EXIT_SECONDS` (60 s), *while the
   market is trading*, raises `CaptureStalledError` → `CaptureController` → SIGTERM →
-  container restart. A best-effort token swap is attempted first so the replacement
-  process can start from a fresh token. The engine's `finally` has already drained and
-  fsynced the writer queues by then, so no captured frame is lost.
+  container restart. The replacement process reuses the same persisted credential; feed
+  staleness is a transport/data-health failure and performs no Calspread lookup or token swap.
+  The engine's `finally` has already drained and fsynced the writer queues by then, so no
+  captured frame is lost.
 - **Arming**: escalation is disarmed outside `PHASE_OPEN` and for
   `CAPTURE_RECOVERY_ARM_DELAY_SECONDS` (300 s) after `MARKET_OPEN`. Capture starts at
   `MARKET_OPEN` (09:10 as deployed) but NSE's continuous session begins at 09:15, and
@@ -322,12 +323,14 @@ themselves plus the last persisted telemetry snapshot.
 ### What this replaced, and why
 
 Until 2026-08-07 recovery was an in-process tiered ladder: cheap reconnects reusing the
-token, then `reconnect_with_refresh` fetching a new token from calspread, with an
+token, then `reconnect_with_refresh` attempting to fetch a new token from Calspread, with an
 exponential backoff (base 5 s, cap 300 s, ~20 attempts per cycle, 3 cycles). The
 deployment's own artifacts showed it failing in three independent ways:
 
-- `refresh_broker_session` **invalidated the persisted token before fetching** a
-  replacement. calspread answered `authenticated: false` every time — `token_refreshes`
+- `refresh_broker_session` **invalidated the persisted token before retrieval** under the
+  incorrect assumption that Calspread could mint a replacement. Calspread only exposes the
+  token established by an administrator login, so repeated retrieval cannot rotate it.
+  Calspread answered `authenticated: false` every time — `token_refreshes`
   was `0` in every recorded session — so each attempt destroyed that day's session file
   for no benefit. `_state/` held 27 `session-2026-08-06.invalidated-*.json` files, spaced
   exactly on the backoff curve (5, 10, 20, 40, 80, 160, 300, 300…).
@@ -348,7 +351,9 @@ Sessions 2026-08-04/05/06 lost 542 s, 4,299 s and 5,445 s of market data this wa
 longer calls it. Run it when changing anything in this area:
 
 1. `ssh beonedge` and confirm capture is running mid-session.
-2. Force a stale spell — block the ticker's egress or revoke the token upstream.
+2. Force a stale spell by blocking the ticker socket's egress or suppressing ticker traffic.
+   Do **not** revoke the token: revocation tests the separate `AUTH_BLOCKED` path and requires
+   administrator relogin through Calspread.
 3. Watch `docker logs -f market-data-dwndr-backend` for:
    `feed stale (...)`, then `live feed stale for 60s while the market is trading`,
    then the process exiting and a replacement logging
@@ -361,4 +366,5 @@ longer calls it. Run it when changing anything in this area:
 re-establish a socket at all with kiteconnect 5.x, whose `connect(threaded=True)` runs a
 process-global twisted reactor on a new thread. Restart-first sidesteps it. If a drill
 ever shows in-process reconnect working reliably, it could be reintroduced as a cheap
-first step *before* the deadline — but never as the destructive token refresh it was.
+first step *before* the deadline. It must reuse the same credential revision and must never
+call Calspread merely because the feed is stale. See [[broker-session-authentication]].

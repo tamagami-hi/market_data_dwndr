@@ -9,7 +9,7 @@ backend's tagged-envelope WebSocket protocol (`app/ws/protocol.py`).
 | Route | Topic(s) | Shows |
 |-------|----------|-------|
 | `/monitor` | `capture-status`, `session` + `/api/capture/history` | Per-underlying WS health, frames written, file size, 1 Hz heartbeat, unmatched, global telemetry, and cumulative per-session live/archive download history. |
-| `/login` | `/api/auth/status` | Automatic token-broker fetch/validation and downloader-initialization progress; no manual input (the risk-free rate is fetched daily). |
+| `/login` | `/api/auth/status` | Current: retrieval/initialization status. Target: no broker credentials/TOTP input; `AUTH_BLOCKED` instructs the administrator to relogin through Calspread. |
 | `/option-chain` | `market-data` | ATM ± 50 index chains with reconstructed IV & Greeks; spot / ATM / max-pain markers; keyframe + delta patching; index selector. |
 | `/stocks` | `stocks` | F&O board matrix: spot + up to 3 nearest futures with live & daily calendar spreads; symbol filter. |
 

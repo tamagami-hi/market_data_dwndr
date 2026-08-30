@@ -22,6 +22,7 @@ related: ["[[change-log]]", "[[overview-and-scope]]", "[[Reference-MOC]]"]
 - **Custom struct packing** — not bincode (own reader/toolchain)
 - **Per-index ATM step** (50/100) — generalized beyond algo_engine's fixed 50
 - **BS parity fixes** — 365.25-day year, intrinsic-value tolerance, VIX fallback IV
-- **Env-seeded creds + automated login** — not a database (vs algo_engine's Postgres)
+- **Superseded:** env-seeded credentials + automated local login. Locked decision 16 now makes
+  Calspread the sole login/session authority; see [[broker-session-authentication]].
 
 Related: [[change-log]] · [[overview-and-scope]] · [[Reference-MOC]]

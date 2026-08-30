@@ -125,7 +125,7 @@ That assumption breaks on the public internet.
   **CSRF mitigation, not authentication** — the `Origin` header is only honoured by
   browsers; a script/`curl`/`websocat` can send any value and pass straight through.
 - Exposed today with no real auth: `GET /api/auth/status` (operational disclosure), the
-  login state machine (`/api/auth/login*`, incl. a 6-digit TOTP with no lockout),
+  legacy login state machine (`/api/auth/login*`, incl. a 6-digit TOTP with no lockout),
   `/api/capture/*`, `/api/stats`, `/api/status`, `/monitor`, and all `/ws/*` market data.
 
 Options, cheapest → most robust:
@@ -137,15 +137,20 @@ Options, cheapest → most robust:
 Decide this **before** the public cutover.
 
 ### Hardening for public
-Rate-limiting / fail2ban (especially login routes), TOTP lockout, security headers,
+Rate-limiting / fail2ban (especially while legacy login routes remain), TOTP lockout,
+security headers,
 request-size limits, logging/alerting.
 
 ## Kite static IP — NOT this project's concern
 
 Per Zerodha (Oct 2025) the SEBI static-IP mandate (effective **1 Apr 2026**) applies **only
-to order-placement endpoints**. Market-data/WebSocket streaming, login, quotes, instruments,
-and token validation are unaffected. Token fetch/validation goes through **calspread.online**
+to order-placement endpoints**. Market-data/WebSocket streaming, quotes, instruments,
+and token validation are unaffected. Existing-session retrieval/validation goes through **calspread.online**
 (our own AWS-hosted platform), which never required a static IP.
+
+Calspread is the target architecture's sole Kite login/session authority. The downloader's
+current login/TOTP routes are legacy and scheduled for removal; do not expose them as a second
+broker-login surface. See [[broker-session-authentication]].
 
 Therefore:
 - **TickVault (this project) does not need a static IP.** It only downloads market data and

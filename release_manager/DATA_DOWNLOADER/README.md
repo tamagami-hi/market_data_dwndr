@@ -52,8 +52,10 @@ cd /srv/dev_stack/DATA_DOWNLOADER
 cp .env.example .env
 chmod 600 .env
 ${EDITOR:-nano} .env
-#    fill: KITE_API_KEY/SECRET, KITE_USER_ID/PASSWORD, KITE_TOKEN_BROKER_PASSCODE,
-#          KITE_RATE_BROKER_URL, RISK_FREE_RATE (fallback),
+#    target: KITE_API_KEY, KITE_EXPECTED_USER_ID, Calspread session URL/passcode,
+#            KITE_RATE_BROKER_URL, RISK_FREE_RATE (fallback),
+#    transitional current-code fields: KITE_API_SECRET, KITE_USER_ID, KITE_PASSWORD
+#            (legacy direct login; remove when the Calspread-only migration is implemented),
 #          RELEASE_MAINTENANCE_TOKEN  (generate: openssl rand -hex 32)
 #    set the env-driven paths (MARKET_DATA_PATH, ARCHIVE_DATA_PATH, RELEASE_IMAGE_PATH, ROLLBACK_IMAGE_PATH)
 #    leave networking as localhost unless you have a static IP/domain

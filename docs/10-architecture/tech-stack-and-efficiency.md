@@ -22,7 +22,7 @@ related: ["[[live-capture-performance]]", "[[bin-structure-spec]]", "[[live-data
 | Compression | **`zstandard`** (level 17) | Same algorithm/level as `algo_engine` |
 | Numeric arrays | **NumPy** (integer dtypes) | Columnar tables, fast in-place updates, exact `i64`/`u64` |
 | Rate limiting | `aiolimiter` or custom token bucket | Historical download throttling |
-| Config | Pydantic Settings + `.env` | Typed; `KITE_API_KEY`/`KITE_API_SECRET`/`MARKET_DATA_PATH` |
+| Config | Pydantic Settings + `.env` | Typed; target runtime uses `KITE_API_KEY`, Calspread session-source config, and data paths. `KITE_API_SECRET` is legacy downloader-login drift and belongs to Calspread. |
 
 > **No `msgpack`, no bincode library, no Parquet.** We define the format ourselves
 > ([[bin-structure-spec]]); `struct` + NumPy is exact and fastest, and historical uses
