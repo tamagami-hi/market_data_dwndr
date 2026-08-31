@@ -61,8 +61,10 @@ def test_option_grid_delta_reports_only_changed_strikes():
     curr_calls.columns["ltp"][2] = 15000
     curr_puts.columns["oi"][0] = 999
 
-    prev = IndexFrame(1000, 0, 0, 0, prev_calls, prev_puts)
-    curr = IndexFrame(2000, 1, 0, 0, curr_calls, curr_puts)
+    axis = np.array([2_400_000 + i * 5_000 for i in range(prev_calls.length())],
+                    dtype="<i8")
+    prev = IndexFrame(1000, 0, 0, 0, prev_calls, axis, prev_puts)
+    curr = IndexFrame(2000, 1, 0, 0, curr_calls, axis, curr_puts)
     msg = protocol.option_grid_delta("NIFTY", prev, curr)
 
     assert msg["type"] == protocol.TYPE_OPTION_GRID_DELTA

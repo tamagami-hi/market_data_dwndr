@@ -52,26 +52,35 @@ def make_instr_columns(rng: np.random.Generator, n: int) -> InstrColumns:
     return InstrColumns(scalars, depth)
 
 
-def make_index_header(n_strikes: int = 5) -> IndexHeader:
-    strikes = np.array(
-        [2_400_000 + i * 5_000 for i in range(n_strikes)], dtype="<i8"
-    )
+def make_strikes(n: int) -> np.ndarray:
+    """An ascending strike axis of ``n`` positions, 50-point steps in paise."""
+    return np.array([2_400_000 + i * 5_000 for i in range(n)], dtype="<i8")
+
+
+def make_index_header() -> IndexHeader:
+    """An index header. Carries no strike axis -- each frame declares its own."""
     return IndexHeader(
         trading_date="2026-07-21",
         underlying="NIFTY",
         expiry_date="2026-07-24",
         risk_free_rate=0.0691,
-        strikes=strikes,
     )
 
 
-def make_index_frame(rng: np.random.Generator, n: int, ts: int, seq: int) -> IndexFrame:
+def make_index_frame(
+    rng: np.random.Generator,
+    n: int,
+    ts: int,
+    seq: int,
+    strikes: np.ndarray | None = None,
+) -> IndexFrame:
     return IndexFrame(
         timestamp_unix_ms=ts,
         sequence=seq,
         spot_price=2_456_705,
         vix=1_234,
         calls=make_raw_block(rng, n),
+        strikes=make_strikes(n) if strikes is None else strikes,
         puts=make_raw_block(rng, n),
     )
 

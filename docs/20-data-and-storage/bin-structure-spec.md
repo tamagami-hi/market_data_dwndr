@@ -44,53 +44,72 @@ frame := u32 payload_len   payload[payload_len]
 
 ### 2.1 Axis segments (`<date>.pN.bin`)
 
-Every data frame in a file **must** match the axis its own header declares — the strike
-count for an index chain, the row count for the stocks matrix and the index-F&O grid. The
-header fixes that axis and is written only once, but the in-memory axis is rebuilt on every
-bootstrap, and for an index chain it legitimately changes: `option_chain_filter` re-centres
-the ATM ± 50 window on spot and clips it against the available strike list, so a mid-day
-restart can produce a different strike count.
+**Index option-chain files no longer segment on an axis change.** From index schema **v2**
+each frame carries its own strike vector, so `one index + one trading date = one .bin file`
+regardless of how often the window changes. See §3.
 
-Appending those frames behind the original header silently mis-attributes every column,
-because `header.strikes[j]` no longer describes column `j`. Measured in the production
-archive on 2026-08-30: **8 of 15 NIFTY sessions affected, ~128,110 frames**, and on
-2026-08-26/27 the header came from a five-frame generation so 99.98% of the day was
-mis-mapped. Nothing detected it — the frames decode fine and every counter reads healthy.
-
-So when the axis changes, capture **rolls to a new segment** rather than appending:
+Segments remain for the **stocks matrix** and the **index-F&O grid**, whose row axis is
+still fixed by the header. Every data frame in those files must match the row count the
+header declares. The header fixes that axis and is written only once, but the in-memory
+axis is rebuilt on every bootstrap, so appending frames of a different width behind the
+original header would silently mis-attribute every column. When the row axis changes,
+capture **rolls to a new segment** rather than appending:
 
 ```
-MARKET_DATA/INDICES/NIFTY/2026-08-27.bin      # header axis 97
-MARKET_DATA/INDICES/NIFTY/2026-08-27.p2.bin   # header axis 96, its own header
-MARKET_DATA/INDICES/NIFTY/2026-08-27.p3.bin   # header axis 94
+MARKET_DATA/STOCKS/2026-08-27.bin      # header axis 210
+MARKET_DATA/STOCKS/2026-08-27.p2.bin   # header axis 209, its own header
 ```
 
 - Segments are ordinary `.bin` files in the same directory, so the EOD sweep archives them
   unchanged (it globs `*.bin` recursively) and the reader opens each one normally.
-- Segment selection is by axis, not by sequence: an oscillating window reuses the segment
+- Segment selection is by axis, not by sequence: an oscillating axis reuses the segment
   that already matches, so files do not fan out (`resolve_segment_path`).
 - Completeness must union the timestamps across all segments for a date — see
-  `app.ops.reconcile_session.segment_paths`.
+  `app.ops.reconcile_session.segment_paths`. This still matters for index files already on
+  disk, which do have `.pN` segments from before v2.
 - A generation that never receives a tick writes **no header and no file**: the header is
   what fixes the axis, so it has to be earned by data.
 - Reopening a file with a mismatched axis raises `HeaderAxisMismatch` rather than appending.
+
+For index files the only thing that still steps aside is a **schema version** difference
+(`resolve_index_segment_path`): v1 and v2 frames decode differently and must never share a
+file, so the first v2 run after the format change continues in a new segment and leaves the
+captured v1 file byte-identical. A strike-axis change never rolls.
+
+#### Why the index axis moved into the frame
+
+Under v1 the header held the only strike vector. `option_chain_filter` re-centres the
+ATM ± 50 window on spot and clips it against the listed strikes, so a restart could change
+the window's **count** — detectable, and handled by rolling — or keep the count and change
+**which strikes** it covers, which was *not* detectable at all, because the comparison was
+axis length.
+
+Both were measured in production. On 2026-08-26/27 the header came from a five-frame
+generation and 99.98% of the day was mis-mapped; across the archive, 8 of 15 NIFTY sessions
+were affected (~128,110 frames). On 2026-08-31 BANKNIFTY held width 101 all day while the
+window slid 19 → 16 → 17 → 18 → 17 positions inside the listed universe — same count, so no
+roll, and every frame silently mis-labelled. Nothing detected either case: the frames decode
+fine and every counter reads healthy.
+
+Storing the axis in the frame removes both. Equal counts no longer imply equal axes, and no
+frame can be decoded against a foreign axis because it brings its own.
 
 ---
 
 ## 3. Index option-chain file  (`MARKET_DATA/INDICES/<INDEX>/<date>.bin`)
 
-Depth = **L1**. 15 raw columns per side.
+Depth = **L1**. 15 raw columns per side, plus the frame's own strike axis.
 
 ### 3.1 IndexHeader (tag 0)
 ```
 u32       tag                = 0
-u32       schema_version     = 1
+u32       schema_version     = 2
 String    trading_date                     // "2026-07-21"
 String    underlying                       // "NIFTY"
 String    expiry_date                      // "2026-07-24"
 f64       risk_free_rate                   // daily rate source/fallback
-Vec<i64>  strikes                          // ~101 strikes in paise, ascending, fixed for the day
 ```
+No strike axis. A single header-level vector could only ever describe one generation.
 
 ### 3.2 IndexFrame (tag 1) — one per second
 ```
@@ -99,9 +118,32 @@ u64       timestamp_unix_ms
 u64       sequence
 i64       spot_price                       // paise
 i64       vix                              // ×100
-RawBlock  calls
-RawBlock  puts
+RawBlock  calls                            // 15 × Vec[N]
+Vec<i64>  strikes                          // 1 × Vec[N], paise, strictly ascending
+RawBlock  puts                             // 15 × Vec[N]
 ```
+
+31 vectors, all of length `N`. `N` is the strike count **for this frame**: it may differ
+from frame to frame within one file, and is at most `MAX_STRIKES_PER_FRAME` (101 = 2×50+1).
+
+**Positional axis contract.** `strikes[i]` names the strike whose CE data occupies
+`calls.<field>[i]` and whose PE data occupies `puts.<field>[i]`, for all 15 fields on each
+side. Conceptually each row is one complete strike:
+
+```
+[CALL ×15]  [STRIKE ×1]  [PUT ×15]
+ CALL values for strike X |  X  | PUT values for strike X
+```
+
+Data belonging to another strike must never occupy that position. `IndexFrame.validate()`
+enforces it before encoding and **rejects** the frame rather than writing it: all 31 vectors
+must share length `N`, and the axis must be strictly ascending (an unsorted or duplicated
+axis means position `i` no longer identifies a unique strike). Upstream,
+`OptionChain.validate()` checks that the `token_map` the wings are filled through was
+derived from that same ordered strike list.
+
+Legacy v1 index frames have no strike vector and take their axis from the header; readers
+attach it to every frame they decode, so callers never branch on the version.
 
 ### 3.3 RawBlock (L1) — 15 columns, fixed order, each a Vec aligned to `strikes`
 ```
@@ -205,6 +247,12 @@ spread, CalSpread summary statistics.
 |---|---|---|
 | Index (L1, 101 strikes) | ~24.5 KB | ~0.55 GB/index |
 | Stocks (L5, ~200 stocks, spot+3 fut) | ~0.26 MB | ~5.8 GB (all stocks) |
+
+The index frame payload is `276 + 240·N` bytes at v1 and `284 + 248·N` at v2 — the extra
+`8 + 8·N` is the frame's own strike vector (its `u64` count plus `N` `i64` strikes). At
+N=101 that is +816 bytes/frame and +18.8 MB/day/index raw. Measured on 2,000 frames at
+zstd L17 the compressed cost is **+1.37%, about +0.09 MB/day/index**: the axis is identical
+every second, so the compressor removes nearly all of it.
 
 zstd L17 brings these down several-fold. Totals stay within budget ([[live-capture-performance]]).
 

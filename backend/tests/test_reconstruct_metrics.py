@@ -13,8 +13,11 @@ def _index_header():
     from app.bin_codec.layout import IndexHeader
 
     # BANKNIFTY step 100; strikes 100/200/300 rupees (paise x100)
-    strikes = np.array([10_000, 20_000, 30_000], dtype="<i8")
-    return IndexHeader("2026-07-21", "BANKNIFTY", "2026-07-31", 0.0691, strikes)
+    return IndexHeader("2026-07-21", "BANKNIFTY", "2026-07-31", 0.0691)
+
+
+# BANKNIFTY step 100; strikes 100/200/300 rupees (paise x100)
+_STRIKES = np.array([10_000, 20_000, 30_000], dtype="<i8")
 
 
 def test_chain_metrics_pcr_and_symmetric_max_pain():
@@ -26,7 +29,7 @@ def test_chain_metrics_pcr_and_symmetric_max_pain():
     calls.columns["volume"][:] = [5, 5, 5]
     puts.columns["volume"][:] = [10, 10, 10]
 
-    frame = IndexFrame(1000, 0, 20_500, 0, calls, puts)  # spot 205 rupees
+    frame = IndexFrame(1000, 0, 20_500, 0, calls, _STRIKES, puts)  # spot 205 rupees
     m = reconstruct_chain_metrics(frame, header)
 
     assert m.atm == 200.0  # 205 rounds down to 200 (step 100)
@@ -43,7 +46,7 @@ def test_chain_metrics_skewed_max_pain():
     # Light call OI low, heavy put OI high -> payout minimized at the top strike.
     calls.columns["oi"][:] = [10, 0, 0]
     puts.columns["oi"][:] = [0, 0, 100]
-    frame = IndexFrame(1000, 0, 20_000, 0, calls, puts)
+    frame = IndexFrame(1000, 0, 20_000, 0, calls, _STRIKES, puts)
     m = reconstruct_chain_metrics(frame, header)
     # payout(300)=10*200=2000 is the minimum vs payout(100)=20000, payout(200)=11000
     assert m.max_pain == 300.0

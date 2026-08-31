@@ -17,8 +17,8 @@ from tests.conftest import (
 
 def _write_index_file(path, n_frames=6):
     rng = np.random.default_rng(11)
-    header = make_index_header(n_strikes=5)
-    n = header.strikes.shape[0]
+    header = make_index_header()
+    n = 5
     base = 1_753_070_400_000
     frames = [make_index_frame(rng, n, ts=base + i * 1000, seq=i) for i in range(n_frames)]
     with writer.IndexBinWriter(path) as w:
@@ -54,7 +54,7 @@ def test_index_reindex_after_compression_identical(tmp_path):
         assert len(r) == len(frames)
         assert r.timestamps == [f.timestamp_unix_ms for f in frames]
         h = r.header()
-        np.testing.assert_array_equal(h.strikes, header.strikes)
+        assert h.underlying == header.underlying
         for i, expected in enumerate(frames):
             got = r.frame(i)
             assert got.timestamp_unix_ms == expected.timestamp_unix_ms

@@ -36,7 +36,7 @@ class OptionChain:
     expiry: str
     reference_spot_paise: int
     atm_paise: int
-    strikes: np.ndarray  # i64 paise, ascending, fixed for the day
+    strikes: np.ndarray  # i64 paise, ascending, fixed for one capture generation
     call_tokens: np.ndarray  # u64, aligned to strikes (0 = missing)
     put_tokens: np.ndarray  # u64, aligned to strikes (0 = missing)
     token_map: dict[int, Role]
@@ -44,6 +44,43 @@ class OptionChain:
     @property
     def n_strikes(self) -> int:
         return int(self.strikes.shape[0])
+
+    def validate(self) -> None:
+        """Assert the strike vector and both token wings are one ordered axis.
+
+        This is the upstream half of the frame axis contract: the frame encoder checks
+        that the persisted vectors agree, and this checks that the ``token_map`` those
+        vectors are filled through was derived from the same ordered strike list. Without
+        it a tick could be routed to a position that the strike vector labels differently.
+        """
+        n = self.n_strikes
+        if n == 0:
+            raise ValueError(f"{self.underlying} {self.expiry}: empty strike axis")
+        if not bool(np.all(np.diff(self.strikes) > 0)) and n > 1:
+            raise ValueError(
+                f"{self.underlying} {self.expiry}: strikes must be strictly ascending"
+            )
+        if self.call_tokens.shape[0] != n or self.put_tokens.shape[0] != n:
+            raise ValueError(
+                f"{self.underlying} {self.expiry}: token wings "
+                f"({self.call_tokens.shape[0]}/{self.put_tokens.shape[0]}) "
+                f"are not aligned to {n} strikes"
+            )
+        for token, role in self.token_map.items():
+            if role.kind != ROLE_OPTION:
+                continue
+            if role.index is None or not 0 <= role.index < n:
+                raise ValueError(
+                    f"{self.underlying} {self.expiry}: token {token} maps to position "
+                    f"{role.index}, outside the {n}-strike axis"
+                )
+            wing = self.call_tokens if role.side == "CE" else self.put_tokens
+            if int(wing[role.index]) != int(token):
+                raise ValueError(
+                    f"{self.underlying} {self.expiry}: token {token} ({role.side}) is "
+                    f"routed to position {role.index}, which belongs to token "
+                    f"{int(wing[role.index])}"
+                )
 
 
 def find_nearest_expiry(options: list[Instrument], today: str) -> str:
@@ -107,7 +144,7 @@ def build_option_chain(
     token_map[config.spot_token] = Role(ROLE_SPOT)
     token_map[VIX_TOKEN] = Role(ROLE_VIX)
 
-    return OptionChain(
+    chain = OptionChain(
         underlying=config.underlying,
         expiry=expiry,
         reference_spot_paise=rupees_to_paise(spot),
@@ -117,3 +154,7 @@ def build_option_chain(
         put_tokens=put_tokens,
         token_map=token_map,
     )
+    # Fail at assembly rather than let a mis-routed token reach the writer, where the
+    # frame would be internally consistent but describe the wrong contracts.
+    chain.validate()
+    return chain

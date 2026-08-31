@@ -36,6 +36,7 @@ from app.bin_codec.scan import (
     AXIS_INDEX_FNO,
     AXIS_STOCK,
     read_header_axis,
+    read_header_schema_version,
 )
 
 # Hard cap on ``<date>.pN.bin`` segments per artifact per day. The axis only changes on a
@@ -65,6 +66,7 @@ def _encode_instr_columns(out: bytearray, instr: InstrColumns, expected_len: int
 
 
 def encode_index_header(header: IndexHeader) -> bytes:
+    """Encode the index header. Carries no strike axis -- see :class:`IndexFrame`."""
     out = bytearray()
     layout.put_u32(out, TAG_HEADER)
     layout.put_u32(out, header.schema_version)
@@ -72,11 +74,19 @@ def encode_index_header(header: IndexHeader) -> bytes:
     layout.put_string(out, header.underlying)
     layout.put_string(out, header.expiry_date)
     layout.put_f64(out, header.risk_free_rate)
-    layout.put_vec(out, header.strikes, layout.DT_I64)
     return bytes(out)
 
 
-def encode_index_frame(frame: IndexFrame, n_strikes: int) -> bytes:
+def encode_index_frame(frame: IndexFrame) -> bytes:
+    """Encode one index frame: ``[calls x15] [strikes x1] [puts x15]``.
+
+    The width comes from the frame's own strike vector, never from the file or the
+    header, so consecutive frames in one file may have different widths.
+    ``frame.validate()`` rejects any frame whose 31 vectors do not share a single
+    strictly-ascending axis, so a mis-aligned frame is never encoded.
+    """
+    frame.validate()
+    n_strikes = frame.axis_length()
     out = bytearray()
     layout.put_u32(out, TAG_DATA)
     layout.put_u64(out, frame.timestamp_unix_ms)
@@ -84,6 +94,7 @@ def encode_index_frame(frame: IndexFrame, n_strikes: int) -> bytes:
     layout.put_i64(out, frame.spot_price)
     layout.put_i64(out, frame.vix)
     _encode_raw_block(out, frame.calls, n_strikes)
+    layout.put_vec(out, frame.strikes, layout.DT_I64)
     _encode_raw_block(out, frame.puts, n_strikes)
     return bytes(out)
 
@@ -150,13 +161,14 @@ def encode_index_fno_frame(frame: IndexFnoFrame, n_indices: int) -> bytes:
 class HeaderAxisMismatch(RuntimeError):
     """Raised when a reopened file's header declares a different axis than the new header.
 
-    The header is written once, when the file is empty; the in-memory axis is rebuilt on
-    every bootstrap. For an index chain the ATM ± 50 window re-centres as spot moves and
-    clips against the available strike list, so a mid-day restart can legitimately produce
-    a different strike count. Appending those frames behind the original header silently
-    mis-attributes every column, because ``header.strikes[j]`` no longer describes column
-    ``j``. Raising here lets the caller roll a fresh segment instead
-    (:func:`app.bin_codec.writer.resolve_segment_path`).
+    Applies to the **stock** and **index-F&amp;O** files, whose row axis still lives in the
+    header: the header is written once, when the file is empty, while the in-memory axis
+    is rebuilt on every bootstrap. Appending frames of a different width behind the
+    original header silently mis-attributes every column, so raising here lets the caller
+    roll a fresh segment instead (:func:`resolve_segment_path`).
+
+    Index option-chain files no longer have a header axis at all -- every frame carries
+    its own strike vector -- so an index axis change is a normal, in-file event.
     """
 
     def __init__(self, path: Path, on_disk: int, incoming: int) -> None:
@@ -169,13 +181,34 @@ class HeaderAxisMismatch(RuntimeError):
         self.incoming = incoming
 
 
+class SchemaVersionMismatch(RuntimeError):
+    """Raised when an existing file was written by a different schema version.
+
+    Frames of two schema versions must never share a file: the decoders differ, so the
+    older frames would be unreadable (or worse, mis-read). This is a one-time condition
+    per artifact, on the first run after a format change.
+    """
+
+    def __init__(self, path: Path, on_disk: int, current: int) -> None:
+        super().__init__(
+            f"{path.name}: existing file is schema v{on_disk}, this build writes "
+            f"v{current}; frames of two schema versions cannot share a file"
+        )
+        self.path = path
+        self.on_disk = on_disk
+        self.current = current
+
+
 def resolve_segment_path(path: str | os.PathLike[str], axis_len: int, kind: str) -> Path:
     """Return the file this generation should append to, rolling a segment if needed.
 
+    For the **stock** and **index-F&amp;O** domains, whose row axis is fixed by the header.
     Returns ``path`` itself when the file is empty or its header already describes
-    ``axis_len``. Otherwise returns the first ``<stem>.pN<suffix>`` sibling that is empty
-    or axis-compatible, so a shifted strike window is recorded honestly in its own file
-    with its own header rather than crammed onto a stale axis.
+    ``axis_len``; otherwise the first ``<stem>.pN<suffix>`` sibling that is empty or
+    axis-compatible.
+
+    Index files use :func:`resolve_index_segment_path` instead: their axis is per-frame,
+    so an axis change never needs a new file.
 
     Segments are ordinary ``.bin`` files in the same directory, so the EOD sweep archives
     them with no change (it globs ``*.bin`` recursively) and the reader opens each one
@@ -189,6 +222,28 @@ def resolve_segment_path(path: str | os.PathLike[str], axis_len: int, kind: str)
             return candidate
         candidate = base.with_name(f"{base.stem}.p{segment + 1}{base.suffix}")
     raise HeaderAxisMismatch(base, -1, axis_len)
+
+
+def resolve_index_segment_path(path: str | os.PathLike[str]) -> Path:
+    """Return the index file this generation should append to.
+
+    A strike-axis change is **not** a reason to roll: every index frame carries its own
+    axis, so generations with 94, then 92, then 101 strikes all append to the same
+    ``<date>.bin``. This is the whole point of the per-frame axis.
+
+    The only thing that still forces a separate file is a **schema version** difference,
+    because v1 and v2 frames are decoded differently and cannot be interleaved. That can
+    only happen on the first run after the format change, and it never rewrites or touches
+    the existing v1 file -- it is left exactly as captured.
+    """
+    base = Path(path)
+    candidate = base
+    for segment in range(1, MAX_SEGMENTS + 1):
+        on_disk = read_header_schema_version(candidate)
+        if on_disk is None or on_disk == layout.SCHEMA_VERSION_INDEX:
+            return candidate
+        candidate = base.with_name(f"{base.stem}.p{segment + 1}{base.suffix}")
+    raise SchemaVersionMismatch(base, -1, layout.SCHEMA_VERSION_INDEX)
 
 
 # --------------------------------------------------------------------------- #
@@ -221,11 +276,18 @@ class _BaseWriter:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # 'ab' = append; the header is only emitted when the file is empty.
         self._header_written = self.path.exists() and self.path.stat().st_size > 0
-        self._axis_on_disk = (
-            read_header_axis(self.path, self._axis_kind) if self._header_written else None
-        )
+        self._axis_on_disk = None
+        if self._header_written:
+            self._inspect_existing()
         self._fh = open(self.path, "ab")
         return self
+
+    def _inspect_existing(self) -> None:
+        """Read what the existing (non-empty) file already commits to.
+
+        Default: the header's row axis, which stock and index-F&amp;O frames must match.
+        """
+        self._axis_on_disk = read_header_axis(self.path, self._axis_kind)
 
     def _commit_axis(self, incoming: int) -> int:
         """Reconcile the incoming header's axis with the one the file already declares.
@@ -241,12 +303,14 @@ class _BaseWriter:
         return incoming
 
     def bind_header(self, header) -> None:
-        """Commit the file's axis from ``header`` without emitting the header record.
+        """Bind the header without emitting its record.
 
         Split from :meth:`write_header` so a generation that never receives a tick leaves
-        no header behind. The header is what fixes a file's fixed-width axis, so writing
-        it from an empty generation is how a five-frame all-zero start came to define the
-        strike mapping for a whole trading day.
+        no header behind: on 2026-08-26/27 a five-frame all-zero generation wrote the
+        header that then defined the strike mapping for the whole trading day.
+
+        For stock and index-F&amp;O writers this also commits the file's row axis. Index
+        writers have no header axis to commit — each frame carries its own.
         """
         raise NotImplementedError
 
@@ -265,7 +329,7 @@ class _BaseWriter:
         raise NotImplementedError
 
     def write_header(self, header) -> bool:
-        """Bind the axis and emit the header record (the eager, single-step form)."""
+        """Bind the header and emit its record (the eager, single-step form)."""
         self.bind_header(header)
         return self.flush_header()
 
@@ -311,22 +375,37 @@ class _BaseWriter:
 
 
 class IndexBinWriter(_BaseWriter):
-    """Writer for an index option-chain file (one index, one trading day)."""
+    """Writer for an index option-chain file (one index, one trading day).
+
+    Frames may vary in width: each carries its own strike vector, so generations with
+    94, then 92, then 101 strikes all append to the same file.
+    """
 
     _axis_kind = AXIS_INDEX
 
     def __init__(self, path: str | os.PathLike[str], *, sync: bool = False) -> None:
         super().__init__(path, sync=sync)
-        self._n_strikes: int | None = None
+        self._schema_on_disk: int | None = None
+
+    def _inspect_existing(self) -> None:
+        """An index file commits to a schema version, not to a strike axis."""
+        self._schema_on_disk = read_header_schema_version(self.path)
 
     def bind_header(self, header: IndexHeader) -> None:
-        """Commit the strike axis, taking it from whichever header the file is bound to.
+        """Bind the header. No axis is committed — every frame declares its own.
 
-        The width is never taken blindly from the incoming header: assigning it before the
-        header-once guard is what let post-restart frames be encoded at a new strike count
-        behind a header describing the old set.
+        Refuses to append to a file written by a different schema version: v1 frames take
+        their width from the header while v2 frames carry it, so interleaving the two in
+        one file would make the older frames unreadable.
         """
-        self._n_strikes = self._commit_axis(int(header.strikes.shape[0]))
+        if (
+            self._header_written
+            and self._schema_on_disk is not None
+            and self._schema_on_disk != header.schema_version
+        ):
+            raise SchemaVersionMismatch(
+                self.path, self._schema_on_disk, header.schema_version
+            )
         self._bound_header = header
 
     def _encode_header(self, header: IndexHeader) -> bytes:
@@ -335,9 +414,7 @@ class IndexBinWriter(_BaseWriter):
     def append_frame(self, frame: IndexFrame) -> None:
         if not self._header_written:
             raise RuntimeError("index header must be written before frames")
-        if self._n_strikes is None:
-            raise RuntimeError("call write_header first to establish strike count")
-        self._write_framed(encode_index_frame(frame, self._n_strikes))
+        self._write_framed(encode_index_frame(frame))
 
 
 class StockBinWriter(_BaseWriter):

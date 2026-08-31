@@ -9,7 +9,10 @@ import pytest
 
 from app.bin_codec import writer
 from app.bin_codec.layout import (
-    SCHEMA_VERSION,
+    RAW_BLOCK_COLUMNS,
+    SCHEMA_VERSION_INDEX,
+    SCHEMA_VERSION_STOCK,
+    TAG_DATA,
     TAG_HEADER,
     Cursor,
     FutureRef,
@@ -20,15 +23,15 @@ from app.bin_codec.layout import (
     StockRef,
 )
 
+_SAMPLE_STRIKES = np.array([2_450_000, 2_455_000, 2_460_000], dtype="<i8")
+
 
 def _sample_index_header() -> IndexHeader:
-    strikes = np.array([2_450_000, 2_455_000, 2_460_000], dtype="<i8")
     return IndexHeader(
         trading_date="2026-07-21",
         underlying="NIFTY",
         expiry_date="2026-07-24",
         risk_free_rate=0.0691,
-        strikes=strikes,
     )
 
 
@@ -39,17 +42,40 @@ def test_index_header_byte_level_layout():
     # Parse the payload back by hand and assert exact field values / order.
     cur = Cursor(payload)
     assert cur.u32() == TAG_HEADER
-    assert cur.u32() == SCHEMA_VERSION
+    assert cur.u32() == SCHEMA_VERSION_INDEX
     assert cur.string() == "2026-07-21"
     assert cur.string() == "NIFTY"
     assert cur.string() == "2026-07-24"
     assert cur.f64() == pytest.approx(0.0691)
-    strikes = cur.vec(np.dtype("<i8"))
-    np.testing.assert_array_equal(strikes, header.strikes)
+    # The header ends at the risk-free rate: no strike axis is persisted here.
     assert cur.pos == len(payload)
 
     # First bytes are the tag as a little-endian u32 == 0.
     assert struct.unpack_from("<I", payload, 0)[0] == 0
+
+
+def test_index_frame_byte_level_layout_places_strikes_between_the_wings():
+    """Wire order is [calls x15] [strikes x1] [puts x15]."""
+    n = _SAMPLE_STRIKES.shape[0]
+    calls, puts = RawBlock.zeros(n), RawBlock.zeros(n)
+    calls.columns["ltp"][:] = [11, 22, 33]
+    puts.columns["ltp"][:] = [44, 55, 66]
+    frame = IndexFrame(1_753_070_400_000, 7, 2_456_705, 1234, calls, _SAMPLE_STRIKES, puts)
+
+    cur = Cursor(writer.encode_index_frame(frame))
+    assert cur.u32() == TAG_DATA
+    assert cur.u64() == 1_753_070_400_000
+    assert cur.u64() == 7
+    assert cur.i64() == 2_456_705
+    assert cur.i64() == 1234
+    for col in RAW_BLOCK_COLUMNS:  # call wing first
+        got = cur.vec(col.dtype)
+        np.testing.assert_array_equal(got, calls.columns[col.name])
+    np.testing.assert_array_equal(cur.vec(np.dtype("<i8")), _SAMPLE_STRIKES)  # then strikes
+    for col in RAW_BLOCK_COLUMNS:  # then the put wing
+        got = cur.vec(col.dtype)
+        np.testing.assert_array_equal(got, puts.columns[col.name])
+    assert cur.pos == len(writer.encode_index_frame(frame))
 
 
 def test_stock_header_byte_level_layout():
@@ -72,7 +98,7 @@ def test_stock_header_byte_level_layout():
     payload = writer.encode_stock_header(header)
     cur = Cursor(payload)
     assert cur.u32() == TAG_HEADER
-    assert cur.u32() == SCHEMA_VERSION
+    assert cur.u32() == SCHEMA_VERSION_STOCK
     assert cur.string() == "2026-07-21"
     assert cur.f64() == pytest.approx(0.0691)
     assert cur.u64() == 1  # one stock
@@ -93,13 +119,14 @@ def test_stock_header_byte_level_layout():
 def test_header_written_once_across_reopen(tmp_path):
     path = tmp_path / "NIFTY" / "2026-07-21.bin"
     header = _sample_index_header()
-    n = header.strikes.shape[0]
+    n = _SAMPLE_STRIKES.shape[0]
     frame = IndexFrame(
         timestamp_unix_ms=1_753_070_400_000,
         sequence=0,
         spot_price=2_456_705,
         vix=1_234,
         calls=RawBlock.zeros(n),
+        strikes=_SAMPLE_STRIKES,
         puts=RawBlock.zeros(n),
     )
 
@@ -117,16 +144,17 @@ def test_header_written_once_across_reopen(tmp_path):
 
     # File grew by exactly one data frame, not a second header.
     header_frame_len = 4 + len(writer.encode_index_header(header))
-    data_frame_len = 4 + len(writer.encode_index_frame(frame, n))
+    data_frame_len = 4 + len(writer.encode_index_frame(frame))
     assert size_after_first == header_frame_len + data_frame_len
     assert size_after_second == size_after_first + data_frame_len
 
 
 def test_append_before_header_raises(tmp_path):
     path = tmp_path / "2026-07-21.bin"
-    header = _sample_index_header()
-    n = header.strikes.shape[0]
-    frame = IndexFrame(0, 0, 0, 0, RawBlock.zeros(n), RawBlock.zeros(n))
+    n = _SAMPLE_STRIKES.shape[0]
+    frame = IndexFrame(
+        0, 0, 0, 0, RawBlock.zeros(n), _SAMPLE_STRIKES, RawBlock.zeros(n)
+    )
     with writer.IndexBinWriter(path) as w:
         with pytest.raises(RuntimeError):
             w.append_frame(frame)

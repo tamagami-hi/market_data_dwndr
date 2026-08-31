@@ -984,21 +984,21 @@ class CaptureEngine:
 def build_index_writer(table: IndexTable, path) -> FileWriterThread:
     """Convenience: a writer thread for an index table's file (fsync per frame).
 
-    Resolves the segment first: if today's file already commits to a different strike
-    count (the ATM window re-centred while the process was down), the frames go to a fresh
-    ``<date>.pN.bin`` with its own header instead of onto the stale axis.
+    A strike-axis change no longer needs a new file: every frame carries its own strike
+    vector, so generations with different strike counts append to the same ``<date>.bin``.
+    The resolver only steps aside for a *schema version* difference, which can happen once
+    per artifact on the first run after a format change and leaves the older file untouched.
     """
-    from app.bin_codec.scan import AXIS_INDEX
-    from app.bin_codec.writer import IndexBinWriter, resolve_segment_path
+    from app.bin_codec.writer import IndexBinWriter, resolve_index_segment_path
 
     header = table.header()
-    target = resolve_segment_path(path, int(header.strikes.shape[0]), AXIS_INDEX)
+    target = resolve_index_segment_path(path)
     if target != Path(path):
         logger.warning(
-            "%s: strike axis changed to %d; rolling to segment %s so the existing "
-            "header's axis is not mis-applied to new frames",
+            "%s: %s was written by a different schema version; continuing in %s so the "
+            "existing frames stay readable",
             table.chain.underlying,
-            int(header.strikes.shape[0]),
+            Path(path).name,
             target.name,
         )
     return FileWriterThread(

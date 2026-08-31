@@ -25,7 +25,9 @@ class ChainMetrics:
 
 
 def reconstruct_chain_metrics(frame: IndexFrame, header: IndexHeader) -> ChainMetrics:
-    strikes_paise = np.asarray(header.strikes, dtype=np.int64)
+    # The axis comes from the FRAME, never the header: a file may hold frames of several
+    # generations with different strike windows, and each frame's data belongs to its own.
+    strikes_paise = np.asarray(frame.strikes, dtype=np.int64)
     strikes = strikes_paise / 100.0
 
     step_paise = get_index_config(header.underlying).step * 100

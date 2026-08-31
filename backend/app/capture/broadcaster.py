@@ -106,7 +106,6 @@ def _copy_header(header: IndexHeader) -> IndexHeader:
         underlying=header.underlying,
         expiry_date=header.expiry_date,
         risk_free_rate=header.risk_free_rate,
-        strikes=header.strikes.copy(),
         schema_version=header.schema_version,
     )
 
@@ -216,7 +215,17 @@ class Broadcaster:
 
     def index_messages(self, name: str, table: IndexTable, ts: int) -> list[dict]:
         header = table.header()
-        frame = IndexFrame(ts, table.sequence, table.spot_price, table.vix, table.calls, table.puts)
+        # The live grid is labelled with the table's current axis, so a post-restart
+        # window change relabels the columns instead of mislabelling them.
+        frame = IndexFrame(
+            ts,
+            table.sequence,
+            table.spot_price,
+            table.vix,
+            table.calls,
+            table.chain.strikes,
+            table.puts,
+        )
         return self._index_frame_messages(name, header, frame)
 
     def _index_frame_messages(
@@ -254,7 +263,7 @@ class Broadcaster:
             {
                 "underlying": name,
                 "expiry": header.expiry_date,
-                "strikes": [_rupees(int(s)) for s in header.strikes],
+                "strikes": [_rupees(int(s)) for s in frame.strikes],
                 "calls": calls_block,
                 "puts": puts_block,
                 "market_atm": metrics.atm,

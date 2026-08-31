@@ -76,12 +76,12 @@ def test_reconstruct_uses_vix_fallback_iv_when_solve_fails():
     # A call priced above spot is unsolvable (but not below intrinsic), so the
     # VIX-derived fallback IV should be applied instead of leaving NaN.
     strikes = np.array([2_000_000], dtype="<i8")  # strike 20000
-    header = IndexHeader("2026-07-21", "NIFTY", "2026-08-28", 0.0691, strikes)
+    header = IndexHeader("2026-07-21", "NIFTY", "2026-08-28", 0.0691)
     calls = RawBlock.zeros(1)
     puts = RawBlock.zeros(1)
     calls.columns["ltp"][0] = 31000 * 100  # 31000 > spot 30000 -> IV solve fails
     # spot 30000, vix 15.00
-    frame = IndexFrame(1_753_070_400_000, 0, 30000 * 100, 1500, calls, puts)
+    frame = IndexFrame(1_753_070_400_000, 0, 30000 * 100, 1500, calls, strikes, puts)
     out = reconstruct_greeks(frame, header)
     assert out["fallback_iv"] is not None
     assert abs(out["fallback_iv"] - 0.15) < 1e-9  # vix 15.00 / 100
@@ -91,17 +91,19 @@ def test_reconstruct_uses_vix_fallback_iv_when_solve_fails():
 def test_reconstruct_skips_grossly_subintrinsic_no_fallback():
     # A call far below intrinsic is zeroed (NaN), not given the VIX fallback.
     strikes = np.array([2_000_000], dtype="<i8")  # strike 20000
-    header = IndexHeader("2026-07-21", "NIFTY", "2026-08-28", 0.0691, strikes)
+    header = IndexHeader("2026-07-21", "NIFTY", "2026-08-28", 0.0691)
     calls = RawBlock.zeros(1)
     calls.columns["ltp"][0] = 100  # 1.00 rupee for a ~10000-point ITM call
-    frame = IndexFrame(1_753_070_400_000, 0, 30000 * 100, 1500, calls, RawBlock.zeros(1))
+    frame = IndexFrame(
+        1_753_070_400_000, 0, 30000 * 100, 1500, calls, strikes, RawBlock.zeros(1)
+    )
     out = reconstruct_greeks(frame, header)
     assert math.isnan(out["calls"]["iv"][0])  # below intrinsic -> no IV, no fallback
 
 
 def test_reconstruct_greeks_from_frame_roundtrips_iv():
     strikes = np.array([2_450_000, 2_455_000], dtype="<i8")  # 24500, 24550 rupees
-    header = IndexHeader("2026-07-21", "NIFTY", "2026-08-28", 0.0691, strikes)
+    header = IndexHeader("2026-07-21", "NIFTY", "2026-08-28", 0.0691)
 
     ts = 1_753_070_400_000
     exp_ms = expiry_timestamp_ms("2026-08-28")
@@ -117,7 +119,7 @@ def test_reconstruct_greeks_from_frame_roundtrips_iv():
         calls.columns["ltp"][i] = round(price * 100)
         calls.columns["ohlc_close"][i] = round((price - 1.0) * 100)  # arbitrary close
 
-    frame = IndexFrame(ts, 0, int(spot * 100), 1234, calls, puts)
+    frame = IndexFrame(ts, 0, int(spot * 100), 1234, calls, strikes, puts)
     out = reconstruct_greeks(frame, header)
 
     assert abs(out["t_years"] - t) < 1e-9

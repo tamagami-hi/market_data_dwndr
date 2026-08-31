@@ -122,23 +122,24 @@ AXIS_STOCK = "stock"  # StockHeader: ... f64 rate, u64 n_stocks
 AXIS_INDEX_FNO = "index_fno"  # IndexFnoHeader: ... f64 rate, u64 n_indices
 
 
-def read_header_axis(path: str | os.PathLike[str], kind: str) -> int | None:
-    """Length of the axis the file's existing header declares, or ``None`` if empty.
+def read_header_schema_version(path: str | os.PathLike[str]) -> int | None:
+    """Schema version declared by the file's header record, or ``None`` if empty/unread.
 
-    "Axis" is the fixed-width dimension every data frame in the file must match: the
-    strike count for an index chain, the row count for the stocks matrix and the
-    index-F&O grid.
-
-    This exists because the header is written **once**, when the file is empty, while the
-    in-memory axis is rebuilt on every bootstrap. The ATM ± 50 window re-centres as spot
-    moves and clips against the available strike list, so a mid-day restart could legally
-    produce a *different* strike count — and frames were then appended at the new width
-    behind a header still describing the old one. Nothing detected it: the frames decode
-    fine (Vec lengths are self-describing) but map onto the wrong strikes for the rest of
-    the file. On 2026-08-26 and 2026-08-27 that was 99.98% of the day's NIFTY frames.
-
-    Reads only the first record, so it is cheap enough to call on every writer open.
+    This is what decides whether an existing file may be appended to: frames of two
+    schema versions decode differently and must never share a file. Reads only the first
+    record, so it is cheap enough to call on every writer open.
     """
+    payload = _read_header_payload(path)
+    if payload is None:
+        return None
+    cursor = layout.Cursor(payload)
+    if cursor.u32() != layout.TAG_HEADER:
+        return None
+    return int(cursor.u32())
+
+
+def _read_header_payload(path: str | os.PathLike[str]) -> bytes | None:
+    """The first record's payload bytes, or ``None`` for a missing/empty/short file."""
     file_path = Path(path)
     if not file_path.exists() or file_path.stat().st_size == 0:
         return None
@@ -150,12 +151,38 @@ def read_header_axis(path: str | os.PathLike[str], kind: str) -> int | None:
         payload = handle.read(length)
     if len(payload) < length:
         return None
+    return payload
+
+
+def read_header_axis(path: str | os.PathLike[str], kind: str) -> int | None:
+    """Length of the axis the file's existing header declares, or ``None`` if absent.
+
+    "Axis" is the fixed-width dimension every data frame in the file must match: the row
+    count for the stocks matrix and the index-F&O grid.
+
+    Those two domains still fix their row axis in the header, so a reopened file has to be
+    checked against it: the header is written **once**, when the file is empty, while the
+    in-memory axis is rebuilt on every bootstrap. Frames appended at a different width
+    decode fine (Vec lengths are self-describing) but map every column onto the wrong row.
+
+    Index files from schema v2 onward declare **no** strike axis in the header — each frame
+    carries its own — so this returns ``None`` for them, and an index axis change is a
+    normal in-file event rather than a conflict. Legacy v1 index files still report their
+    header axis, which is what keeps the historical archive readable.
+
+    Reads only the first record, so it is cheap enough to call on every writer open.
+    """
+    payload = _read_header_payload(path)
+    if payload is None:
+        return None
     cursor = layout.Cursor(payload)
     if cursor.u32() != layout.TAG_HEADER:
         return None
-    cursor.u32()  # schema_version
+    schema_version = cursor.u32()
     cursor.string()  # trading_date
     if kind == AXIS_INDEX:
+        if schema_version >= layout.SCHEMA_VERSION_INDEX:
+            return None  # v2+ index headers carry no strike axis
         cursor.string()  # underlying
         cursor.string()  # expiry_date
     cursor.f64()  # risk_free_rate

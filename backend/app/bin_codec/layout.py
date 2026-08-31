@@ -12,6 +12,13 @@ All integers are little-endian and fixed-width:
     String := u64 byte-length + UTF-8 bytes
     Vec<T>  := u64 element-count + elements
     enum tag: u32  (0 = Header, 1 = Data)
+
+An index data frame stores its own strike axis between the two wings::
+
+    [calls: 15 x Vec[N]] [strikes: 1 x Vec[N]] [puts: 15 x Vec[N]]
+
+so ``N`` may differ from frame to frame within one file and every frame remains
+unambiguous on its own. See :class:`IndexFrame`.
 """
 
 from __future__ import annotations
@@ -25,10 +32,29 @@ import numpy as np
 # Constants
 # --------------------------------------------------------------------------- #
 
-SCHEMA_VERSION = 1
+# Schema versions are **per domain**: only the index option-chain layout changed, so
+# bumping stocks or index-F&O would misreport an unchanged format.
+#
+# Index v2 moved the strike axis out of the header and into every frame, making each frame
+# self-describing. v1 kept a single ``strikes`` vector in the header, which silently
+# mis-described every frame once a restart re-centred the ATM window.
+SCHEMA_VERSION_INDEX = 2
+SCHEMA_VERSION_STOCK = 1
+SCHEMA_VERSION_INDEX_FNO = 1
+
+# v1 index files carry their axis in the header and a fixed width in every frame. Readers
+# still accept them; writers never produce them.
+SCHEMA_VERSION_HEADER_AXIS = 1
 
 TAG_HEADER = 0
 TAG_DATA = 1
+
+# Upper bound on an index frame's strike count: the ATM +/- 50 selection yields at most
+# 2 * 50 + 1. It is a *maximum*, not a required width -- a clipped window is narrower and
+# perfectly legal. Enforced when encoding so a runaway axis can never be written.
+# ``tests/test_index_frame_axis.py`` pins this to the selection default so the two cannot
+# drift apart silently.
+MAX_STRIKES_PER_FRAME = 101
 
 # Number of order-book depth levels stored per instrument leg (stocks = L5).
 DEPTH_LEVELS = 5
@@ -269,26 +295,78 @@ class InstrColumns:
 
 @dataclass
 class IndexHeader:
-    """IndexHeader (tag 0) -- written once per index file."""
+    """IndexHeader (tag 0) -- written once per index file.
+
+    Carries no strike axis. The axis belongs to each :class:`IndexFrame`, because it can
+    legitimately change when capture restarts and ``build_option_chain`` re-centres the
+    ATM window. A single header-level axis could only ever describe one generation, and
+    silently mis-described the rest (see SCHEMA_VERSION_INDEX).
+    """
 
     trading_date: str
     underlying: str
     expiry_date: str
     risk_free_rate: float
-    strikes: np.ndarray  # i64 paise, ascending, fixed for the day
-    schema_version: int = SCHEMA_VERSION
+    schema_version: int = SCHEMA_VERSION_INDEX
 
 
 @dataclass
 class IndexFrame:
-    """IndexFrame (tag 1) -- one per second."""
+    """IndexFrame (tag 1) -- one per second, carrying its own strike axis.
+
+    Wire order is ``[calls: 15 x Vec[N]] [strikes: 1 x Vec[N]] [puts: 15 x Vec[N]]`` --
+    31 vectors that must all have length ``N``. The field order here mirrors that layout
+    on purpose.
+
+    The axis is positional and is part of the data-integrity contract: ``strikes[i]``
+    names the strike whose CE data occupies ``calls.columns[f][i]`` and whose PE data
+    occupies ``puts.columns[f][i]``, for every one of the 15 fields on each side. A value
+    belonging to any other strike must never sit at position ``i``.
+    """
 
     timestamp_unix_ms: int
     sequence: int
     spot_price: int  # paise
     vix: int  # x100
     calls: RawBlock
+    strikes: np.ndarray  # i64 paise, strictly ascending, this frame's axis
     puts: RawBlock
+
+    def axis_length(self) -> int:
+        return int(np.asarray(self.strikes).shape[0])
+
+    def validate(self) -> None:
+        """Reject a frame whose 31 vectors do not share one ordered strike axis.
+
+        Called before encoding, so a frame that violates the contract is never written.
+        Length agreement alone is not enough: an axis that is not strictly ascending is
+        either unsorted or contains duplicates, and in both cases position ``i`` no longer
+        identifies a unique strike.
+        """
+        strikes = np.asarray(self.strikes)
+        if strikes.ndim != 1:
+            raise ValueError(f"IndexFrame.strikes must be 1-D, got shape {strikes.shape}")
+        if strikes.dtype != DT_I64:
+            raise ValueError(
+                f"IndexFrame.strikes must be {DT_I64} (integer paise), got {strikes.dtype}"
+            )
+        n = int(strikes.shape[0])
+        if n == 0:
+            raise ValueError("IndexFrame.strikes is empty: a frame must carry its axis")
+        if n > MAX_STRIKES_PER_FRAME:
+            raise ValueError(
+                f"IndexFrame carries {n} strikes, above the {MAX_STRIKES_PER_FRAME} maximum"
+            )
+        if strikes[0] <= 0:
+            raise ValueError("IndexFrame.strikes must be positive paise values")
+        if n > 1 and not bool(np.all(np.diff(strikes) > 0)):
+            raise ValueError(
+                "IndexFrame.strikes must be strictly ascending: position i must identify "
+                "exactly one strike for both wings"
+            )
+        # Both wings must span exactly the same axis positions as the strike vector.
+        self.calls.validate(n)
+        self.puts.validate(n)
 
 
 @dataclass
@@ -314,7 +392,7 @@ class StockHeader:
     trading_date: str
     risk_free_rate: float
     stocks: list[StockRef]
-    schema_version: int = SCHEMA_VERSION
+    schema_version: int = SCHEMA_VERSION_STOCK
 
 
 @dataclass
@@ -355,7 +433,7 @@ class IndexFnoHeader:
     trading_date: str
     risk_free_rate: float
     indices: list[IndexFnoRef]
-    schema_version: int = SCHEMA_VERSION
+    schema_version: int = SCHEMA_VERSION_INDEX_FNO
 
 
 @dataclass

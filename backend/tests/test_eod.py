@@ -12,14 +12,14 @@ from app.ops.eod import compress_raw_files, prune_stale_raw, run_eod
 
 def _write_index_file(path, n_frames=5):
     strikes = np.array([2_450_000, 2_455_000, 2_460_000], dtype="<i8")
-    header = IndexHeader("2026-07-21", "NIFTY", "2026-07-24", 0.0691, strikes)
+    header = IndexHeader("2026-07-21", "NIFTY", "2026-07-24", 0.0691)
     n = strikes.shape[0]
     with writer.IndexBinWriter(path) as w:
         w.write_header(header)
         for i in range(n_frames):
             w.append_frame(
                 IndexFrame(1_753_070_400_000 + i * 1000, i, 2_456_705, 1234,
-                           RawBlock.zeros(n), RawBlock.zeros(n))
+                           RawBlock.zeros(n), strikes.copy(), RawBlock.zeros(n))
             )
 
 

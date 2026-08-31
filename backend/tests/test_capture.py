@@ -438,12 +438,15 @@ def test_index_writer_sync_roundtrips(tmp_path):
 
     path = tmp_path / "sync.bin"
     strikes = np.array([2_450_000, 2_455_000], dtype="<i8")
-    header = IndexHeader("2026-07-24", "NIFTY", "2026-07-31", 0.0691, strikes)
+    header = IndexHeader("2026-07-24", "NIFTY", "2026-07-31", 0.0691)
     with IndexBinWriter(path, sync=True) as w:
         w.write_header(header)
         for i in range(3):
             w.append_frame(
-                IndexFrame(1_000 + i, i, 100, 1234, RawBlock.zeros(2), RawBlock.zeros(2))
+                IndexFrame(
+                    1_000 + i, i, 100, 1234,
+                    RawBlock.zeros(2), strikes, RawBlock.zeros(2),
+                )
             )
     with IndexBinReader(path) as r:
         assert len(r) == 3

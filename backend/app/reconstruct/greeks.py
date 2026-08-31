@@ -93,7 +93,8 @@ def reconstruct_greeks(
     t = year_fraction(ts, exp_ms)
     spot = _paise(frame.spot_price)
     r = float(header.risk_free_rate)
-    strikes_rupees = [s / 100.0 for s in header.strikes]
+    # Per-frame axis: the strikes stored with this frame, not a file-level vector.
+    strikes_rupees = [s / 100.0 for s in frame.strikes]
     # VIX is stored x100 (paise-style); VIX/100 as decimal vol is the ultimate IV fallback.
     vix_decimal = _paise(frame.vix) / 100.0
     fallback_iv = vix_decimal if vix_decimal > 0 else None

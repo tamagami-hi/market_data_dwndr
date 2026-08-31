@@ -14,12 +14,15 @@ from app.ops.retention import scan_storage, verify_integrity
 
 def _write_index_file(path, n_frames=4):
     strikes = np.array([2_450_000, 2_455_000], dtype="<i8")
-    header = IndexHeader("2026-07-21", "NIFTY", "2026-07-24", 0.0691, strikes)
+    header = IndexHeader("2026-07-21", "NIFTY", "2026-07-24", 0.0691)
     with writer.IndexBinWriter(path) as w:
         w.write_header(header)
         for i in range(n_frames):
             w.append_frame(
-                IndexFrame(1000 + i, i, 0, 0, RawBlock.zeros(2), RawBlock.zeros(2))
+                IndexFrame(
+                    1000 + i, i, 0, 0,
+                    RawBlock.zeros(2), strikes.copy(), RawBlock.zeros(2),
+                )
             )
 
 

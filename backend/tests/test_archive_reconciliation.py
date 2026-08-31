@@ -15,8 +15,7 @@ from datetime import date
 import numpy as np
 
 from app.bin_codec.layout import IndexFrame, IndexHeader, RawBlock
-from app.bin_codec.scan import AXIS_INDEX
-from app.bin_codec.writer import IndexBinWriter, resolve_segment_path
+from app.bin_codec.writer import IndexBinWriter, resolve_index_segment_path
 from app.ops import stats_store
 from app.ops.reconcile_session import (
     artifact_timestamps,
@@ -29,20 +28,23 @@ DAY_START = 1_788_000_000_000  # an arbitrary whole second
 SESSION = ((DAY_START, DAY_START + 100_000),)  # 100 owed seconds
 
 
-def _header(n: int = 5) -> IndexHeader:
+def _header() -> IndexHeader:
     return IndexHeader(
         trading_date="2026-08-28",
         underlying="NIFTY",
         expiry_date="2026-09-01",
         risk_free_rate=0.0526,
-        strikes=np.arange(1_000_000, 1_000_000 + n * 5_000, 5_000, dtype=np.int64),
     )
+
+
+def _axis(n: int = 5) -> np.ndarray:
+    return np.arange(1_000_000, 1_000_000 + n * 5_000, 5_000, dtype=np.int64)
 
 
 def _write(path, timestamps, n: int = 5) -> None:
     writer = IndexBinWriter(path)
     writer.open()
-    writer.write_header(_header(n))
+    writer.write_header(_header())
     for i, ts in enumerate(timestamps):
         writer.append_frame(
             IndexFrame(
@@ -51,6 +53,7 @@ def _write(path, timestamps, n: int = 5) -> None:
                 spot_price=1,
                 vix=2,
                 calls=RawBlock.zeros(n),
+                strikes=_axis(n),
                 puts=RawBlock.zeros(n),
             )
         )
@@ -109,11 +112,15 @@ def test_interior_holes_are_found_and_sized(tmp_path):
     assert sorted(g.seconds for g in result.gaps) == [5, 10]
 
 
-def test_frames_from_a_rolled_segment_are_credited(tmp_path):
-    """A strike-axis roll must not read as data loss — the seconds are on disk."""
+def test_frames_from_a_legacy_rolled_segment_are_credited(tmp_path):
+    """Historical ``.pN`` segments must not read as data loss — the seconds are on disk.
+
+    New index captures never roll (each frame carries its own strike axis), but days
+    already on disk do have segments, so reconciliation still has to sum across them.
+    """
     base = tmp_path / "2026-08-28.bin"
     _write(base, [DAY_START + s * 1_000 for s in range(50)], n=5)
-    rolled = resolve_segment_path(base, 4, AXIS_INDEX)
+    rolled = base.with_name("2026-08-28.p2.bin")
     _write(rolled, [DAY_START + s * 1_000 for s in range(50, 100)], n=4)
 
     assert [p.name for p in segment_paths(base)] == [
@@ -124,6 +131,19 @@ def test_frames_from_a_rolled_segment_are_credited(tmp_path):
 
     result = reconcile_artifact(base, SESSION)
     assert result.missing_seconds == 0, "segments must be reconciled together"
+
+
+def test_an_index_axis_change_stays_in_one_file(tmp_path):
+    """The new contract: a different strike count appends, it does not roll."""
+    base = tmp_path / "2026-08-28.bin"
+    _write(base, [DAY_START + s * 1_000 for s in range(50)], n=5)
+    assert resolve_index_segment_path(base) == base
+
+    _write(base, [DAY_START + s * 1_000 for s in range(50, 100)], n=4)
+
+    assert [p.name for p in segment_paths(base)] == ["2026-08-28.bin"]
+    assert len(artifact_timestamps(base)) == 100
+    assert reconcile_artifact(base, SESSION).missing_seconds == 0
 
 
 def test_frames_outside_the_session_are_not_credited(tmp_path):

@@ -78,6 +78,7 @@ def assemble_index_history(
             by_date[d][candle.timestamp_unix_ms].append((contract.side, idx, candle))
 
     frames_by_date: dict[str, list[IndexFrame]] = {}
+    axis = np.array(strikes_paise, dtype="<i8")
     for d in sorted(by_date):
         frames: list[IndexFrame] = []
         for seq, ts in enumerate(sorted(by_date[d])):
@@ -86,7 +87,8 @@ def assemble_index_history(
             for side, idx, candle in by_date[d][ts]:
                 block = calls if side == "CE" else puts
                 _fill_scalar_from_candle(block.columns, idx, candle)
-            frames.append(IndexFrame(ts, seq, 0, 0, calls, puts))
+            # Each frame carries the axis its columns were filled through.
+            frames.append(IndexFrame(ts, seq, 0, 0, calls, axis.copy(), puts))
         frames_by_date[d] = frames
     return frames_by_date
 
@@ -99,12 +101,15 @@ def write_index_history(
     strikes_paise: list[int],
     frames_by_date: dict[str, list[IndexFrame]],
 ) -> list[Path]:
-    """Write per-date historical index files under ``INDICES_HIS/<underlying>/``."""
-    strikes = np.array(strikes_paise, dtype="<i8")
+    """Write per-date historical index files under ``INDICES_HIS/<underlying>/``.
+
+    ``strikes_paise`` is accepted for call-site compatibility; the axis is persisted per
+    frame, each frame already carrying the vector it was assembled against.
+    """
     written: list[Path] = []
     for trading_date, frames in frames_by_date.items():
         path = Path(indices_his_dir) / underlying / f"{trading_date}.bin"
-        header = IndexHeader(trading_date, underlying, expiry, risk_free_rate, strikes)
+        header = IndexHeader(trading_date, underlying, expiry, risk_free_rate)
         with IndexBinWriter(path) as w:
             w.write_header(header)
             for frame in frames:

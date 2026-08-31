@@ -11,6 +11,7 @@ from app.bin_codec.layout import (
     DEPTH_LEVEL_COLUMNS,
     INSTR_SCALAR_COLUMNS,
     RAW_BLOCK_COLUMNS,
+    SCHEMA_VERSION_INDEX,
 )
 from app.bin_codec.reader import IndexBinReader, StockBinReader, paise_to_rupees
 from tests.conftest import (
@@ -42,8 +43,8 @@ def _assert_instr_identical(got, expected):
 
 def test_index_round_trip_identical(tmp_path):
     rng = np.random.default_rng(42)
-    header = make_index_header(n_strikes=7)
-    n = header.strikes.shape[0]
+    header = make_index_header()
+    n = 7
     frames = [make_index_frame(rng, n, ts=1_753_070_400_000 + i * 1000, seq=i) for i in range(5)]
 
     path = tmp_path / "INDICES" / "NIFTY" / "2026-07-21.bin"
@@ -58,8 +59,8 @@ def test_index_round_trip_identical(tmp_path):
         assert h.underlying == "NIFTY"
         assert h.expiry_date == "2026-07-24"
         assert h.risk_free_rate == header.risk_free_rate
-        np.testing.assert_array_equal(h.strikes, header.strikes)
-        assert h.strikes.dtype == np.dtype("<i8")
+        assert h.schema_version == SCHEMA_VERSION_INDEX
+        assert not hasattr(h, "strikes"), "the axis belongs to each frame, not the header"
         assert len(r) == len(frames)
         for i, expected in enumerate(frames):
             got = r.frame(i)
@@ -67,6 +68,8 @@ def test_index_round_trip_identical(tmp_path):
             assert got.sequence == expected.sequence
             assert got.spot_price == expected.spot_price
             assert got.vix == expected.vix
+            np.testing.assert_array_equal(got.strikes, expected.strikes)
+            assert got.strikes.dtype == np.dtype("<i8")
             _assert_raw_block_identical(got.calls, expected.calls)
             _assert_raw_block_identical(got.puts, expected.puts)
 
@@ -103,8 +106,8 @@ def test_stock_round_trip_identical(tmp_path):
 
 def test_nearest_timestamp_and_range(tmp_path):
     rng = np.random.default_rng(1)
-    header = make_index_header(n_strikes=3)
-    n = header.strikes.shape[0]
+    header = make_index_header()
+    n = 3
     base = 1_753_070_400_000
     frames = [make_index_frame(rng, n, ts=base + i * 1000, seq=i) for i in range(10)]
 
@@ -128,8 +131,8 @@ def test_nearest_timestamp_and_range(tmp_path):
 
 def test_truncated_trailing_frame_is_ignored(tmp_path):
     rng = np.random.default_rng(3)
-    header = make_index_header(n_strikes=3)
-    n = header.strikes.shape[0]
+    header = make_index_header()
+    n = 3
     frames = [make_index_frame(rng, n, ts=1000 + i, seq=i) for i in range(3)]
 
     path = tmp_path / "2026-07-21.bin"

@@ -30,6 +30,7 @@ from app.bin_codec.layout import (
     DEPTH_LEVEL_COLUMNS,
     INSTR_SCALAR_COLUMNS,
     RAW_BLOCK_COLUMNS,
+    SCHEMA_VERSION_INDEX,
     TAG_HEADER,
     Cursor,
     FutureRef,
@@ -77,6 +78,7 @@ class _BaseReader:
         self._fh = None
         self._mm: mmap.mmap | None = None
         self._header_span: tuple[int, int] | None = None
+        self._schema_version: int | None = None
         self._frames: list[FrameRecord] = []
         self._sorted_ts: np.ndarray = np.empty(0, dtype=np.uint64)
         self._sorted_idx: np.ndarray = np.empty(0, dtype=np.int64)
@@ -135,6 +137,9 @@ class _BaseReader:
             tag = _U32.unpack_from(buf, payload_start)[0]
             if tag == TAG_HEADER:
                 self._header_span = (payload_start, length)
+                # The schema version decides how data frames are decoded, so capture it
+                # during the scan rather than re-reading the header on every frame.
+                self._schema_version = _U32.unpack_from(buf, payload_start + 4)[0]
             else:
                 # data frame: u64 timestamp immediately follows the u32 tag.
                 ts = _U64.unpack_from(buf, payload_start + 4)[0]
@@ -155,6 +160,11 @@ class _BaseReader:
     def timestamps(self) -> list[int]:
         """Data-frame timestamps in file order."""
         return [f.timestamp_unix_ms for f in self._frames]
+
+    @property
+    def schema_version(self) -> int:
+        """Schema version of the open file (defaults to the current one if headerless)."""
+        return 0 if self._schema_version is None else self._schema_version
 
     def _header_cursor(self) -> Cursor:
         if self._header_span is None:
@@ -211,6 +221,18 @@ def _decode_instr_columns(cur: Cursor) -> InstrColumns:
 
 
 class IndexBinReader(_BaseReader):
+    """Reader for an index option-chain file.
+
+    Handles both schema versions. From v2 each frame carries its own strike vector, so
+    frames in one file may differ in width. For legacy v1 files the single header axis is
+    attached to every frame it decodes, so callers always get a frame whose ``strikes``
+    describe its own columns and never need to branch on the version.
+    """
+
+    def __init__(self, path: str | os.PathLike[str]) -> None:
+        super().__init__(path)
+        self._legacy_strikes: np.ndarray | None = None
+
     def header(self) -> IndexHeader:
         cur = self._header_cursor()
         cur.u32()  # tag
@@ -219,15 +241,26 @@ class IndexBinReader(_BaseReader):
         underlying = cur.string()
         expiry_date = cur.string()
         risk_free_rate = cur.f64()
-        strikes = cur.vec(np.dtype("<i8"))
         return IndexHeader(
             trading_date=trading_date,
             underlying=underlying,
             expiry_date=expiry_date,
             risk_free_rate=risk_free_rate,
-            strikes=strikes,
             schema_version=schema_version,
         )
+
+    def _legacy_axis(self) -> np.ndarray:
+        """The header strike vector of a v1 file, read once and cached."""
+        if self._legacy_strikes is None:
+            cur = self._header_cursor()
+            cur.u32()  # tag
+            cur.u32()  # schema_version
+            cur.string()  # trading_date
+            cur.string()  # underlying
+            cur.string()  # expiry_date
+            cur.f64()  # risk_free_rate
+            self._legacy_strikes = cur.vec(np.dtype("<i8"))
+        return self._legacy_strikes
 
     def frame(self, index: int) -> IndexFrame:
         cur = self._frame_cursor(index)
@@ -237,8 +270,12 @@ class IndexBinReader(_BaseReader):
         spot_price = cur.i64()
         vix = cur.i64()
         calls = _decode_raw_block(cur)
+        if self.schema_version >= SCHEMA_VERSION_INDEX:
+            strikes = cur.vec(np.dtype("<i8"))
+        else:
+            strikes = self._legacy_axis()
         puts = _decode_raw_block(cur)
-        return IndexFrame(timestamp, sequence, spot_price, vix, calls, puts)
+        return IndexFrame(timestamp, sequence, spot_price, vix, calls, strikes, puts)
 
     def frames(self):
         for i in range(len(self)):

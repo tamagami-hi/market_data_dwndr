@@ -76,13 +76,19 @@ class IndexTable:
         c["ohlc_close"][idx] = close
 
     def snapshot(self, timestamp_unix_ms: int) -> IndexFrame:
-        """Copy current state into an ``IndexFrame`` and advance the sequence."""
+        """Copy current state into an ``IndexFrame`` and advance the sequence.
+
+        The strike vector is copied alongside the two wings, from the same
+        ``self.chain`` that produced the ``token_map`` those wings were filled through —
+        so the frame's axis is by construction the axis its data was written against.
+        """
         frame = IndexFrame(
             timestamp_unix_ms=timestamp_unix_ms,
             sequence=self.sequence,
             spot_price=int(self.spot_price),
             vix=int(self.vix),
             calls=_copy_raw_block(self.calls),
+            strikes=np.array(self.chain.strikes, dtype="<i8"),
             puts=_copy_raw_block(self.puts),
         )
         self.sequence += 1
@@ -94,5 +100,4 @@ class IndexTable:
             underlying=self.chain.underlying,
             expiry_date=self.chain.expiry,
             risk_free_rate=self.risk_free_rate,
-            strikes=np.array(self.chain.strikes, dtype="<i8"),
         )
