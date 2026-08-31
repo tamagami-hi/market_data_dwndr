@@ -18,6 +18,20 @@ file, the consolidated stock file, …) onto the session it belongs to. Writers 
 data; sessions own the schedule; artifacts merely reference a session. Nothing here
 touches a binary format.
 
+The 2026 exchange structure makes the per-segment split load-bearing rather than
+decorative. Three different clocks apply to one capture process:
+
+* equity **derivatives** (index/stock futures and options) trade continuously 09:15-15:40;
+* the F&O-eligible **cash** underlyings stop continuous matching at 15:15 and then run a
+  closing call auction to 15:35;
+* the capture **process** may be alive 09:10-15:40, which is neither of the above.
+
+So an artifact holding both a cash leg and a futures leg cannot be judged by one clock.
+Artifacts take the *widest* session among their legs — the frame stream really is owed
+until 15:40 — while :meth:`SessionRegistry.assign_contributor` gives each leg its own
+schedule for freshness purposes. Without that split, the cash leg going quiet at 15:15
+reports the whole artifact as a dead feed for the last 25 minutes of every session.
+
 The schedule is deliberately derivable from configuration and a trading date **alone**,
 with no reference to process uptime, because that is what makes data-loss accounting
 honest: if the application was down from 09:15 to 09:27, those 720 scheduled seconds are
@@ -39,10 +53,17 @@ PHASE_INACTIVE = "INACTIVE"
 PHASE_BOOTSTRAP = "BOOTSTRAP"
 PHASE_PRE_OPEN = "PRE_OPEN"
 PHASE_OPEN = "OPEN"
+# The closing call auction that follows the continuous session (NSE/BSE cash CAS,
+# 15:15-15:35 as of the 2026 structure). Genuinely part of the trading day and worth
+# recording, but NOT continuous matching: long stretches with no price change are the
+# auction working as designed, so continuous-market staleness must not be armed and these
+# seconds must not sit in the continuous-completeness denominator.
+PHASE_AUCTION = "AUCTION"
 PHASE_CLOSED = "CLOSED"
 
-# Session names. Cash and derivatives share timings today but are modelled separately so
-# an exchange timing change is a configuration edit, not a code change (§25).
+# Session names. Cash and derivatives do NOT share timings: as of the 2026 structure the
+# equity-derivatives continuous session runs to 15:40 while the F&O-eligible cash
+# underlyings stop continuous matching at 15:15 and then hold a closing auction to 15:35.
 SESSION_EQUITY_DERIV = "equity_deriv"
 SESSION_EQUITY_CASH = "equity_cash"
 
@@ -76,6 +97,16 @@ class MarketSession:
     # continuous session can begin after our configured open, and the first prints take a
     # moment to arrive.
     stale_arm_delay_s: float = 300.0
+    # Closing call auction, which begins at or after ``close_at``. Kept as its own window
+    # rather than folded into ``close_at`` because the two have different semantics: a
+    # quiet second inside the auction is normal, a quiet second inside continuous
+    # matching is a fault. Extending ``close_at`` to silence auction alarms would hide the
+    # exchange structure instead of modelling it.
+    cas_start: time | None = None
+    cas_end: time | None = None
+    # Whether auction frames are persisted at all. Closing-price discovery is real market
+    # data, so the default is yes; it is still excluded from the continuous denominator.
+    capture_auction: bool = True
 
     def __post_init__(self) -> None:
         if self.close_at <= self.open_at:
@@ -90,16 +121,42 @@ class MarketSession:
             raise ValueError(
                 f"session {self.name}: pre-open must end at or before open {self.open_at}"
             )
+        if (self.cas_start is None) != (self.cas_end is None):
+            raise ValueError(
+                f"session {self.name}: the closing auction needs both a start and an end"
+            )
+        if self.has_auction:
+            if self.cas_end <= self.cas_start:  # type: ignore[operator]
+                raise ValueError(
+                    f"session {self.name}: auction end {self.cas_end} must be after "
+                    f"start {self.cas_start}"
+                )
+            if self.cas_start < self.close_at:  # type: ignore[operator]
+                raise ValueError(
+                    f"session {self.name}: the closing auction cannot start "
+                    f"({self.cas_start}) before continuous close ({self.close_at})"
+                )
 
     @property
     def has_pre_open(self) -> bool:
         return self.pre_open_start is not None and self.pre_open_end is not None
 
+    @property
+    def has_auction(self) -> bool:
+        return self.cas_start is not None and self.cas_end is not None
+
     # -- phase ------------------------------------------------------------- #
 
     def phase_at(self, local: datetime) -> str:
-        """Lifecycle phase for a local (exchange-timezone) datetime."""
+        """Lifecycle phase for a local (exchange-timezone) datetime.
+
+        The auction is tested before CLOSED because it starts *at* ``close_at``: the cash
+        continuous session ending at 15:15 and the auction beginning at 15:15 are the same
+        instant, and that instant belongs to the auction.
+        """
         moment = local.time()
+        if self.has_auction and self.cas_start <= moment < self.cas_end:  # type: ignore[operator]
+            return PHASE_AUCTION
         if moment >= self.close_at:
             return PHASE_CLOSED
         if moment >= self.open_at:
@@ -113,20 +170,28 @@ class MarketSession:
 
         This is the gate that keeps scheduled inactivity out of the loss figure: outside
         it, an absent frame is *not expected data* rather than data loss.
+
+        The auction is included when ``capture_auction`` so closing-price discovery is
+        persisted — but :meth:`scheduled_intervals` still excludes it, so those seconds are
+        recorded without ever becoming continuous-session loss.
         """
         if not self.enabled:
             return False
         phase = self.phase_at(local)
         if phase == PHASE_OPEN:
             return True
+        if phase == PHASE_AUCTION:
+            return self.capture_auction
         return phase == PHASE_PRE_OPEN and self.capture_pre_open
 
     def is_stale_armed_at(self, local: datetime) -> bool:
         """True when absent/frozen ticks are a fault, not merely a quiet market.
 
-        Deliberately narrower than :meth:`is_capture_expected_at`: the pre-open auction
-        legitimately produces long silences, and the first moments after open need a
-        grace period, so neither arms recovery escalation.
+        Deliberately narrower than :meth:`is_capture_expected_at`: only the OPEN phase
+        arms it. The pre-open call auction legitimately produces long silences, the
+        **closing** call auction does too (unchanged values during CAS are the auction
+        working, not a dead feed), and the first moments after open need a grace period —
+        so none of those arm recovery escalation.
         """
         if not self.enabled or self.phase_at(local) != PHASE_OPEN:
             return False
@@ -141,7 +206,13 @@ class MarketSession:
     # -- scheduled grid (uptime-independent) -------------------------------- #
 
     def scheduled_intervals(self) -> tuple[tuple[time, time], ...]:
-        """The wall-clock intervals this session is scheduled to capture."""
+        """The wall-clock intervals of **continuous** capture this session is scheduled.
+
+        The closing auction is deliberately **not** here. These intervals are the
+        completeness denominator, and a call auction has no per-second matching obligation:
+        counting 15:15-15:35 as owed continuous cash seconds would report a normal auction
+        as 20 minutes of missing market data. See :meth:`auction_intervals`.
+        """
         if not self.enabled:
             return ()
         intervals: list[tuple[time, time]] = []
@@ -150,11 +221,35 @@ class MarketSession:
         intervals.append((self.open_at, self.close_at))
         return tuple(intervals)
 
+    def auction_intervals(self) -> tuple[tuple[time, time], ...]:
+        """The closing-auction interval(s), tracked separately from continuous time."""
+        if not self.enabled or not self.has_auction or not self.capture_auction:
+            return ()
+        return ((self.cas_start, self.cas_end),)  # type: ignore[return-value]
+
+    def auction_seconds(self) -> int:
+        """Wall-clock seconds this session spends in its closing auction."""
+        return sum(
+            _seconds_between(start, end) for start, end in self.auction_intervals()
+        )
+
+    def auction_windows_on(
+        self, calendar: TradingCalendar, trading_date: date
+    ) -> tuple[tuple[int, int], ...]:
+        """Absolute ``[start_ms, end_ms)`` auction windows on ``trading_date``."""
+        if not calendar.is_trading_day(_at(trading_date, time(12, 0), calendar)):
+            return ()
+        return tuple(
+            (_at(trading_date, start, calendar), _at(trading_date, end, calendar))
+            for start, end in self.auction_intervals()
+        )
+
     def scheduled_seconds(self) -> int:
-        """Total seconds this session is scheduled to capture on a trading day.
+        """Total continuous seconds this session is scheduled to capture on a trading day.
 
         Derived from configuration only — never from what the process observed — so it is
-        the honest denominator for completeness even if capture never ran.
+        the honest denominator for completeness even if capture never ran. Excludes the
+        closing auction (see :meth:`auction_seconds`).
         """
         return sum(
             _seconds_between(start, end) for start, end in self.scheduled_intervals()
@@ -235,12 +330,20 @@ def _overlap_seconds(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
 
 
 class SessionRegistry:
-    """Maps captured artifacts onto market sessions.
+    """Maps captured artifacts — and their individual legs — onto market sessions.
 
-    An *artifact* is one logical dataset — ``NIFTY``, ``STOCKS``, and (later) the
-    consolidated index-F&O dataset. Artifacts reference a session by name instead of
-    carrying duplicated trading times, so several artifacts sharing a session share one
-    piece of configuration (§4).
+    An *artifact* is one logical dataset written as one physical frame stream (``NIFTY``,
+    ``STOCKS``, ``INDICES_FnO``). Artifacts reference a session by name instead of carrying
+    duplicated trading times, so several artifacts sharing a session share one piece of
+    configuration (§4).
+
+    A *contributor* is one **leg inside** an artifact: ``STOCKS`` carries both cash spot and
+    stock futures, whose sessions genuinely differ (15:15 vs 15:40). An artifact that
+    contains a derivative leg must keep the *widest* session, because its frame stream is
+    still owed at 15:39 — but freshness has to be judged per leg, or the cash leg going
+    quiet at 15:15 would mark the whole artifact stale and suppress live futures data.
+    Contributors are therefore kept in a separate map: they take part in freshness
+    decisions, never in the artifact-level scheduled/owed grid.
     """
 
     def __init__(
@@ -249,22 +352,32 @@ class SessionRegistry:
         sessions: dict[str, MarketSession],
         artifact_sessions: dict[str, str] | None = None,
         default_session: str = SESSION_EQUITY_DERIV,
+        contributor_sessions: dict[str, str] | None = None,
     ) -> None:
         if default_session not in sessions:
             raise ValueError(f"default session {default_session!r} is not configured")
         self.calendar = calendar
         self.sessions = dict(sessions)
         self._artifact_sessions = dict(artifact_sessions or {})
+        self._contributor_sessions = dict(contributor_sessions or {})
         self.default_session = default_session
 
     def session_for(self, artifact: str) -> MarketSession:
-        name = self._artifact_sessions.get(artifact, self.default_session)
+        name = self._artifact_sessions.get(artifact) or self._contributor_sessions.get(
+            artifact, self.default_session
+        )
         return self.sessions.get(name, self.sessions[self.default_session])
 
     def assign(self, artifact: str, session_name: str) -> None:
         if session_name not in self.sessions:
             raise ValueError(f"unknown session {session_name!r}")
         self._artifact_sessions[artifact] = session_name
+
+    def assign_contributor(self, contributor: str, session_name: str) -> None:
+        """Bind one leg of an artifact to a session, for freshness purposes only."""
+        if session_name not in self.sessions:
+            raise ValueError(f"unknown session {session_name!r}")
+        self._contributor_sessions[contributor] = session_name
 
     # -- per-artifact questions -------------------------------------------- #
 
@@ -287,6 +400,10 @@ class SessionRegistry:
             self.calendar.local_dt(now_ms)
         )
 
+    def is_auction(self, artifact: str, now_ms: int) -> bool:
+        """True when this artifact/leg is in its closing call auction right now."""
+        return self.phase(artifact, now_ms) == PHASE_AUCTION
+
     def any_capture_expected(self, now_ms: int) -> bool:
         """True when at least one artifact is scheduled to receive data right now."""
         return any(
@@ -307,6 +424,10 @@ class SessionRegistry:
     def artifacts(self) -> tuple[str, ...]:
         return tuple(self._artifact_sessions)
 
+    def contributors(self) -> tuple[str, ...]:
+        """Named legs inside artifacts, which are judged for freshness on their own."""
+        return tuple(self._contributor_sessions)
+
     def scheduled_seconds(self, artifact: str) -> int:
         return self.session_for(artifact).scheduled_seconds()
 
@@ -324,13 +445,23 @@ class SessionRegistry:
         """Absolute owed windows for ``artifact`` on ``trading_date`` (a ``date``)."""
         return self.session_for(artifact).scheduled_windows_on(self.calendar, trading_date)
 
+    def auction_windows_on(self, artifact: str, trading_date) -> tuple[tuple[int, int], ...]:
+        """Absolute closing-auction windows for ``artifact`` on ``trading_date``."""
+        return self.session_for(artifact).auction_windows_on(self.calendar, trading_date)
 
-def build_session_registry(settings, artifacts: dict[str, str] | None = None) -> SessionRegistry:
-    """Assemble the registry from settings, preserving legacy single-window behaviour.
 
-    Each session time falls back to the legacy ``MARKET_OPEN``/``MARKET_CLOSE`` pair when
-    its session-specific setting is unset, so an existing deployment keeps its exact
-    current schedule until the new session block is added to the environment.
+def build_session_registry(
+    settings,
+    artifacts: dict[str, str] | None = None,
+    contributors: dict[str, str] | None = None,
+) -> SessionRegistry:
+    """Assemble the registry from settings.
+
+    Each session's timings come from its own ``EQUITY_DERIV_*`` / ``EQUITY_CASH_*`` block.
+    ``MARKET_OPEN``/``MARKET_CLOSE`` remain only as the broad process/UI envelope and as a
+    last-resort fallback for a segment whose own setting has been explicitly blanked — they
+    must not be the normal source of a segment's schedule, because that is how the cash
+    session silently inherited the derivatives close.
     """
     calendar = TradingCalendar(
         holidays=set(getattr(settings, "market_holidays", [])),
@@ -343,6 +474,8 @@ def build_session_registry(settings, artifacts: dict[str, str] | None = None) ->
     def _session(name: str, prefix: str) -> MarketSession:
         pre_start = getattr(settings, f"{prefix}_preopen_start", None)
         pre_end = getattr(settings, f"{prefix}_preopen_end", None)
+        cas_start = getattr(settings, f"{prefix}_cas_start", None)
+        cas_end = getattr(settings, f"{prefix}_cas_end", None)
         return MarketSession(
             name=name,
             open_at=parse_hhmm(getattr(settings, f"{prefix}_open", None) or settings.market_open),
@@ -354,16 +487,26 @@ def build_session_registry(settings, artifacts: dict[str, str] | None = None) ->
             capture_pre_open=bool(getattr(settings, f"{prefix}_capture_preopen", False)),
             enabled=bool(getattr(settings, f"{prefix}_enabled", True)),
             stale_arm_delay_s=arm_delay,
+            cas_start=parse_hhmm(cas_start) if cas_start else None,
+            cas_end=parse_hhmm(cas_end) if cas_end else None,
+            capture_auction=bool(getattr(settings, f"{prefix}_capture_auction", True)),
         )
 
     sessions = {
         SESSION_EQUITY_DERIV: _session(SESSION_EQUITY_DERIV, "equity_deriv"),
         SESSION_EQUITY_CASH: _session(SESSION_EQUITY_CASH, "equity_cash"),
     }
-    return SessionRegistry(calendar, sessions, artifacts, SESSION_EQUITY_DERIV)
+    return SessionRegistry(
+        calendar,
+        sessions,
+        artifacts,
+        SESSION_EQUITY_DERIV,
+        contributor_sessions=contributors,
+    )
 
 
 __all__ = [
+    "PHASE_AUCTION",
     "PHASE_BOOTSTRAP",
     "PHASE_CLOSED",
     "PHASE_INACTIVE",

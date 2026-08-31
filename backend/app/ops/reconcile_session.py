@@ -69,24 +69,55 @@ def reconcile_artifact(
 
 def reconcile_session(
     artifact_paths: Mapping[str, str | os.PathLike[str]],
-    scheduled_windows: list[tuple[int, int]] | tuple[tuple[int, int], ...],
+    scheduled_windows: (
+        list[tuple[int, int]]
+        | tuple[tuple[int, int], ...]
+        | Mapping[str, tuple[tuple[int, int], ...]]
+    ),
     *,
     trading_date: str,
     stale_windows: list[tuple[int, int]] | None = None,
+    auction_windows: Mapping[str, tuple[tuple[int, int], ...]] | None = None,
 ) -> dict:
     """Reconcile every artifact of a trading date; returns a JSON-friendly record.
+
+    ``scheduled_windows`` may be one shared grid, or a **mapping of artifact name to its
+    own grid**. The mapping form is what keeps the accounting honest now that the segments
+    close at different times: measuring an F&O cash underlying against the derivatives grid
+    would report a normal 15:15-15:40 cash close as 25 minutes of missing data, and
+    measuring a derivative artifact against the cash grid would excuse a real 15:30-15:40
+    futures hole. An artifact with no entry falls back to the default grid under ``""``.
+
+    ``auction_windows`` records closing-auction time per artifact for transparency. Auction
+    seconds are deliberately **not** part of ``scheduled_seconds``: a call auction has no
+    per-second matching obligation, so it can neither be "complete" nor "missing".
 
     The session-level figure is the **worst** artifact, not the average: a day in which one
     dataset lost an hour is not 12% complete-per-artifact healthy, and pooling would dilute
     it by the number of healthy artifacts (with eight artifacts a wholly dead one reads as
     12.5% loss rather than 100%).
     """
+    per_artifact: Mapping[str, tuple[tuple[int, int], ...]] | None = None
+    default_windows: list[tuple[int, int]] | tuple[tuple[int, int], ...]
+    if isinstance(scheduled_windows, Mapping):
+        per_artifact = scheduled_windows
+        default_windows = scheduled_windows.get("", ())
+    else:
+        default_windows = scheduled_windows
+
+    def _windows_for(name: str) -> list[tuple[int, int]] | tuple[tuple[int, int], ...]:
+        if per_artifact is None:
+            return default_windows
+        return per_artifact.get(name, default_windows)
+
     artifacts: dict[str, dict] = {}
     worst_loss = 0.0
     worst_name: str | None = None
     for name, path in artifact_paths.items():
-        result = reconcile_artifact(path, scheduled_windows, stale_windows=stale_windows)
+        windows = _windows_for(name)
+        result = reconcile_artifact(path, windows, stale_windows=stale_windows)
         by_cause = result.by_cause()
+        auction = tuple((auction_windows or {}).get(name, ()))
         artifacts[name] = {
             "scheduled_seconds": result.scheduled_seconds,
             "captured_seconds": result.captured_seconds,
@@ -98,6 +129,11 @@ def reconcile_session(
             "stale_attributed_seconds": by_cause.get(CAUSE_STALE, 0),
             "segments": [p.name for p in segment_paths(path)],
             "reconciles": result.reconciles,
+            # The session each grid came from, so a completeness record can be audited
+            # without re-deriving which schedule was applied to which artifact.
+            "scheduled_windows": [list(w) for w in windows],
+            "auction_seconds": sum(max(0, (end - start) // 1000) for start, end in auction),
+            "auction_frames": _frames_inside(path, auction) if auction else 0,
         }
         if result.data_loss_pct >= worst_loss:
             worst_loss = result.data_loss_pct
@@ -121,6 +157,18 @@ def reconcile_session(
             len(artifacts),
         )
     return record
+
+
+def _frames_inside(
+    day_path: str | os.PathLike[str], windows: tuple[tuple[int, int], ...]
+) -> int:
+    """Frames persisted inside ``windows`` — auction coverage, reported not scored."""
+    if not windows:
+        return 0
+    stamps = artifact_timestamps(day_path)
+    return sum(
+        1 for ts in stamps if any(start <= ts < end for start, end in windows)
+    )
 
 
 __all__ = [

@@ -151,6 +151,8 @@ class CaptureEngine:
         reconnect_limit_per_hour: int = 6,
         recovery_armed=None,
         capture_expected=None,
+        stale_armed_for=None,
+        contributor_tokens=None,
         token_refresher=None,
         escalation_recorder=None,
         escalations_before: int = 0,
@@ -175,6 +177,10 @@ class CaptureEngine:
         # Set when the tick-consumer task dies, so the next grid tick can fail loudly
         # instead of leaving the freshness monitor to infer it ~60 s later.
         self.consumer_error: BaseException | None = None
+        self._bus = None
+        self._bus_session_provider = None
+        self._bus_session_interval_ms = 60_000
+        self._bus_session_last_ms: int | None = None
         self.captures = 0
         # Frames already on disk when this process started (set by resume_from_disk).
         self.resumed_frames = 0
@@ -252,6 +258,12 @@ class CaptureEngine:
         # auction can be captured while still never justifying a restart. Seconds that are
         # not scheduled are not written and never counted as loss.
         self._capture_expected = capture_expected or _always_armed
+        # Whether CONTINUOUS-session staleness applies to one artifact or leg right now.
+        # Narrower and *per name* rather than feed-wide: the F&O cash underlyings leave
+        # continuous matching at 15:15 and hold a closing auction, while the futures legs in
+        # the same physical frame keep trading to 15:40. Without this, the quiet cash leg
+        # would report the whole artifact as a feed fault for the last 25 minutes.
+        self._stale_armed_for = stale_armed_for
         # Grid seconds the loop reached while no frame was scheduled (pre-open, after the
         # close, or a disabled session). Reported for transparency, never as data loss.
         self.unscheduled_seconds = 0
@@ -268,6 +280,11 @@ class CaptureEngine:
         self._artifact_names: dict[int, str] = {}
         self.artifact_last_update_ms: dict[str, int] = {}
         self._reported_stale_artifacts: tuple[str, ...] = ()
+        # token -> contributor (leg) name, e.g. every stock cash token -> "STOCKS:cash".
+        # A leg is a slice of an artifact with its own trading session; tracking it lets
+        # freshness be judged per session without splitting the physical frame.
+        self._contributor_tokens: dict[int, str] = dict(contributor_tokens or {})
+        self.contributor_last_update_ms: dict[str, int] = {}
         self._build_routing()
 
     def _build_routing(self) -> None:
@@ -307,12 +324,14 @@ class CaptureEngine:
             # freshness monitor so the "never ticked" gate holds for any caller, not only
             # the live consumer that happens to update both.
             self._ticks_ever_applied = True
+        accepted: list[dict] = []
         for tick in ticks:
             token = tick.get("instrument_token")
             owners = self._owners.get(token)
             if not owners:
                 self.unmatched += 1
                 continue
+            tick_applied = False
             for owner in owners:
                 try:
                     owner.apply_tick(tick)
@@ -320,11 +339,64 @@ class CaptureEngine:
                     self._record_malformed_tick(token, tick, exc, stamp)
                     continue
                 applied += 1
+                tick_applied = True
                 # Only a *successful* apply counts as freshness for the artifact.
                 name = self._artifact_names.get(id(owner))
                 if name is not None:
                     self.artifact_last_update_ms[name] = stamp
+            if tick_applied:
+                # Leg-level freshness, so a cash leg that legitimately stops at 15:15 is
+                # distinguishable from a futures leg that stops at 15:31 (a real fault).
+                leg = (
+                    self._contributor_tokens.get(token) if token is not None else None
+                )
+                if leg is not None:
+                    self.contributor_last_update_ms[leg] = stamp
+                accepted.append(tick)
+        self._publish_to_bus(accepted)
         return applied
+
+    def _publish_to_bus(self, accepted: list[dict]) -> None:
+        """Mirror accepted ticks onto the market-data bus. Never affects capture.
+
+        Runs after the batch has been applied, so the tables and the BIN writers are
+        already updated before a single byte goes to the bus. Only ticks that passed the
+        ingestion contract are published, and the publisher itself is total — any fault is
+        counted as bus telemetry and cannot reach this caller, which is the tick consumer.
+        """
+        if self._bus is None or not accepted:
+            return
+        try:
+            self._bus.publish_ticks(accepted)
+        except BaseException:  # noqa: BLE001 - a bus fault must never stop ingestion
+            logger.debug("bus publication raised; capture continues", exc_info=True)
+
+    def set_bus(self, publisher, *, session_provider=None, interval_s: float = 60.0) -> None:
+        """Attach a bus publisher. Absent one, capture runs exactly as before.
+
+        ``session_provider`` returns ``(trading_date, instruments)`` and is called on the
+        grid thread at ``interval_s`` so a subscriber that joins mid-session can obtain the
+        token map without TickVault restarting.
+        """
+        self._bus = publisher
+        self._bus_session_provider = session_provider
+        self._bus_session_interval_ms = max(1_000, int(interval_s * 1000))
+
+    def _maybe_republish_bus_session(self, now: int) -> None:
+        """Republish the token map on a timer. Total: never raises into the grid loop."""
+        if self._bus is None or self._bus_session_provider is None:
+            return
+        if (
+            self._bus_session_last_ms is not None
+            and now - self._bus_session_last_ms < self._bus_session_interval_ms
+        ):
+            return
+        self._bus_session_last_ms = now
+        try:
+            trading_date, instruments = self._bus_session_provider()
+            self._bus.publish_session(trading_date=trading_date, instruments=instruments)
+        except BaseException:  # noqa: BLE001 - metadata is never worth a capture fault
+            logger.debug("bus session republish failed", exc_info=True)
 
     def _record_malformed_tick(
         self, token: object, tick: dict, exc: BaseException, now: int
@@ -414,10 +486,49 @@ class CaptureEngine:
             ages[name] = None if last is None else max(0, now - last)
         return ages
 
+    def contributor_ages_ms(self, now: int) -> dict[str, int | None]:
+        """Age of the last relevant update per *leg* inside an artifact.
+
+        Exposed for observability of the 15:15-15:40 window, where a cash leg and a
+        derivative leg in the same frame are legitimately in different phases.
+        """
+        ages: dict[str, int | None] = {}
+        for name in sorted(set(self._contributor_tokens.values())):
+            last = self.contributor_last_update_ms.get(name)
+            ages[name] = None if last is None else max(0, now - last)
+        return ages
+
+    def stale_armed_map(self, now: int) -> dict[str, bool]:
+        """Per artifact and leg: does CONTINUOUS-session staleness apply right now?
+
+        Everything is armed when no resolver was supplied, which keeps the single-session
+        behaviour for callers that construct the engine directly.
+        """
+        names = (*self.artifact_names(), *sorted(set(self._contributor_tokens.values())))
+        if self._stale_armed_for is None:
+            return dict.fromkeys(names, True)
+        armed: dict[str, bool] = {}
+        for name in names:
+            try:
+                armed[name] = bool(self._stale_armed_for(name, now))
+            except Exception:  # noqa: BLE001 - a schedule failure must not stop capture
+                logger.debug("stale-arming lookup failed for %s", name, exc_info=True)
+                armed[name] = True
+        return armed
+
     def stale_artifact_names(self, now: int) -> tuple[str, ...]:
-        """Artifacts not receiving relevant updates while the transport is alive."""
+        """Artifacts and legs not receiving relevant updates *while their session is open*.
+
+        A leg outside continuous matching (the cash closing auction, or after it) is not
+        reported: an unchanged auction price is the auction working, not a dead feed.
+        """
+        armed = self.stale_armed_map(now)
+        ages: dict[str, int | None] = {
+            **self.artifact_ages_ms(now),
+            **self.contributor_ages_ms(now),
+        }
         return feed_health.stale_artifacts(
-            self.artifact_ages_ms(now), self.freshness.stale_after_ms
+            ages, self.freshness.stale_after_ms, armed=armed
         )
 
     def transport_age_ms(self, now: int) -> int | None:
@@ -431,9 +542,13 @@ class CaptureEngine:
             transport_age_ms=self.transport_age_ms(now),
             content_age_ms=self.freshness.content_age_ms(now),
             stale_after_ms=self.freshness.stale_after_ms,
-            artifact_ages_ms=self.artifact_ages_ms(now),
+            artifact_ages_ms={
+                **self.artifact_ages_ms(now),
+                **self.contributor_ages_ms(now),
+            },
             recovery_pending=self._recovery_pending(now),
             recovery_abandoned=self.recovery_abandoned,
+            artifact_stale_armed=self.stale_armed_map(now),
         )
 
     def _recovery_pending(self, now: int) -> bool:
@@ -1094,6 +1209,7 @@ class CaptureEngine:
                 self.check_pipeline_alive(consumer, bridge)
                 # Health check: escalate to a clean process restart if the feed is dead.
                 self.observe_feed_health(self._clock())
+                self._maybe_republish_bus_session(self._clock())
         finally:
             # Drain + durably persist everything queued before returning (no loss).
             consumer.cancel()

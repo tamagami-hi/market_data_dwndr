@@ -27,7 +27,7 @@ from app.capture.engine import (
 )
 from app.capture.monitor import CaptureMonitor
 from app.capture.subscription import plan_subscriptions
-from app.chain.assembler import build_option_chain
+from app.chain.assembler import ROLE_SPOT, ROLE_VIX, build_option_chain
 from app.chain.config import VIX_SYMBOL, get_index_config
 from app.chain.table import IndexTable
 from app.index_fno.board import discover_index_fno_board
@@ -36,7 +36,11 @@ from app.kite.errors import KiteAuthenticationError, is_authentication_error
 from app.kite.instruments import InstrumentStore
 from app.kite.ticker import CONNECT_TIMEOUT_S, TickerBridge, TickerConnectFailed
 from app.ops.calendar import TradingCalendar
-from app.ops.sessions import SESSION_EQUITY_DERIV, build_session_registry
+from app.ops.sessions import (
+    SESSION_EQUITY_CASH,
+    SESSION_EQUITY_DERIV,
+    build_session_registry,
+)
 from app.ops.stats_store import load_capture_snapshot, load_escalations, record_escalation
 from app.session import now_ms
 from app.stocks.board import discover_fno_board
@@ -59,6 +63,7 @@ class CaptureContext:
     broadcaster: object | None = None
     skipped_indices: list[str] = field(default_factory=list)
     subscription: object | None = None  # SubscriptionPlan
+    bus: object | None = None  # BusPublisher | NullBusPublisher
 
 
 def _default_instrument_store(settings, access_token: str) -> InstrumentStore:
@@ -185,24 +190,72 @@ def bootstrap_capture(
 
     # --- restart-first recovery wiring --------------------------------------------- #
     # Scheduling now comes from the artifact's market session rather than a single global
-    # window (app/ops/sessions.py). Two distinct gates fall out of it:
+    # window (app/ops/sessions.py). Three distinct gates fall out of it:
     #
     #   capture_expected -- is a frame owed at all? Outside the session, or with the
     #                       session disabled, an absent frame is not data loss.
-    #   stale_armed      -- is absent data a FAULT? Narrower still: the pre-open auction
-    #                       is legitimately silent, and the first minutes after the open
-    #                       need a grace period. Without this the process would exit every
-    #                       minute of every pre-open.
+    #   stale_armed      -- is absent data a FAULT? Narrower still: the pre-open call
+    #                       auction is legitimately silent, the CLOSING call auction is
+    #                       too, and the first minutes after open need a grace period.
+    #                       Without this the process would exit every minute of pre-open.
+    #   stale_armed_for  -- the same question per artifact AND per leg. Needed because a
+    #                       single physical frame spans two sessions (below).
     #
-    # Every artifact shares the equity-derivatives session today; the registry exists so
-    # a future domain (index F&O) or a changed exchange timing is a configuration edit.
+    # ARTIFACT session = the WIDEST session among the legs the artifact contains. Every
+    # artifact TickVault writes is a combined frame: the index files hold spot + VIX +
+    # option strikes, STOCKS holds cash spot + three futures legs, INDICES_FnO is wholly
+    # derivative. All of them carry a derivative leg that trades to 15:40, so all of them
+    # are owed a frame until 15:40 and must be reconciled against the derivatives grid —
+    # narrowing STOCKS to the cash session would silently excuse a real 15:30-15:40
+    # futures hole.
     artifact_sessions = {name: SESSION_EQUITY_DERIV for name in index_tables}
     if stock_matrix is not None:
         artifact_sessions["STOCKS"] = SESSION_EQUITY_DERIV
     if index_fno_matrix is not None:
         artifact_sessions["INDICES_FnO"] = SESSION_EQUITY_DERIV
-    session_registry = build_session_registry(settings, artifact_sessions)
+
+    # LEG (contributor) sessions = the honest per-slice schedule, used for freshness only,
+    # never for the owed grid. This is what stops the cash spot leg going quiet at 15:15
+    # from marking the whole STOCKS artifact stale and suppressing live futures data.
+    spot_session = (
+        SESSION_EQUITY_CASH
+        if getattr(settings, "index_spot_session", "equity_cash") == SESSION_EQUITY_CASH
+        else SESSION_EQUITY_DERIV
+    )
+    contributor_sessions: dict[str, str] = {}
+    contributor_tokens: dict[int, str] = {}
+    for name, table in index_tables.items():
+        for token, role in table.chain.token_map.items():
+            if role.kind == ROLE_SPOT:
+                leg = f"{name}:spot"
+                contributor_sessions[leg] = spot_session
+            elif role.kind == ROLE_VIX:
+                # India VIX is a volatility INDEX derived from NIFTY option prices, not a
+                # traded contract. It is fanned out to every index table, so it gets one
+                # shared leg name rather than one per index.
+                leg = "INDIA_VIX"
+                contributor_sessions[leg] = spot_session
+            else:
+                leg = f"{name}:options"
+                contributor_sessions[leg] = SESSION_EQUITY_DERIV
+            contributor_tokens[token] = leg
+    if stock_matrix is not None:
+        for token, stock_role in stock_matrix.token_map.items():
+            # LEG_SLOTS = ("spot", "fut_current", "fut_mid", "fut_far"): the spot leg is
+            # the F&O-eligible CASH underlying (continuous to 15:15, then CAS to 15:35);
+            # the three futures legs stay in the derivatives session to 15:40.
+            is_cash = stock_role.leg == "spot"
+            leg = "STOCKS:cash" if is_cash else "STOCKS:futures"
+            contributor_sessions[leg] = (
+                SESSION_EQUITY_CASH if is_cash else SESSION_EQUITY_DERIV
+            )
+            contributor_tokens[token] = leg
+
+    session_registry = build_session_registry(
+        settings, artifact_sessions, contributor_sessions
+    )
     deriv = session_registry.session_for(next(iter(artifact_sessions), "STOCKS"))
+    cash = session_registry.sessions[SESSION_EQUITY_CASH]
     logger.info(
         "session schedule: %s %s-%s (pre-open %s, %d scheduled seconds/day)",
         deriv.name,
@@ -211,6 +264,27 @@ def bootstrap_capture(
         "captured" if deriv.capture_pre_open else "not captured",
         deriv.scheduled_seconds(),
     )
+    logger.info(
+        "session schedule: %s %s-%s continuous (%d scheduled seconds/day)%s",
+        cash.name,
+        cash.open_at.strftime("%H:%M"),
+        cash.close_at.strftime("%H:%M"),
+        cash.scheduled_seconds(),
+        (
+            f" + closing auction {cash.cas_start:%H:%M}-{cash.cas_end:%H:%M} "
+            f"({cash.auction_seconds()}s, captured but NOT in the continuous denominator)"
+            if cash.has_auction
+            else " (no closing auction configured)"
+        ),
+    )
+    if contributor_sessions:
+        logger.info(
+            "leg sessions: %s",
+            ", ".join(
+                f"{leg}->{contributor_sessions[leg]}"
+                for leg in sorted(contributor_sessions)
+            ),
+        )
 
     # The frame baseline comes from the SESSION (when frames are owed), not from the
     # capture window (when the process runs). Those differ by design — the process starts
@@ -283,6 +357,8 @@ def bootstrap_capture(
         reconnect_limit_per_hour=getattr(settings, "capture_reconnect_max_per_hour", 6),
         recovery_armed=session_registry.any_stale_armed,
         capture_expected=session_registry.any_capture_expected,
+        stale_armed_for=session_registry.is_stale_armed,
+        contributor_tokens=contributor_tokens,
         token_refresher=token_refresher,
         escalation_recorder=_record_escalation,
         escalations_before=escalations_before,
@@ -392,6 +468,28 @@ def bootstrap_capture(
         token_provider=token_provider,
         clock=clock,
     )
+    # The market-data bus is attached last and deliberately after every capture concern is
+    # already constructed, so a bus that cannot connect changes nothing about the session.
+    from app.bus.publisher import build_publisher
+    from app.bus.session import build_instruments
+
+    bus = build_publisher(settings)
+
+    def _bus_session():
+        return trading_date, build_instruments(index_tables, stock_matrix, index_fno_matrix)
+
+    engine.set_bus(
+        bus,
+        session_provider=_bus_session,
+        interval_s=float(
+            getattr(settings, "market_data_bus_session_interval_seconds", 60.0)
+        ),
+    )
+    monitor.bus = bus
+    if getattr(bus, "enabled", True):
+        date, instruments = _bus_session()
+        bus.publish_session(trading_date=date, instruments=instruments)
+
     monitor.bridge = bridge
     # The socket-replacement rung, tried before escalating to a process restart.
     engine.set_reconnect_fn(bridge.reconnect)
@@ -407,6 +505,7 @@ def bootstrap_capture(
         broadcaster=broadcaster,
         skipped_indices=skipped,
         subscription=subscription,
+        bus=bus,
     )
 
 

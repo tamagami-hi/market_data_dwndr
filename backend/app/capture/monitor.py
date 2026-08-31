@@ -20,6 +20,7 @@ from pathlib import Path
 
 from app.capture.writer_thread import FileWriterThread
 from app.chain.table import IndexTable
+from app.ops.sessions import PHASE_INACTIVE
 from app.session import now_ms
 from app.stocks.matrix import StockMatrix
 from app.ws import protocol
@@ -38,7 +39,7 @@ FPS_MIN_SPAN_MS = 900
 # per-second broadcast and every dashboard poll don't each pay for it.
 DISK_BYTES_TTL_MS = 30_000
 
-# Full-session frame baseline (09:00-15:30 @ 1 Hz). Overridable via Settings.
+# Full-session frame baseline. Derived from the configured session, never hardcoded.
 DEFAULT_EXPECTED_FRAMES = 0  # no configured session window == no defensible baseline
 
 
@@ -150,6 +151,7 @@ class CaptureMonitor:
         self.stock_writer = stock_writer
         self.engine = engine
         self.bridge = bridge
+        self.bus: object | None = None
         self.market_data_path = market_data_path
         # Session schedule (app/ops/sessions.py). When present it replaces the
         # process-observed grid as the loss denominator: expected seconds must not depend
@@ -618,10 +620,39 @@ class CaptureMonitor:
         )
         market_phase = None
         capture_expected = None
+        session_phases: dict[str, dict] | None = None
         if self.session_registry is not None:
             artifact = next(iter(self.index_tables), "STOCKS")
             market_phase = self.session_registry.phase(artifact, now)
             capture_expected = self.session_registry.is_capture_expected(artifact, now)
+            # Per-SEGMENT phase, because one artifact can no longer stand for the whole
+            # system: from 15:15 the cash segment is in its closing auction while the
+            # derivatives segment is still in continuous matching until 15:40. Reporting
+            # only the derivatives phase made the cash close invisible.
+            session_phases = {}
+            for name, session in sorted(self.session_registry.sessions.items()):
+                try:
+                    local = self.session_registry.calendar.local_dt(now)
+                    session_phases[name] = {
+                        "phase": self.session_registry.calendar.is_trading_day(now)
+                        and session.phase_at(local)
+                        or PHASE_INACTIVE,
+                        "capture_expected": self.session_registry.calendar.is_trading_day(now)
+                        and session.is_capture_expected_at(local),
+                        "stale_armed": self.session_registry.calendar.is_trading_day(now)
+                        and session.is_stale_armed_at(local),
+                        "open": session.open_at.strftime("%H:%M"),
+                        "close": session.close_at.strftime("%H:%M"),
+                        "auction": (
+                            f"{session.cas_start:%H:%M}-{session.cas_end:%H:%M}"
+                            if session.has_auction
+                            else None
+                        ),
+                        "scheduled_seconds": session.scheduled_seconds(),
+                        "auction_seconds": session.auction_seconds(),
+                    }
+                except Exception:  # noqa: BLE001 - telemetry must never break capture
+                    logger.debug("session phase lookup failed for %s", name, exc_info=True)
         # Transport-level observability (§21): enough to tell a transport problem from
         # market inactivity, and enough headroom detail to see a capacity wall coming.
         transport = {
@@ -634,6 +665,12 @@ class CaptureMonitor:
         }
         if self.subscription is not None:
             transport.update(self.subscription.as_telemetry())
+        # Bus telemetry rides alongside transport but is deliberately NOT part of any
+        # capture-health or loss figure: a bus outage is a distribution problem, and
+        # classifying it as capture loss would misreport a healthy archive as damaged.
+        bus_status = getattr(self.bus, "status", None)
+        if callable(bus_status):
+            transport["market_data_bus"] = bus_status()
         return {
             "tokens": self._unique_token_count(),
             "fps": round(self._fps(), 3),
@@ -710,6 +747,15 @@ class CaptureMonitor:
             # --- market phase (independent of feed health) ---
             "market_phase": market_phase,
             "capture_expected": capture_expected,
+            # Per-segment phase/schedule, so the 15:15-15:40 window is legible: the cash
+            # segment reports AUCTION then CLOSED while the derivatives segment stays OPEN.
+            "sessions": session_phases,
+            # Per-leg update ages: proves a quiet cash leg is not a stale futures leg.
+            "leg_ages_ms": (
+                self.engine.contributor_ages_ms(now)
+                if hasattr(self.engine, "contributor_ages_ms")
+                else None
+            ),
             # --- transport / subscription capacity ---
             "transport": transport,
             "batches_received": batches_received,

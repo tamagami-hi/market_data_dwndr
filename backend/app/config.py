@@ -153,8 +153,24 @@ class Settings(BaseSettings):
         le=1_800,
         description="Seconds between shared-token checks inside the auth window",
     )
-    market_open: str = Field(default="09:00", description="Capture start (IST, HH:MM)")
-    market_close: str = Field(default="15:30", description="Session close (IST, HH:MM)")
+    market_open: str = Field(
+        default="09:15",
+        description=(
+            "Broad market/UI envelope open (IST, HH:MM). This is the DISPLAY and "
+            "process-envelope boundary only — per-segment schedules live in the "
+            "EQUITY_DERIV_* / EQUITY_CASH_* blocks and must not be inferred from this. "
+            "MARKET_OPEN."
+        ),
+    )
+    market_close: str = Field(
+        default="15:40",
+        description=(
+            "Broad market/UI envelope close (IST, HH:MM). 15:40 is the equity-derivatives "
+            "close under the 2026 structure; the F&O-eligible cash underlyings stop "
+            "continuous matching at 15:15 (EQUITY_CASH_CLOSE) and then hold a closing "
+            "auction. MARKET_CLOSE."
+        ),
+    )
     timezone: str = Field(
         default="Asia/Kolkata",
         description="Exchange timezone. Accepts TIMEZONE or MARKET_TIMEZONE.",
@@ -263,24 +279,31 @@ class Settings(BaseSettings):
         ),
     )
     # --- session-oriented timing (see app/ops/sessions.py) --------------------------
-    # Each of these falls back to MARKET_OPEN/MARKET_CLOSE when unset, so an existing
-    # deployment keeps its exact schedule until the session block is added to the env.
+    # Each segment carries its OWN schedule. These deliberately have concrete defaults
+    # rather than falling through to MARKET_OPEN/MARKET_CLOSE: under the 2026 exchange
+    # structure the derivatives and cash sessions genuinely end at different times, and an
+    # unset cash close silently inheriting the derivatives close is exactly the bug this
+    # block exists to prevent. MARKET_OPEN/MARKET_CLOSE remain the broad envelope only.
     # Several artifacts sharing a session share ONE piece of configuration: there is
     # deliberately no NIFTY_CLOSE / STOCK_FNO_CLOSE style per-artifact setting.
     equity_deriv_open: str | None = Field(
-        default=None,
+        default="09:15",
         description="Equity-derivatives continuous session start (IST HH:MM). EQUITY_DERIV_OPEN.",
     )
     equity_deriv_close: str | None = Field(
-        default=None,
-        description="Equity-derivatives session close (IST HH:MM). EQUITY_DERIV_CLOSE.",
+        default="15:40",
+        description=(
+            "Equity-derivatives continuous session close (IST HH:MM). 15:40 under the 2026 "
+            "structure — index and stock futures/options keep trading through the cash "
+            "closing auction. EQUITY_DERIV_CLOSE."
+        ),
     )
     equity_deriv_preopen_start: str | None = Field(
-        default=None,
+        default="09:00",
         description="Equity-derivatives pre-open start (IST HH:MM). EQUITY_DERIV_PREOPEN_START.",
     )
     equity_deriv_preopen_end: str | None = Field(
-        default=None,
+        default="09:15",
         description="Equity-derivatives pre-open end (IST HH:MM). EQUITY_DERIV_PREOPEN_END.",
     )
     equity_deriv_capture_preopen: bool = Field(
@@ -300,19 +323,48 @@ class Settings(BaseSettings):
         ),
     )
     equity_cash_open: str | None = Field(
-        default=None,
-        description="Equity-cash session start (IST HH:MM). EQUITY_CASH_OPEN.",
+        default="09:15",
+        description="Equity-cash continuous session start (IST HH:MM). EQUITY_CASH_OPEN.",
     )
     equity_cash_close: str | None = Field(
-        default=None,
-        description="Equity-cash session close (IST HH:MM). EQUITY_CASH_CLOSE.",
+        default="15:15",
+        description=(
+            "Equity-cash CONTINUOUS session close (IST HH:MM). 15:15 under the 2026 "
+            "structure. Do not raise this to 15:40 to silence auction alarms — that hides "
+            "the exchange structure; the auction is modelled by EQUITY_CASH_CAS_START/END. "
+            "EQUITY_CASH_CLOSE."
+        ),
+    )
+    equity_cash_cas_start: str | None = Field(
+        default="15:15",
+        description=(
+            "Equity-cash closing auction start (IST HH:MM). Begins at the continuous close. "
+            "During the auction, unchanged values are NOT treated as a feed outage and the "
+            "seconds are excluded from the continuous-completeness denominator. "
+            "EQUITY_CASH_CAS_START."
+        ),
+    )
+    equity_cash_cas_end: str | None = Field(
+        default="15:35",
+        description=(
+            "Equity-cash closing auction end (IST HH:MM) — closing-price discovery complete. "
+            "EQUITY_CASH_CAS_END."
+        ),
+    )
+    equity_cash_capture_auction: bool = Field(
+        default=True,
+        description=(
+            "Persist frames during the cash closing auction. Closing-price discovery is real "
+            "market data, so this defaults on; the seconds are still kept out of the "
+            "continuous loss denominator. EQUITY_CASH_CAPTURE_AUCTION."
+        ),
     )
     equity_cash_preopen_start: str | None = Field(
-        default=None,
+        default="09:00",
         description="Equity-cash pre-open start (IST HH:MM). EQUITY_CASH_PREOPEN_START.",
     )
     equity_cash_preopen_end: str | None = Field(
-        default=None,
+        default="09:15",
         description="Equity-cash pre-open end (IST HH:MM). EQUITY_CASH_PREOPEN_END.",
     )
     equity_cash_capture_preopen: bool = Field(
@@ -322,6 +374,19 @@ class Settings(BaseSettings):
     equity_cash_enabled: bool = Field(
         default=True,
         description="Explicitly disable equity-cash capture. EQUITY_CASH_ENABLED.",
+    )
+    index_spot_session: str = Field(
+        default="equity_cash",
+        pattern="^(equity_cash|equity_deriv)$",
+        description=(
+            "Which session governs FRESHNESS for the six index spot values and India VIX. "
+            "An index value is a function of its CASH constituents, so equity_cash is the "
+            "structurally consistent default: from 15:15 an unmoving index level is the cash "
+            "closing auction, not a dead feed. This affects stale ALARMS only — index spot is "
+            "a leg inside the index artifacts and never changes any completeness denominator. "
+            "Set equity_deriv if a live session proves index values keep updating "
+            "continuously to 15:40. INDEX_SPOT_SESSION."
+        ),
     )
     broker_subscription_limit: int = Field(
         default=3_000,
@@ -357,16 +422,31 @@ class Settings(BaseSettings):
             "When the capture process activates: connects, subscribes, and starts the 1 Hz "
             "grid. This is deliberately EARLIER than the market session open so the socket "
             "and subscriptions are established before the first print. It is NOT a market "
-            "time and nothing is owed before the session opens. Defaults to MARKET_OPEN. "
-            "CAPTURE_START_TIME."
+            "time and nothing is owed before the session opens: with 09:10 deployed, "
+            "09:10-09:15 is reported as unscheduled, never as data loss. Defaults to "
+            "MARKET_OPEN so one envelope pair still moves the whole schedule (e.g. a "
+            "muhurat session). CAPTURE_START_TIME."
         ),
     )
     capture_end_time: str | None = Field(
         default=None,
         description=(
-            "When the capture process deactivates. Defaults to MARKET_CLOSE. Set later than "
-            "the session close to keep capturing a post-close tail — those extra seconds are "
-            "reported as unscheduled, never as data loss. CAPTURE_END_TIME."
+            "When the capture process deactivates. Defaults to MARKET_CLOSE (15:40 = the "
+            "equity-derivatives close), so derivative frames stay eligible right through the "
+            "15:30-15:40 window. EOD does NOT run at this instant — see EOD_TAIL_SECONDS. "
+            "CAPTURE_END_TIME."
+        ),
+    )
+    eod_tail_seconds: int = Field(
+        default=120,
+        ge=0,
+        le=3_600,
+        description=(
+            "Deliberate safety tail between CAPTURE_END_TIME and end-of-day "
+            "compression/archive finalization, so the final derivative frames are flushed "
+            "and the writers drained before raw .bin files are compressed and moved. This is "
+            "a DRAIN allowance, NOT an extension of the market session: the derivatives "
+            "close stays 15:40 and tail seconds are never scheduled or owed. EOD_TAIL_SECONDS."
         ),
     )
     indices_fno_enabled: bool = Field(
@@ -380,6 +460,42 @@ class Settings(BaseSettings):
     )
     log_level: str = Field(default="INFO")
 
+    market_data_bus_enabled: bool = Field(
+        default=False,
+        description=(
+            "Publish normalized ticks to MARKET_DATA_BUS. Disabled by default: the bus is "
+            "an additional distribution output, never a capture dependency, so a build "
+            "with it off must behave exactly like the pre-bus build. "
+            "MARKET_DATA_BUS_ENABLED."
+        ),
+    )
+    market_data_bus_ingest_endpoint: str = Field(
+        default="",
+        description=(
+            "ZMQ endpoint of the bus PULL ingest socket, e.g. tcp://market-data-bus:7301. "
+            "Internal network only; never bind or connect this across the public "
+            "Internet. MARKET_DATA_BUS_INGEST_ENDPOINT."
+        ),
+    )
+    market_data_bus_sndhwm: int = Field(
+        default=10_000,
+        ge=1,
+        description=(
+            "Bounded outbound high-water mark for the bus PUSH socket. When it is full the "
+            "message is dropped and counted rather than blocking the tick path. "
+            "MARKET_DATA_BUS_SNDHWM."
+        ),
+    )
+    market_data_bus_session_interval_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "How often the token -> instrument map is republished so a slow-joining "
+            "subscriber can interpret tokens without restarting TickVault. "
+            "MARKET_DATA_BUS_SESSION_INTERVAL_SECONDS."
+        ),
+    )
+
     @field_validator(
         "capture_start_time",
         "capture_end_time",
@@ -389,13 +505,20 @@ class Settings(BaseSettings):
         "equity_deriv_preopen_end",
         "equity_cash_open",
         "equity_cash_close",
+        "equity_cash_cas_start",
+        "equity_cash_cas_end",
         "equity_cash_preopen_start",
         "equity_cash_preopen_end",
         mode="before",
     )
     @classmethod
     def _blank_session_time_is_unset(cls, value: object) -> object:
-        """An empty session time means 'inherit the legacy MARKET_OPEN/MARKET_CLOSE'."""
+        """A blank session time means 'unset'.
+
+        For the segment blocks that now carry concrete defaults, blanking one falls back to
+        the broad MARKET_OPEN/MARKET_CLOSE envelope — a last resort, not the normal path.
+        Blanking a CAS bound disables the auction window entirely.
+        """
         if isinstance(value, str) and not value.strip():
             return None
         return value
@@ -562,7 +685,9 @@ class Settings(BaseSettings):
         MARKET_OPEN moved to 09:15) automatically yields the right baseline instead of
         silently reporting phantom frame loss against a stale 23,400.
 
-        Default 09:00-15:30 at 1 Hz = 6h30m = 23,400 frames — the previous constant.
+        Default 09:15-15:40 at 1 Hz = 6h25m = 23,100 frames — the broad derivatives
+        envelope. Note this is the ENVELOPE baseline; capture bootstrap prefers the
+        per-artifact session grid from ``app/ops/sessions.py`` when one is available.
         ``EXPECTED_FRAMES_PER_SESSION`` still overrides it when set.
         """
         if self.expected_frames_override is not None:

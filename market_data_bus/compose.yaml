@@ -1,0 +1,79 @@
+name: market-data-bus
+
+# Standalone deployable for /srv/dev_stack/MARKET_DATA_BUS. Its lifecycle is deliberately
+# independent of TickVault: it can restart while capture continues, and TickVault can start
+# before it exists (the producer connects with a bounded HWM and drops rather than blocks).
+#
+# The `mdbus` network is EXTERNAL and shared with the independently deployed consumer
+# stacks. No ports are published to the host, so the bus is reachable only by containers
+# attached to that network — there is no public Internet bind and therefore no TLS layer.
+
+x-service-security: &service-security
+  init: true
+  read_only: true
+  user: "${APP_UID:-10001}:${APP_GID:-10001}"
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  market-data-bus:
+    container_name: market-data-bus
+    <<: *service-security
+    restart: unless-stopped
+    stop_grace_period: 10s
+    image: market-data-bus:${APP_VERSION:-local}
+    build:
+      context: .
+      args:
+        APP_UID: ${APP_UID:-10001}
+        APP_GID: ${APP_GID:-10001}
+    env_file:
+      - ./.env
+    networks:
+      - mdbus
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -m
+        - mdbus.healthcheck
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  shadow-consumer:
+    container_name: market-data-bus-shadow
+    <<: *service-security
+    restart: "no"
+    profiles:
+      - shadow
+    image: market-data-bus:${APP_VERSION:-local}
+    depends_on:
+      market-data-bus:
+        condition: service_healthy
+    networks:
+      - mdbus
+    environment:
+      MDBUS_SUB_ENDPOINT: ${MDBUS_SUB_ENDPOINT:-tcp://market-data-bus:7302}
+      MDBUS_SHADOW_SUMMARY: /tmp/shadow-summary.json
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    command:
+      - python
+      - -m
+      - mdbus.shadow_consumer
+
+networks:
+  mdbus:
+    external: true
+    name: mdbus

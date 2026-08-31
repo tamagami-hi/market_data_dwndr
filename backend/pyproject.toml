@@ -17,6 +17,7 @@ dependencies = [
     "zstandard>=0.22",
     "httpx>=0.27",
     "kiteconnect>=5.0",
+    "pyzmq>=26.0",
 ]
 
 [project.scripts]

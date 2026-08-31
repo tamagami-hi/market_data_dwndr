@@ -29,8 +29,19 @@ def test_phases_across_the_day():
     assert cal.phase(_ms(2026, 7, 21, 8, 0)) == PHASE_PRE_OPEN
     assert cal.phase(_ms(2026, 7, 21, 9, 15)) == PHASE_OPEN  # open boundary
     assert cal.phase(_ms(2026, 7, 21, 12, 0)) == PHASE_OPEN
-    assert cal.phase(_ms(2026, 7, 21, 15, 30)) == PHASE_CLOSED  # stop exactly at close
-    assert cal.phase(_ms(2026, 7, 21, 15, 31)) == PHASE_CLOSED
+    # The default window is the broad 09:15-15:40 envelope, so 15:30 is still inside it.
+    # Per-segment phases (cash close 15:15, closing auction to 15:35) live in
+    # app.ops.sessions, not here — this calendar only answers "is this window open".
+    assert cal.phase(_ms(2026, 7, 21, 15, 30)) == PHASE_OPEN
+    assert cal.phase(_ms(2026, 7, 21, 15, 40)) == PHASE_CLOSED  # stop exactly at close
+    assert cal.phase(_ms(2026, 7, 21, 15, 41)) == PHASE_CLOSED
+
+
+def test_phase_window_is_supplied_by_the_caller():
+    """The calendar has no opinion about segments; it clamps whatever window it is given."""
+    cash = TradingCalendar(market_open="09:15", market_close="15:15")
+    assert cash.phase(_ms(2026, 7, 21, 15, 14)) == PHASE_OPEN
+    assert cash.phase(_ms(2026, 7, 21, 15, 20)) == PHASE_CLOSED
 
 
 def test_weekend_and_holiday_are_non_trading():

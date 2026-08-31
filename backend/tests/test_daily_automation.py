@@ -36,6 +36,7 @@ def _decision(
     has_session: bool = False,
     is_capture_ready: bool = False,
     is_capture_running: bool = False,
+    eod_tail_seconds: int = 0,
 ):
     return decide_automation(
         now,
@@ -47,6 +48,7 @@ def _decision(
         is_capture_ready=is_capture_ready,
         is_capture_running=is_capture_running,
         broker_retry_interval_s=60,
+        eod_tail_seconds=eod_tail_seconds,
     )
 
 
@@ -93,6 +95,11 @@ def test_capture_window_starts_ready_session_and_stops_before_eod():
     assert actions == ()
 
     state, actions = _decision(_ms(21, 15, 30), state, is_capture_running=True)
+    # Capture stops at the window end, but compression does NOT run in the same tick:
+    # compression removes the raw .bin, and the final frames are still in the writer queue.
+    assert actions == (ACTION_STOP_CAPTURE,)
+
+    state, actions = _decision(_ms(21, 15, 30, 5), state, is_capture_running=False)
     assert actions == (ACTION_STOP_CAPTURE, ACTION_RUN_EOD)
 
 
@@ -374,8 +381,13 @@ async def test_automation_dispatches_broker_start_stop_then_eod_in_order(tmp_pat
     await automation.tick(_ms(21, 8, 30))
     await automation.tick(_ms(21, 9, 0))
     await automation.tick(_ms(21, 15, 30))
+    # The 15:30 tick only drains capture; the EOD sweep waits for the next tick, once
+    # capture has actually stopped, so compression never races the final frames.
+    assert events == ["broker", "start", "stop"]
+    await automation.tick(_ms(21, 15, 30, 5))
 
-    assert events == ["broker", "start", "stop", "eod"]
+    # The second `stop` is the guaranteed final flush emitted immediately before the sweep.
+    assert events == ["broker", "start", "stop", "stop", "eod"]
 
 
 async def test_eod_is_never_started_when_capture_flush_fails(tmp_path):

@@ -63,18 +63,27 @@ def stale_artifacts(
     stale_after_ms: int,
     *,
     factor: float = ARTIFACT_STALE_FACTOR,
+    armed: Mapping[str, bool] | None = None,
 ) -> tuple[str, ...]:
     """Names of artifacts with no relevant update inside the tolerance.
 
     ``None`` means "never updated", which counts as stale — a dataset that has received
     nothing all session is the most severe artifact-level condition there is, and treating
     it as healthy is exactly how a silently unsubscribed instrument would hide.
+
+    ``armed`` gates each name by whether *continuous-session* staleness applies to it right
+    now. Nothing here knows about sessions; the caller resolves that. It matters because
+    artifacts and their legs no longer share one schedule: the F&O cash underlyings stop
+    continuous matching at 15:15 and then hold a closing auction, so from 15:15 a quiet cash
+    leg is the exchange structure rather than a fault. A name absent from ``armed`` is
+    treated as armed, which keeps the single-session callers unchanged.
     """
     threshold = max(1, int(stale_after_ms * factor))
     return tuple(
         name
         for name, age in sorted(artifact_ages_ms.items())
-        if age is None or age >= threshold
+        if (armed is None or armed.get(name, True))
+        and (age is None or age >= threshold)
     )
 
 
@@ -87,6 +96,7 @@ def classify(
     artifact_ages_ms: Mapping[str, int | None] | None = None,
     recovery_pending: bool = False,
     recovery_abandoned: bool = False,
+    artifact_stale_armed: Mapping[str, bool] | None = None,
 ) -> str:
     """Classify feed health from the three signals.
 
@@ -94,6 +104,10 @@ def classify(
     outranks a dead transport, which outranks a stale artifact, which outranks a quiet
     market. Only the *reported* condition is single-valued — the underlying signals stay
     separately observable in telemetry.
+
+    ``artifact_stale_armed`` lets the caller exempt an artifact or leg whose own session is
+    not in continuous matching, so a structurally quiet closing-auction leg cannot be
+    reported as a feed fault.
     """
     if recovery_abandoned:
         return HEALTH_RECOVERY_ABANDONED
@@ -106,7 +120,9 @@ def classify(
     if transport_age_ms is not None and transport_age_ms >= stale_after_ms:
         return HEALTH_TRANSPORT_STALE
 
-    stale_names = stale_artifacts(artifact_ages_ms or {}, stale_after_ms)
+    stale_names = stale_artifacts(
+        artifact_ages_ms or {}, stale_after_ms, armed=artifact_stale_armed
+    )
     if stale_names:
         return HEALTH_ARTIFACT_STALE
 

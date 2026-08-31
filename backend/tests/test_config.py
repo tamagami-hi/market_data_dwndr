@@ -117,10 +117,11 @@ def test_blank_stats_data_path_falls_back_to_default(monkeypatch, value):
 
 def test_expected_frames_default(monkeypatch):
     _set(monkeypatch)
-    # 09:00-15:30 at 1 Hz = 6h30m = 23,400 — now DERIVED, not a hardcoded constant.
+    # 09:15-15:40 at 1 Hz = 6h25m = 23,100 — the broad derivatives envelope under the
+    # 2026 structure, DERIVED rather than a hardcoded constant.
     s = _settings()
-    assert s.session_seconds == 23_400
-    assert s.expected_frames_per_session == 23_400
+    assert s.session_seconds == 23_100
+    assert s.expected_frames_per_session == 23_100
     assert s.expected_frames_override is None
 
 
@@ -149,7 +150,7 @@ def test_expected_frames_short_session(monkeypatch):
 
 def test_expected_frames_scales_with_capture_hz(monkeypatch):
     _set(monkeypatch, CAPTURE_HZ="2")
-    assert _settings().expected_frames_per_session == 46_800
+    assert _settings().expected_frames_per_session == 46_200
 
 
 def test_expected_frames_env_override_wins(monkeypatch):
@@ -164,7 +165,7 @@ def test_blank_expected_frames_override_derives(monkeypatch, value):
     _set(monkeypatch, EXPECTED_FRAMES_PER_SESSION=value)
     s = _settings()
     assert s.expected_frames_override is None
-    assert s.expected_frames_per_session == 23_400
+    assert s.expected_frames_per_session == 23_100
 
 
 def test_http_port_is_required(monkeypatch):
@@ -239,8 +240,26 @@ def test_daily_automation_schedule_defaults(monkeypatch):
     assert settings.auth_poll_start == "08:30"
     assert settings.auth_poll_end == "09:00"
     assert settings.auth_poll_interval_seconds == 60
-    assert settings.market_open == "09:00"
-    assert settings.market_close == "15:30"
+    assert settings.market_open == "09:15"
+    assert settings.market_close == "15:40"
+
+
+def test_segment_sessions_do_not_inherit_the_broad_envelope(monkeypatch):
+    """The cash close must not silently follow MARKET_CLOSE.
+
+    Inheriting the envelope is how the F&O cash underlyings ended up modelled as trading
+    continuously to the derivatives close.
+    """
+    _set(monkeypatch)
+    settings = _settings()
+
+    assert settings.market_close == "15:40"
+    assert settings.equity_deriv_close == "15:40"
+    assert settings.equity_cash_close == "15:15"
+    assert settings.equity_cash_cas_start == "15:15"
+    assert settings.equity_cash_cas_end == "15:35"
+    assert settings.equity_deriv_preopen_start == "09:00"
+    assert settings.equity_deriv_preopen_end == "09:15"
 
 
 @pytest.mark.parametrize(

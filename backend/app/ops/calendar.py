@@ -2,7 +2,16 @@
 
 The exchange runs in IST; frames store Unix epoch **ms UTC**, but file dates and the
 session window use the **IST trading date** (docs/60-operations/operations-runbook.md).
-Regular session 09:15-15:30 IST; weekends and configured holidays are non-trading.
+Weekends and configured holidays are non-trading.
+
+This calendar answers *which day* and *is the window open* for ONE window supplied by the
+caller. It deliberately knows nothing about market segments: the 2026 structure has an
+equity-derivatives session to 15:40, an F&O cash session to 15:15 followed by a closing
+auction to 15:35, and a wider capture process envelope — and reducing those to a single
+09:15-15:30 pair is what made the cash close invisible. Per-segment schedules and phases
+live in :mod:`app.ops.sessions`; the ``market_open``/``market_close`` arguments here are
+whatever window the caller is asking about (capture automation passes the PROCESS
+envelope, not a market session).
 
 India has no DST, so we fall back to a fixed +05:30 offset if the tz database is not
 available in the environment.
@@ -45,7 +54,7 @@ class TradingCalendar:
         holidays: set[str] | None = None,
         timezone_name: str = "Asia/Kolkata",
         market_open: str = "09:15",
-        market_close: str = "15:30",
+        market_close: str = "15:40",
     ) -> None:
         self.holidays = set(holidays or set())
         self.tz = _get_tz(timezone_name)

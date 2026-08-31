@@ -36,6 +36,19 @@ def _parse_hhmm(value: str) -> time:
     return time(int(hour), int(minute))
 
 
+def _plus_seconds(moment: time, seconds: int) -> time:
+    """``moment`` shifted forward, clamped to 23:59:59 rather than wrapping past midnight.
+
+    The tail is minutes, not hours, so clamping is the safe failure mode: an EOD that
+    slips to 23:59:59 is visibly late, whereas a wrap to 00:0x would fire *before* the
+    close on the same calendar day and finalize the archive mid-session.
+    """
+    total = moment.hour * 3600 + moment.minute * 60 + moment.second + max(0, int(seconds))
+    if total >= 24 * 3600:
+        return time(23, 59, 59)
+    return time(total // 3600, (total % 3600) // 60, total % 60)
+
+
 def decide_automation(
     now_ms: int,
     state: AutomationState,
@@ -47,8 +60,16 @@ def decide_automation(
     is_capture_ready: bool,
     is_capture_running: bool,
     broker_retry_interval_s: int = 60,
+    eod_tail_seconds: int = 0,
 ) -> tuple[AutomationState, tuple[str, ...]]:
-    """Return a new policy state and ordered side-effect actions for one tick."""
+    """Return a new policy state and ordered side-effect actions for one tick.
+
+    ``calendar.market_open``/``market_close`` here are the **capture window** (when the
+    process runs), not a market session. The window ends at the equity-derivatives close,
+    so at that instant the final derivative frames are still being flushed:
+    ``eod_tail_seconds`` is a deliberate drain allowance before the archive is finalized.
+    It is explicitly *not* an extension of any market session — nothing is owed in the tail.
+    """
     local_dt = calendar.local_dt(now_ms)
     trading_date = local_dt.strftime("%Y-%m-%d")
     local_time = local_dt.time().replace(tzinfo=None)
@@ -84,9 +105,16 @@ def decide_automation(
             state.eod_completed_date != trading_date
             and state.eod_in_progress_date != trading_date
         )
-        if is_capture_running or needs_eod:
+        eod_at = _plus_seconds(calendar.market_close, eod_tail_seconds)
+        # Compression REMOVES the raw .bin and moves it to the archive. Doing that while the
+        # last derivative frames are still in a writer queue would destroy them, so the
+        # sweep waits for the drain tail AND for capture to have actually stopped.
+        run_eod = needs_eod and local_time >= eod_at and not is_capture_running
+        # STOP_CAPTURE is emitted while capture runs, and once more immediately before the
+        # sweep as a guaranteed final flush — not on every idle tick in between.
+        if is_capture_running or run_eod:
             actions = (*actions, ACTION_STOP_CAPTURE)
-        if needs_eod:
+        if run_eod:
             actions = (*actions, ACTION_RUN_EOD)
             next_state = replace(next_state, eod_in_progress_date=trading_date)
         return next_state, actions
@@ -167,6 +195,7 @@ class DailyAutomationService:
                 is_capture_ready=is_capture_ready,
                 is_capture_running=self.capture_controller.running,
                 broker_retry_interval_s=self.settings.auth_poll_interval_seconds,
+                eod_tail_seconds=getattr(self.settings, "eod_tail_seconds", 0),
             )
             self._state = next_state
             self._last_tick_at_ms = current_time
@@ -321,8 +350,19 @@ class DailyAutomationService:
             registry = build_session_registry(
                 settings, {name: SESSION_EQUITY_DERIV for name in present}
             )
-            windows = registry.scheduled_windows_on(next(iter(present)), day)
-            record = reconcile_session(present, windows, trading_date=trading_date)
+            # Per-artifact grids, not one shared window. Every artifact TickVault writes
+            # carries a derivative leg trading to 15:40, so each is reconciled against the
+            # derivatives grid — but the mapping is now explicit and recorded, so an
+            # artifact moved to the cash session is measured against 09:15-15:15
+            # automatically instead of reporting a normal cash close as 25 minutes of loss.
+            windows = {name: registry.scheduled_windows_on(name, day) for name in present}
+            auctions = {name: registry.auction_windows_on(name, day) for name in present}
+            record = reconcile_session(
+                present,
+                windows,
+                trading_date=trading_date,
+                auction_windows=auctions,
+            )
             self._last_reconciliation = record
 
             stats_root = getattr(settings, "stats_dir", None)
@@ -372,6 +412,9 @@ class DailyAutomationService:
 
     def status(self) -> dict:
         phase = "waiting"
+        eod_at = _plus_seconds(
+            self.calendar.market_close, getattr(self.settings, "eod_tail_seconds", 0)
+        )
         if self._last_tick_at_ms is not None:
             local_time = self.calendar.local_dt(self._last_tick_at_ms).time().replace(tzinfo=None)
             if _parse_hhmm(self.settings.auth_poll_start) <= local_time < _parse_hhmm(
@@ -381,9 +424,14 @@ class DailyAutomationService:
             elif self.calendar.market_open <= local_time < self.calendar.market_close:
                 phase = "capture_window"
             elif local_time >= self.calendar.market_close:
-                phase = "eod"
+                # Between the capture end and the EOD sweep the writers are draining the
+                # final derivative frames. Reported as its own phase so an operator can
+                # tell "waiting to finalize safely" from "compression running".
+                phase = "eod" if local_time >= eod_at else "draining"
         return {
             "phase": phase,
+            "eod_at": eod_at.strftime("%H:%M:%S"),
+            "eod_tail_seconds": int(getattr(self.settings, "eod_tail_seconds", 0)),
             "last_action": self._last_action,
             "last_error": self._last_error,
             "last_tick_at": self._last_tick_at_ms,
