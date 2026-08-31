@@ -160,7 +160,6 @@ configured independently and nothing is hardcoded:
 
 | concept | setting | on the deployment | governs |
 |---|---|---|---|
-| bootstrap | `BOOTSTRAP_TIME` | 08:55 | when the process may prepare (informational) |
 | capture window | `CAPTURE_START_TIME` / `CAPTURE_END_TIME` | 09:10 – 15:30 | when the **process** runs: connect, subscribe, drive the grid |
 | market session | `EQUITY_DERIV_OPEN` / `_CLOSE` (+ pre-open) | 09:15 – 15:30 | when a frame is **owed**: loss accounting and stale escalation |
 

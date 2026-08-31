@@ -10,23 +10,43 @@ Normal VPS operation acquires the token through ``DailyAutomationService``; thes
 routes remain available for operational fallback but are not initiated by the frontend.
 The session service is read from ``request.app.state.session_service`` (built at startup).
 When the backend is unconfigured, routes degrade gracefully instead of returning 500.
+
+Every route that starts or mutates a login attempt requires the operator credential
+(``RELEASE_MAINTENANCE_TOKEN``, sent as ``X-Release-Maintenance-Token``) — the same secret
+and header the release scripts already use, rather than a second independent mechanism.
+The ``Origin`` check retained alongside it is CSRF mitigation only: it is honoured by
+browsers and trivially forged by any other client, so it was never authentication.
+``GET /api/auth/status`` stays unauthenticated because the frontend depends on it.
 """
 
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi import status as http_status
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 from starlette.concurrency import run_in_threadpool
 
+from app.config import secret_text
 from app.kite.external_token import ExternalTokenError
 from app.kite.login import KiteLoginError
 from app.kite.login_flow import LoginProgress
 
 logger = logging.getLogger(__name__)
+
+OPERATOR_TOKEN_HEADER = "X-Release-Maintenance-Token"
+
+
+class OperatorAuthenticationError(Exception):
+    """Raised when the operator credential is missing or does not match."""
+
+
+class OperatorAuthUnavailableError(Exception):
+    """Raised when no operator credential is configured, so the route must stay closed."""
+
 
 
 class LoginRequest(BaseModel):
@@ -64,10 +84,38 @@ def _service(request: Request):
     return getattr(request.app.state, "session_service", None)
 
 
-def _require_frontend_origin(request: Request, service) -> None:
-    origin = request.headers.get("origin")
-    if origin not in service.settings.cors_origins:
-        raise HTTPException(status_code=403, detail="request origin is not allowed")
+def _require_operator(service, provided_token: str | None) -> None:
+    """Authorize an operator-only login route against ``RELEASE_MAINTENANCE_TOKEN``.
+
+    Fails closed: with no credential configured the route is refused rather than left
+    open, because these endpoints start upstream Zerodha authentication and overwrite the
+    day's session.
+    """
+    expected = secret_text(getattr(service.settings, "release_maintenance_token", None))
+    if expected is None:
+        raise OperatorAuthUnavailableError(
+            "operator authorization is not configured; set RELEASE_MAINTENANCE_TOKEN to "
+            "use the manual login recovery routes"
+        )
+    supplied = (provided_token or "").encode("utf-8")
+    if not secrets.compare_digest(supplied, expected.encode("utf-8")):
+        raise OperatorAuthenticationError("invalid operator credential")
+
+
+def _authorize(service, provided_token: str | None) -> None:
+    """Authorize an operator-only route.
+
+    Token only, exactly like ``/api/capture/maintenance``. The ``Origin`` check is not
+    layered on top: a request that must carry a secret header cannot be forged by a
+    cross-site browser form (a custom header forces a CORS preflight), and requiring an
+    allowed ``Origin`` would break the operator's own ``curl``-based recovery.
+    """
+    try:
+        _require_operator(service, provided_token)
+    except OperatorAuthUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except OperatorAuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 def _progress_response(progress: LoginProgress) -> LoginProgressResponse:
@@ -124,10 +172,17 @@ def create_auth_router() -> APIRouter:
         return result
 
     @router.get("/login-url")
-    async def login_url(request: Request) -> dict:
+    async def login_url(
+        request: Request,
+        operator_token: Annotated[
+            str | None,
+            Header(alias=OPERATOR_TOKEN_HEADER, min_length=1, max_length=256),
+        ] = None,
+    ) -> dict:
         service = _service(request)
         if service is None:
             raise HTTPException(status_code=503, detail="backend not configured")
+        _authorize(service, operator_token)
         return {"login_url": service.login_url()}
 
     @router.post(
@@ -135,11 +190,17 @@ def create_auth_router() -> APIRouter:
         response_model=LoginProgressResponse | LoginResponse,
         status_code=http_status.HTTP_202_ACCEPTED,
     )
-    async def start_login(request: Request) -> LoginProgressResponse | LoginResponse:
+    async def start_login(
+        request: Request,
+        operator_token: Annotated[
+            str | None,
+            Header(alias=OPERATOR_TOKEN_HEADER, min_length=1, max_length=256),
+        ] = None,
+    ) -> LoginProgressResponse | LoginResponse:
         service = _service(request)
         if service is None:
             raise HTTPException(status_code=503, detail="backend not configured")
-        _require_frontend_origin(request, service)
+        _authorize(service, operator_token)
         active_session = service.active_session()
         if active_session is not None:
             return _login_response(service, active_session)
@@ -151,12 +212,18 @@ def create_auth_router() -> APIRouter:
         response_model=LoginProgressResponse,
     )
     async def submit_totp(
-        request: Request, attempt_id: str, body: TotpRequest
+        request: Request,
+        attempt_id: str,
+        body: TotpRequest,
+        operator_token: Annotated[
+            str | None,
+            Header(alias=OPERATOR_TOKEN_HEADER, min_length=1, max_length=256),
+        ] = None,
     ) -> LoginProgressResponse:
         service = _service(request)
         if service is None:
             raise HTTPException(status_code=503, detail="backend not configured")
-        _require_frontend_origin(request, service)
+        _authorize(service, operator_token)
         progress = await _run_flow_action(service.submit_login_totp, attempt_id, body.totp)
         return _progress_response(progress)
 
@@ -165,30 +232,50 @@ def create_auth_router() -> APIRouter:
         response_model=LoginResponse,
     )
     async def complete_login(
-        request: Request, attempt_id: str, body: RiskFreeRateRequest
+        request: Request,
+        attempt_id: str,
+        body: RiskFreeRateRequest,
+        operator_token: Annotated[
+            str | None,
+            Header(alias=OPERATOR_TOKEN_HEADER, min_length=1, max_length=256),
+        ] = None,
     ) -> LoginResponse:
         service = _service(request)
         if service is None:
             raise HTTPException(status_code=503, detail="backend not configured")
-        _require_frontend_origin(request, service)
+        _authorize(service, operator_token)
         state = await _run_flow_action(service.complete_login, attempt_id, body.risk_free_rate)
         return _login_response(service, state)
 
     @router.delete("/login/{attempt_id}", status_code=http_status.HTTP_204_NO_CONTENT)
-    async def cancel_login(request: Request, attempt_id: str) -> Response:
+    async def cancel_login(
+        request: Request,
+        attempt_id: str,
+        operator_token: Annotated[
+            str | None,
+            Header(alias=OPERATOR_TOKEN_HEADER, min_length=1, max_length=256),
+        ] = None,
+    ) -> Response:
         service = _service(request)
         if service is None:
             raise HTTPException(status_code=503, detail="backend not configured")
-        _require_frontend_origin(request, service)
+        _authorize(service, operator_token)
         await _run_flow_action(service.cancel_login, attempt_id)
         return Response(status_code=http_status.HTTP_204_NO_CONTENT)
 
     @router.post("/login", response_model=LoginResponse)
-    async def login(request: Request, body: LoginRequest) -> LoginResponse:
+    async def login(
+        request: Request,
+        body: LoginRequest,
+        operator_token: Annotated[
+            str | None,
+            Header(alias=OPERATOR_TOKEN_HEADER, min_length=1, max_length=256),
+        ] = None,
+    ) -> LoginResponse:
         service = _service(request)
         if service is None:
             raise HTTPException(status_code=503, detail="backend not configured")
-        _require_frontend_origin(request, service)
+        _authorize(service, operator_token)
         try:
             state = service.login(
                 request_token=body.request_token,

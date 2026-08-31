@@ -32,12 +32,8 @@ TYPE_INDEX_FNO_BOARD = "IndexFnoBoard"
 TYPE_CAPTURE_STATUS = "CaptureStatus"
 TYPE_HEARTBEAT = "Heartbeat"
 TYPE_SESSION_STATUS = "SessionStatus"
-TYPE_LOG = "Log"
 TYPE_HISTORICAL_JOB_UPDATE = "HistoricalJobUpdate"
 TYPE_COMPRESSION_PROGRESS = "CompressionProgress"
-
-# Full keyframe cadence (algo_engine parity): a full OptionGrid every N frames.
-KEYFRAME_INTERVAL = 30
 
 # GridBlock fields sent to the UI (subset of RawBlock; prices in rupees).
 GRID_FIELDS: tuple[tuple[str, bool], ...] = (
@@ -117,26 +113,6 @@ def market_header(
     )
 
 
-def option_grid(
-    underlying: str,
-    expiry: str,
-    strikes_paise: np.ndarray,
-    calls: RawBlock,
-    puts: RawBlock,
-) -> dict:
-    """Full keyframe: strikes + per-side GridBlock."""
-    return envelope(
-        TYPE_OPTION_GRID,
-        {
-            "underlying": underlying,
-            "expiry": expiry,
-            "strikes": [paise_to_rupees(int(s)) for s in strikes_paise],
-            "calls": grid_block(calls),
-            "puts": grid_block(puts),
-        },
-    )
-
-
 def _changed_indices(prev: RawBlock, curr: RawBlock) -> list[int]:
     mask = np.zeros(curr.length(), dtype=bool)
     for field, _ in GRID_FIELDS:
@@ -178,10 +154,6 @@ def heartbeat(timestamp_unix_ms: int) -> dict:
 
 def session_status(phase: str, diagnostics: dict | None = None) -> dict:
     return envelope(TYPE_SESSION_STATUS, {"phase": phase, "diagnostics": diagnostics or {}})
-
-
-def log_line(message: str) -> dict:
-    return envelope(TYPE_LOG, {"message": message})
 
 
 def historical_job_update(state: dict) -> dict:

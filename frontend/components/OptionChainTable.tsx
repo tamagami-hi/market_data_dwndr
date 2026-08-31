@@ -6,7 +6,6 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { ResponsiveDisclosure } from "@/components/ui/ResponsiveDisclosure";
 import {
   areOptionRowsEqual,
-  GRID_KEYS,
   optionGridToRows,
   type OptionGrid,
   type OptionRowModel,
@@ -331,4 +330,3 @@ export default function OptionChainTable({
   );
 }
 
-export const OPTION_FIELD_COUNT = GRID_KEYS.length;

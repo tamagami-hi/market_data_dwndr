@@ -25,6 +25,8 @@ from app.session import SessionState, now_ms, save_session
 
 LOGIN_ATTEMPT_TTL_MS = 3 * 60 * 1_000
 LOGIN_START_COOLDOWN_MS = 5_000
+PASSWORD_LOGIN_WINDOW_MS = 60 * 60 * 1_000
+PASSWORD_LOGIN_MAX_PER_WINDOW = 3
 logger = logging.getLogger(__name__)
 
 
@@ -74,6 +76,23 @@ ExternalTokenFetcher = Callable[[], str | None]
 ExternalTokenValidator = Callable[[str], None]
 
 
+class PasswordLoginDisabledError(KiteLoginError):
+    """Raised when the stored-credential fallback is not enabled for this deployment.
+
+    Submitting ``KITE_USER_ID``/``KITE_PASSWORD`` upstream is opt-in
+    (``KITE_PASSWORD_LOGIN_ENABLED``) so a caller cannot drive Zerodha authentication with
+    the server's stored credentials. The browser OAuth recovery path stays available.
+    """
+
+
+class PasswordLoginBudgetError(KiteLoginError):
+    """Raised when too many stored-credential logins were started in the current window.
+
+    Bounds how often the deployment can authenticate upstream even when the fallback is
+    enabled, so a repeated caller cannot trip a lockout on the real brokerage account.
+    """
+
+
 class LoginCoordinator:
     """Own cookie-bearing login attempts without exposing Kite internals to clients."""
 
@@ -119,6 +138,7 @@ class LoginCoordinator:
         self._lock = Lock()
         self._attempts: dict[str, _LoginAttempt] = {}
         self._last_start_at: int | None = None
+        self._password_starts: tuple[int, ...] = ()
 
     def start(self, trading_date: str) -> LoginProgress:
         """Submit env credentials and create an opaque TOTP attempt."""
@@ -157,8 +177,27 @@ class LoginCoordinator:
 
             user_id = self._settings.kite_user_id
             password = self._settings.kite_password
+            if not getattr(self._settings, "kite_password_login_enabled", False):
+                raise PasswordLoginDisabledError(
+                    "the token broker returned no token and server-side Kite password "
+                    "login is disabled; use the browser OAuth recovery flow "
+                    "(GET /api/auth/login-url then POST /api/auth/login), or set "
+                    "KITE_PASSWORD_LOGIN_ENABLED=true to allow stored credentials"
+                )
             if not user_id or not password:
                 raise KiteLoginError("KITE_USER_ID and KITE_PASSWORD must be configured")
+            self._password_starts = tuple(
+                stamp
+                for stamp in self._password_starts
+                if current_time - stamp < PASSWORD_LOGIN_WINDOW_MS
+            )
+            if len(self._password_starts) >= PASSWORD_LOGIN_MAX_PER_WINDOW:
+                raise PasswordLoginBudgetError(
+                    "stored-credential login budget for this window is spent "
+                    f"({PASSWORD_LOGIN_MAX_PER_WINDOW} upstream submissions); "
+                    "not submitting the Zerodha password again"
+                )
+            self._password_starts = (*self._password_starts, current_time)
 
             client = self._client_factory()
             try:

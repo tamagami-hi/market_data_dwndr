@@ -53,3 +53,7 @@ release_manager/DATA_DOWNLOADER/images/*
 /layout-audit/*.png
 /layout-audit/*.json
 /layout-audit/node_modules
+
+
+# JetBrains IDE metadata (per-developer; no shared project configuration)
+.idea/

@@ -34,6 +34,15 @@ CONNECT_TIMEOUT_S = 15.0
 SDK_RECONNECT_MAX_TRIES = 5
 SDK_RECONNECT_MAX_DELAY_S = 10
 
+# A recovery reconnect must confirm quickly or be retried: a healthy connect+subscribe is
+# ~1 s, so this is generous while keeping the whole ladder well inside the stale-feed
+# deadline. Deliberately shorter than CONNECT_TIMEOUT_S, which covers a cold start.
+RECOVERY_CONFIRM_TIMEOUT_S = 5.0
+
+# Confirmed in-process reconnects attempted before declaring the feed unrecoverable and
+# handing over to the process-restart escalation.
+RECOVERY_MAX_ATTEMPTS = 3
+
 
 class TickerConnectFailed(RuntimeError):
     """Raised when a ticker never reports a live subscription within the deadline.
@@ -139,15 +148,31 @@ class TickerBridge:
         # to read ``connected``, so a socket that never came up was indistinguishable from
         # a healthy one until the freshness monitor noticed 5 s later — and then only the
         # 40 s escalation could act. Callers now await this before entering the grid.
+        #
+        # "Confirmed" means all three of: transport connected, ``subscribe(tokens)``
+        # accepted, and ``set_mode(FULL, tokens)`` accepted. It is set in exactly one
+        # place — the success path of ``_on_connect`` — so an open-but-unsubscribed socket
+        # can never satisfy it.
         self.connect_confirmed = asyncio.Event()
+        # Set when the confirmed-reconnect ladder is exhausted: the socket is known to be
+        # unusable *now*, so capture escalates immediately instead of waiting for the
+        # freshness deadline.
+        self.feed_unrecoverable = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ticker: Ticker | None = None
+        self._recovery_task: asyncio.Task[None] | None = None
         self.connected = False
         # Observability counters.
         self.batches_received = 0
         self.ticks_received = 0
         self.dropped_batches = 0
+        # Batches discarded because no event loop was bound (shutdown races). Previously
+        # dropped in silence, which is indistinguishable from a quiet market.
+        self.dropped_unbound_batches = 0
         self.reconnects = 0
+        self.reconnects_confirmed = 0
+        self.reconnect_failures = 0
+        self.subscribe_failures = 0
         self.connect_attempts = 0
         self.connects_confirmed = 0
         self.last_connect_ms: int | None = None
@@ -159,8 +184,20 @@ class TickerBridge:
     # -- thread-side callbacks (run on the KiteTicker thread) ---------------- #
 
     def _on_ticks(self, ws: Any, ticks: list[dict]) -> None:
-        if self._loop is not None:
-            self._loop.call_soon_threadsafe(self._enqueue, ticks)
+        loop = self._loop
+        if loop is None:
+            # No loop bound (pre-start, or after stop()): the batch cannot be delivered.
+            # Counted rather than dropped in silence, which read as a quiet market.
+            self.dropped_unbound_batches += 1
+            return
+        try:
+            loop.call_soon_threadsafe(self._enqueue, ticks)
+        except RuntimeError:
+            # Loop already closed — a shutdown race. Raising here would surface as an
+            # unobserved exception inside the KiteTicker thread and could take that thread
+            # down, so record it and let the shutdown proceed.
+            self.dropped_unbound_batches += 1
+            self._loop = None
 
     def _on_connect(self, ws: Any, response: Any = None) -> None:
         logger.info("ticker connected; subscribing %d tokens (full mode)", len(self.tokens))
@@ -168,12 +205,18 @@ class TickerBridge:
             ws.subscribe(self.tokens)
             ws.set_mode(MODE_FULL, self.tokens)
         except Exception as exc:  # pragma: no cover - defensive; SDK-specific
+            # The transport is up but nothing is subscribed: ``on_close`` will never fire,
+            # so the SDK sees no reason to reconnect and this socket would sit open and
+            # silent forever. Tear it down and rebuild with the same confirmation
+            # semantics instead of leaving a zombie behind.
+            self.subscribe_failures += 1
+            self.connected = False
             if is_authentication_error(exc):
                 self._signal_auth_failure()
                 logger.warning("ticker subscription rejected by Kite authentication")
-            else:
-                logger.exception("subscribe/set_mode failed")
-            self.connected = False
+                return  # a token problem cannot be fixed by another socket
+            logger.exception("subscribe/set_mode failed; tearing down the unsubscribed socket")
+            self.request_recovery("subscribe/set_mode failed")
             return
         self.connected = True
         self.connects_confirmed += 1
@@ -266,34 +309,127 @@ class TickerBridge:
                 f"(attempt {self.connect_attempts}, {len(self.tokens)} tokens)"
             ) from exc
 
-    def reconnect(self) -> None:
-        """Tear down the current ticker and start a fresh one (self-driven recovery).
+    def _teardown_ticker(self) -> None:
+        """Close and dereference the current ticker so no zombie socket is left open.
 
-        Called from the event-loop thread when the freshness monitor flags a stall
-        the SDK's own reconnect did not recover (e.g. a half-open socket, or a feed
-        that keeps the connection up but stops sending fresh quotes). A brand-new
-        socket re-subscribes every token in ``full`` mode via ``_on_connect``.
-
-        The stale ticker (which holds its own copy of the previous access token) is
-        closed *and* dereferenced before the replacement is created, so it — and any
-        superseded token — becomes collectable immediately rather than lingering on the
-        heap for an unbounded time.
+        The stale ticker holds its own copy of the previous access token, so it is closed
+        *and* dereferenced before any replacement is built — it (and the superseded token)
+        becomes collectable immediately rather than lingering on the heap.
         """
-        self.reconnects += 1
-        logger.warning("self-driven ticker reconnect (attempt %d)", self.reconnects)
         old = self._ticker
         self._ticker = None  # drop the bridge's reference before replacing
+        self.connected = False
+        self.connect_confirmed.clear()
         if old is not None:
             try:
                 old.close()
             except Exception:  # pragma: no cover - defensive; SDK-specific
-                logger.exception("error closing stale ticker during reconnect")
+                logger.exception("error closing stale ticker")
         del old  # let the superseded ticker (and its token copy) be GC'd promptly
-        self.connected = False
+
+    async def reconnect_confirmed(self, timeout: float | None = None) -> None:
+        """Replace the socket and wait for a **confirmed** subscription.
+
+        Raises :class:`TickerConnectFailed` unless the replacement reports transport
+        connected *and* ``subscribe`` *and* ``set_mode(FULL)`` accepted. A reconnect that
+        merely started a ticker is not a success — that was the old behaviour, and it let a
+        dead replacement look like recovery until the freshness deadline.
+
+        ``timeout`` defaults to :data:`RECOVERY_CONFIRM_TIMEOUT_S`, resolved at call time so
+        the bound is configurable in one place.
+        """
+        self._teardown_ticker()
+        self._start_ticker()
+        await self.await_connected(
+            RECOVERY_CONFIRM_TIMEOUT_S if timeout is None else timeout
+        )
+        self.reconnects_confirmed += 1
+
+    def request_recovery(self, reason: str) -> None:
+        """Ask the event loop to run the confirmed-reconnect ladder. Thread-safe.
+
+        Callable from the KiteTicker/reactor thread (``_on_connect``'s failure path), which
+        must not touch the loop directly.
+        """
+        loop = self._loop
+        if loop is None:
+            return
         try:
-            self._start_ticker()
-        except Exception:  # pragma: no cover - defensive; SDK-specific
-            logger.exception("failed to start replacement ticker during reconnect")
+            loop.call_soon_threadsafe(self._schedule_recovery, reason)
+        except RuntimeError:  # pragma: no cover - loop closed during shutdown
+            self._loop = None
+
+    def _schedule_recovery(self, reason: str) -> None:
+        """Start the recovery ladder unless one is already running (loop thread only)."""
+        if self._recovery_task is not None and not self._recovery_task.done():
+            return
+        self._recovery_task = asyncio.create_task(
+            self._recover_confirmed(reason), name="ticker-recovery"
+        )
+
+    async def _recover_confirmed(self, reason: str) -> None:
+        """Bounded ladder: confirmed reconnect, then hand over to the restart escalation."""
+        for attempt in range(1, RECOVERY_MAX_ATTEMPTS + 1):
+            try:
+                await self.reconnect_confirmed()
+            except TickerConnectFailed as exc:
+                self.reconnect_failures += 1
+                logger.warning(
+                    "confirmed reconnect %d/%d after %s failed: %s",
+                    attempt,
+                    RECOVERY_MAX_ATTEMPTS,
+                    reason,
+                    exc,
+                )
+                continue
+            except Exception:  # noqa: BLE001 - defensive; SDK-specific
+                self.reconnect_failures += 1
+                logger.exception(
+                    "confirmed reconnect %d/%d after %s raised",
+                    attempt,
+                    RECOVERY_MAX_ATTEMPTS,
+                    reason,
+                )
+                continue
+            logger.info(
+                "ticker recovered after %s: confirmed subscription on attempt %d",
+                reason,
+                attempt,
+            )
+            return
+        # Every rung failed. Make it known now so capture escalates to a clean restart
+        # instead of waiting for the stale-feed deadline to notice.
+        logger.error(
+            "ticker could not confirm a subscription after %d attempt(s) following %s; "
+            "escalating to a process restart",
+            RECOVERY_MAX_ATTEMPTS,
+            reason,
+        )
+        self._teardown_ticker()
+        self.feed_unrecoverable.set()
+
+    def reconnect(self) -> None:
+        """Replace the current socket with a **confirmed** one (self-driven recovery).
+
+        Called from the event-loop thread when the freshness monitor flags a stall the
+        SDK's own reconnect did not recover (e.g. a half-open socket, or a feed that keeps
+        the connection up but stops sending fresh quotes).
+
+        Non-blocking by design: the caller is the 1 Hz grid loop, which must not await a
+        socket handshake. The confirmation happens on the recovery task, and its failure
+        sets :attr:`feed_unrecoverable` so the next grid tick escalates.
+        """
+        self.reconnects += 1
+        logger.warning("self-driven ticker reconnect (attempt %d)", self.reconnects)
+        if self._loop is None:
+            # No loop bound (unit rigs / sync callers): swap in place, unconfirmed.
+            self._teardown_ticker()
+            try:
+                self._start_ticker()
+            except Exception:  # pragma: no cover - defensive; SDK-specific
+                logger.exception("failed to start replacement ticker during reconnect")
+            return
+        self._schedule_recovery("stale feed")
 
     def set_token_provider(self, token_provider: TokenProvider | None) -> None:
         """Wire (or replace) the callable used to fetch a fresh token.
@@ -318,12 +454,19 @@ class TickerBridge:
         return max(0, reference - self._token_set_ms)
 
     def stop(self) -> None:
+        if self._recovery_task is not None and not self._recovery_task.done():
+            self._recovery_task.cancel()
+        self._recovery_task = None
         if self._ticker is not None:
             try:
                 self._ticker.close()
             except Exception:  # pragma: no cover - defensive
                 logger.exception("error closing ticker")
         self.connected = False
+        # Unbind the loop last: ``_on_ticks`` may still fire from the KiteTicker thread
+        # after close(), and calling into a closing loop is what raises unobserved
+        # RuntimeErrors on that thread.
+        self._loop = None
 
     async def batches(self):
         """Async generator yielding tick batches as they arrive."""

@@ -14,6 +14,8 @@ from app.kite.login_flow import LoginCoordinator, LoginMethod, LoginProgress, Lo
 from app.session import SessionState, save_session
 from app.session_service import SessionService
 
+OPERATOR_TOKEN = "operator-token-for-tests"
+
 
 def _settings(tmp_path, **overrides):
     base = dict(
@@ -26,6 +28,8 @@ def _settings(tmp_path, **overrides):
         market_open="09:15",
         market_close="15:30",
         cors_origins=["http://localhost:3000"],
+        release_maintenance_token=OPERATOR_TOKEN,
+        kite_password_login_enabled=True,
         state_dir=tmp_path,
     )
     base.update(overrides)
@@ -48,6 +52,20 @@ def _service(tmp_path, login_fn=None, login_flow=None, **overrides):
 
 
 def _app(service) -> TestClient:
+    app = FastAPI()
+    app.state.session_service = service
+    app.include_router(create_auth_router())
+    return TestClient(
+        app,
+        headers={
+            "Origin": "http://localhost:3000",
+            "X-Release-Maintenance-Token": OPERATOR_TOKEN,
+        },
+    )
+
+
+def _unauthorized_app(service) -> TestClient:
+    """A client with no operator credential, i.e. any internet caller."""
     app = FastAPI()
     app.state.session_service = service
     app.include_router(create_auth_router())
@@ -269,12 +287,12 @@ def test_login_route_requires_credentials_or_request_token(tmp_path):
     assert r.status_code == 422
 
 
-def test_staged_login_rejects_untrusted_origin(tmp_path):
-    client = _app(_service(tmp_path))
+def test_staged_login_rejects_a_caller_without_the_operator_credential(tmp_path):
+    client = _unauthorized_app(_service(tmp_path))
 
-    response = client.post("/api/auth/login/start", headers={"Origin": "http://malicious.example"})
+    response = client.post("/api/auth/login/start")
 
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 def test_login_url_route(tmp_path):

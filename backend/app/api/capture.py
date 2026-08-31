@@ -22,6 +22,7 @@ from app.capture.maintenance import (
     MaintenanceLeaseNotFoundError,
     MaintenanceLeaseStore,
 )
+from app.config import secret_text as config_secret_text
 from app.kite.errors import KiteAuthenticationError
 
 logger = logging.getLogger(__name__)
@@ -467,9 +468,4 @@ def create_capture_router() -> APIRouter:
 
 
 def _secret_value(value: object) -> str | None:
-    if value is None:
-        return None
-    getter = getattr(value, "get_secret_value", None)
-    raw_value = getter() if callable(getter) else value
-    text = str(raw_value)
-    return text if text else None
+    return config_secret_text(value)

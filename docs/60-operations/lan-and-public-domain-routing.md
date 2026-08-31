@@ -125,8 +125,17 @@ That assumption breaks on the public internet.
   **CSRF mitigation, not authentication** — the `Origin` header is only honoured by
   browsers; a script/`curl`/`websocat` can send any value and pass straight through.
 - Exposed today with no real auth: `GET /api/auth/status` (operational disclosure), the
-  legacy login state machine (`/api/auth/login*`, incl. a 6-digit TOTP with no lockout),
-  `/api/capture/*`, `/api/stats`, `/api/status`, `/monitor`, and all `/ws/*` market data.
+  legacy login state machine (`/api/auth/login*`), `/api/capture/*`, `/api/stats`,
+  `/api/status`, `/monitor`, and all `/ws/*` market data.
+- The login state machine is **not** unlimited-guess, contrary to an earlier note here.
+  `LoginCoordinator` (`app/kite/login_flow.py`) permits **one** concurrent attempt, applies
+  a `LOGIN_START_COOLDOWN_MS` (5 s) cooldown between starts, expires attempts after
+  `LOGIN_ATTEMPT_TTL_MS` (3 min), and **consumes the attempt on a wrong TOTP** — so a
+  6-digit code gets one guess per attempt, i.e. ≤1 guess / 5 s. No response returns the
+  access token. The residual risks are different ones: an unauthenticated caller can hold
+  the single attempt slot (denying the operator a login) and can drive repeated upstream
+  Zerodha password submissions using the server's stored `KITE_PASSWORD`, risking an
+  upstream account lockout.
 
 Options, cheapest → most robust:
 - **Proxy gate:** NPM Access List (HTTP Basic Auth and/or IP allow-list) on the host.

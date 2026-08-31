@@ -45,6 +45,18 @@ const RECOVERY_DELAY_MS = 60_000;
  *  state the real value instead of a hardcoded copy that could drift. */
 export const RATE_WINDOW_MS = 5_000;
 
+/**
+ * Silence after which the watchdog force-closes an *open* socket so the existing
+ * onclose/backoff path reconnects it.
+ *
+ * Deliberately much longer than the 5 s cosmetic "stale" threshold used by the connection
+ * dot: brief jitter must not cause reconnect churn. This exists for the case a TCP/
+ * WebSocket connection stays technically open while the server has stopped delivering —
+ * the client used to sit at `connected: true` with frozen numbers indefinitely, because
+ * reconnect was only ever triggered by onclose/onerror.
+ */
+export const WATCHDOG_SILENCE_MS = 12_000;
+
 function parseEnvelope(raw: string): WsEnvelope | null {
   try {
     const parsed = JSON.parse(raw) as { type?: unknown; payload?: unknown; meta?: unknown };
@@ -57,7 +69,14 @@ function parseEnvelope(raw: string): WsEnvelope | null {
   }
 }
 
-function createTopicConnection(topic: string): TopicConnection {
+function createTopicConnection(
+  topic: string,
+  options: { watchdog?: boolean } = {},
+): TopicConnection {
+  // Only topics that are *expected* to deliver continuously may be watchdogged. An
+  // event-driven topic (e.g. historical-jobs) is legitimately silent for hours, and
+  // force-closing it would be pure churn.
+  const watchdogEnabled = options.watchdog === true;
   let connState: WsConnectionState = {
     connected: false,
     error: null,
@@ -76,6 +95,13 @@ function createTopicConnection(topic: string): TopicConnection {
   let samples: Array<[number, number]> = [];
   let lastMessageAt: number | null = null;
   let statsTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Armed by each arriving message and cleared when the watchdog fires, so a silence
+   * episode costs at most one forced reconnect. Without this, a topic that is quiet for a
+   * legitimate reason (market closed) would be closed and reopened every
+   * WATCHDOG_SILENCE_MS forever, since a successful open resets the retry counter.
+   */
+  let watchdogArmed = false;
 
   const stateListeners = new Set<() => void>();
   const envelopeHandlers = new Set<(envelope: WsEnvelope) => void>();
@@ -98,6 +124,27 @@ function createTopicConnection(topic: string): TopicConnection {
       bytesPerSec: spanMs > 0 ? Math.round((bytes / spanMs) * 1000) : 0,
       ageMs: lastMessageAt == null ? null : now - lastMessageAt,
     });
+    maybeTripWatchdog(now);
+  }
+
+  /**
+   * Force-close a socket that is open but has gone silent, letting the existing
+   * onclose/backoff logic reconnect. Handles the server-stopped-delivering case, which
+   * produces no close and no error and so was previously never recovered from.
+   */
+  function maybeTripWatchdog(now: number): void {
+    if (!watchdogEnabled || !watchdogArmed) return;
+    if (lastMessageAt == null) return;
+    if (now - lastMessageAt < WATCHDOG_SILENCE_MS) return;
+    const socket = ws;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    watchdogArmed = false; // one forced reconnect per silence episode
+    console.warn(
+      `[ws:${topic}] no message for ${now - lastMessageAt}ms on an open socket; ` +
+        "closing to force a reconnect",
+    );
+    // NOT an intentional close: onclose must run the reconnect path.
+    socket.close();
   }
   function clearReconnect(): void {
     if (reconnectTimeout) {
@@ -127,6 +174,7 @@ function createTopicConnection(topic: string): TopicConnection {
         // the wire than this — the browser exposes only the decompressed frame.)
         lastMessageAt = Date.now();
         samples.push([lastMessageAt, typeof raw === "string" ? raw.length : 0]);
+        watchdogArmed = true; // live data: re-arm for the next silence episode
 
         if (envelopeHandlers.size === 0) return;
         const envelope = parseEnvelope(raw);
@@ -194,6 +242,7 @@ function createTopicConnection(topic: string): TopicConnection {
     }
     samples = [];
     lastMessageAt = null;
+    watchdogArmed = false;
     connState = {
       connected: false, error: null, pipelineMs: null, greeksMs: null,
       stocksMs: null, bytesPerSec: 0, ageMs: null,
@@ -230,8 +279,14 @@ function createTopicConnection(topic: string): TopicConnection {
   };
 }
 
-export const marketDataConnection = createTopicConnection("market-data");
-export const stocksConnection = createTopicConnection("stocks");
-export const captureStatusConnection = createTopicConnection("capture-status");
-export const sessionConnection = createTopicConnection("session");
+export const marketDataConnection = createTopicConnection("market-data", { watchdog: true });
+export const stocksConnection = createTopicConnection("stocks", { watchdog: true });
+export const captureStatusConnection = createTopicConnection("capture-status", {
+  watchdog: true,
+});
+export const sessionConnection = createTopicConnection("session", { watchdog: true });
+// Event-driven: silent for hours between jobs, so no watchdog.
 export const historicalJobsConnection = createTopicConnection("historical-jobs");
+
+/** Exported for tests: build an isolated connection without touching the singletons. */
+export const __createTopicConnectionForTest = createTopicConnection;

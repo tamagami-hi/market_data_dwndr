@@ -46,14 +46,6 @@ def test_market_header_rupees():
     assert p["sequence"] == 7
 
 
-def test_option_grid_keyframe():
-    strikes = np.array([2450000, 2455000, 2460000], dtype="<i8")
-    msg = protocol.option_grid("NIFTY", "2026-07-31", strikes, _block(3), _block(3))
-    assert msg["type"] == protocol.TYPE_OPTION_GRID
-    assert msg["payload"]["strikes"] == [24500.0, 24550.0, 24600.0]
-    assert len(msg["payload"]["calls"]["ltp"]) == 3
-
-
 def test_option_grid_delta_reports_only_changed_strikes():
     prev_calls, prev_puts = _block(4), _block(4)
     curr_calls, curr_puts = _block(4), _block(4)

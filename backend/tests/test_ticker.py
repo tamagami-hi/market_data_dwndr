@@ -114,14 +114,15 @@ async def test_reconnect_replaces_ticker_and_resubscribes():
     assert len(created) == 1
     first = created[0]
 
-    bridge.reconnect()
+    # A reconnect is only a success once the replacement CONFIRMS its subscription.
+    await bridge.reconnect_confirmed(timeout=1.0)
 
     # Old ticker closed, a brand-new one created and re-subscribed in full mode.
     assert first.closed is True
     assert len(created) == 2
     assert created[1].subscribed == [1, 2]
     assert created[1].mode == (MODE_FULL, [1, 2])
-    assert bridge.reconnects == 1
+    assert bridge.reconnects_confirmed == 1
     assert bridge.connected is True
 
 
@@ -184,13 +185,13 @@ async def test_reconnect_resubscribes_every_token_in_full_mode():
     bridge.bind_loop(asyncio.get_running_loop())
     bridge.start()
 
-    bridge.reconnect()
+    await bridge.reconnect_confirmed(timeout=1.0)
 
     assert len(created) == 2  # a brand-new socket, not the old one reused
     assert created[-1].access_token == "TOK"
     assert created[-1].subscribed == [1, 2]
     assert created[-1].mode == (MODE_FULL, [1, 2])
-    assert bridge.reconnects == 1
+    assert bridge.reconnects_confirmed == 1
 
 
 async def test_reconnect_frees_the_superseded_ticker():
@@ -212,7 +213,7 @@ async def test_reconnect_frees_the_superseded_ticker():
     ref = weakref.ref(created[0])
     created.clear()  # drop the test's own reference to the first ticker
 
-    bridge.reconnect()  # replaces it; nothing should still reference the old one
+    await bridge.reconnect_confirmed(timeout=1.0)  # nothing should reference the old one
     gc.collect()
 
     assert ref() is None  # the superseded ticker was garbage-collected

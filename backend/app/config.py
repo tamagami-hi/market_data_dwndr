@@ -73,6 +73,16 @@ class Settings(BaseSettings):
     # single `md-login` run can complete the flow without a browser.
     kite_user_id: str | None = Field(default=None, description="Zerodha user id, e.g. AB1234")
     kite_password: str | None = Field(default=None, description="Zerodha login password")
+    kite_password_login_enabled: bool = Field(
+        default=False,
+        description=(
+            "Allow the server to submit the stored KITE_USER_ID/KITE_PASSWORD to Zerodha "
+            "when the token broker returns nothing. Disabled by default: the normal paths "
+            "are the token broker and the browser OAuth recovery flow, and leaving this on "
+            "lets a caller drive repeated upstream password submissions. "
+            "KITE_PASSWORD_LOGIN_ENABLED."
+        ),
+    )
     risk_free_rate: float | None = Field(
         default=None,
         description=(
@@ -257,14 +267,6 @@ class Settings(BaseSettings):
     # deployment keeps its exact schedule until the session block is added to the env.
     # Several artifacts sharing a session share ONE piece of configuration: there is
     # deliberately no NIFTY_CLOSE / STOCK_FNO_CLOSE style per-artifact setting.
-    bootstrap_time: str | None = Field(
-        default=None,
-        description=(
-            "When the process may begin preparing a session (instrument masters, chains, "
-            "subscriptions) before any frame is expected. Informational: capture "
-            "activation is governed by the session windows below. BOOTSTRAP_TIME."
-        ),
-    )
     equity_deriv_open: str | None = Field(
         default=None,
         description="Equity-derivatives continuous session start (IST HH:MM). EQUITY_DERIV_OPEN.",
@@ -379,7 +381,6 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
 
     @field_validator(
-        "bootstrap_time",
         "capture_start_time",
         "capture_end_time",
         "equity_deriv_open",
@@ -621,6 +622,20 @@ class Settings(BaseSettings):
         if self.stats_data_path is not None:
             return self.stats_data_path
         return self.state_dir / "stats"
+
+
+def secret_text(value: object) -> str | None:
+    """Read a settings value that may be a ``SecretStr``, a plain string, or ``None``.
+
+    Returns ``None`` for an absent or empty value so callers can treat "not configured"
+    and "configured blank" identically.
+    """
+    if value is None:
+        return None
+    getter = getattr(value, "get_secret_value", None)
+    raw_value = getter() if callable(getter) else value
+    text = str(raw_value)
+    return text if text else None
 
 
 @lru_cache

@@ -72,8 +72,62 @@ class CaptureStalledError(RuntimeError):
     """
 
 
+class CaptureConsumerFailed(CaptureStalledError):
+    """Raised when the tick-consumer task itself dies.
+
+    A *malformed tick* is not this: those are counted and skipped per tick so the rest of
+    the batch still lands (see ``CaptureEngine.apply_ticks``). This is the structural case
+    — the consumer coroutine stopped — which means nothing will ever update the tables
+    again no matter how healthy the socket looks.
+
+    Subclasses :class:`CaptureStalledError` so it takes the established escalation path
+    (controller fatal handler -> self-exit -> clean restart), but is named separately so
+    the cause is unambiguous in the logs. Detected on the very next grid tick rather than
+    inferred ~60 s later from the freshness monitor, which was the only signal before.
+    """
+
+
 def _always_armed(_now: int) -> bool:
     return True
+
+
+# Throttle for the malformed-tick log: counted always, logged at most this often.
+_MALFORMED_LOG_INTERVAL_MS = 10_000
+
+# Fields parsed as unsigned counts; a negative or un-coercible value here is what makes a
+# tick unusable, so they are what the throttled log names.
+_UNSIGNED_TICK_FIELDS = (
+    "oi",
+    "volume",
+    "total_buy_quantity",
+    "total_sell_quantity",
+    "oi_day_high",
+    "oi_day_low",
+)
+
+
+def _suspect_tick_fields(tick: dict) -> list[str]:
+    """Fields in ``tick`` that are negative or not coercible — for the rejection log."""
+    suspects: list[str] = []
+    for key in _UNSIGNED_TICK_FIELDS:
+        if key not in tick:
+            continue
+        value = tick.get(key)
+        if value is None:
+            continue
+        try:
+            if int(value) < 0:
+                suspects.append(f"{key}={value!r}")
+        except (TypeError, ValueError):
+            suspects.append(f"{key}={value!r}")
+    for key in ("last_price", "instrument_token"):
+        if key not in tick:
+            continue
+        try:
+            float(tick[key])
+        except (TypeError, ValueError):
+            suspects.append(f"{key}={tick[key]!r}")
+    return suspects
 
 
 class CaptureEngine:
@@ -113,6 +167,14 @@ class CaptureEngine:
         self.index_fno_writer = index_fno_writer
         self._clock = clock
         self.unmatched = 0
+        # Ticks rejected because they could not be applied (bad field, bad value). Counted
+        # and skipped per tick; they must never terminate the consumer.
+        self.malformed_ticks = 0
+        self._malformed_since_log = 0
+        self._last_malformed_log_ms: int | None = None
+        # Set when the tick-consumer task dies, so the next grid tick can fail loudly
+        # instead of leaving the freshness monitor to infer it ~60 s later.
+        self.consumer_error: BaseException | None = None
         self.captures = 0
         # Frames already on disk when this process started (set by resume_from_disk).
         self.resumed_frames = 0
@@ -233,6 +295,10 @@ class CaptureEngine:
         Also records *per-artifact* freshness: which logical dataset last received a
         relevant update. The transport can be perfectly healthy while one dataset stops
         updating, and only per-artifact ages can tell those apart.
+
+        A tick that cannot be applied is **counted and skipped** at the narrowest level —
+        one (tick, owner) apply — so the remaining ticks in the same batch still land. One
+        malformed market field must never cost the batch, and must never kill the consumer.
         """
         applied = 0
         stamp = now if now is not None else self._clock()
@@ -242,17 +308,85 @@ class CaptureEngine:
             # the live consumer that happens to update both.
             self._ticks_ever_applied = True
         for tick in ticks:
-            owners = self._owners.get(tick.get("instrument_token"))
+            token = tick.get("instrument_token")
+            owners = self._owners.get(token)
             if not owners:
                 self.unmatched += 1
                 continue
             for owner in owners:
-                owner.apply_tick(tick)
+                try:
+                    owner.apply_tick(tick)
+                except Exception as exc:  # noqa: BLE001 - one bad tick, not a dead feed
+                    self._record_malformed_tick(token, tick, exc, stamp)
+                    continue
                 applied += 1
+                # Only a *successful* apply counts as freshness for the artifact.
                 name = self._artifact_names.get(id(owner))
                 if name is not None:
                     self.artifact_last_update_ms[name] = stamp
         return applied
+
+    def _record_malformed_tick(
+        self, token: object, tick: dict, exc: BaseException, now: int
+    ) -> None:
+        """Count a rejected tick and log it, throttled to ~once per 10 s.
+
+        Runs at the tick cadence, so unconditional logging would flood. The throttled line
+        carries the instrument token, the field(s) that look wrong, and the exception type
+        — enough to identify the contract and the offending value without a debugger.
+        """
+        self.malformed_ticks += 1
+        self._malformed_since_log += 1
+        if (
+            self._last_malformed_log_ms is not None
+            and (now - self._last_malformed_log_ms) < _MALFORMED_LOG_INTERVAL_MS
+        ):
+            return
+        suspects = _suspect_tick_fields(tick)
+        logger.error(
+            "rejected %d malformed tick(s) in the last window (%d total); latest: "
+            "token=%s %s -> %s: %s",
+            self._malformed_since_log,
+            self.malformed_ticks,
+            token,
+            ", ".join(suspects) if suspects else "no field flagged",
+            type(exc).__name__,
+            exc,
+        )
+        self._last_malformed_log_ms = now
+        self._malformed_since_log = 0
+
+    def check_pipeline_alive(self, consumer, bridge=None) -> None:
+        """Fail fast if the ingestion pipeline has stopped. Called every grid tick.
+
+        Two structural failures are surfaced here instead of being inferred from the
+        freshness monitor ~60 s later:
+
+        * the tick-consumer task is no longer running — nothing can update the tables;
+        * the bridge has exhausted its confirmed-reconnect ladder, so the socket is known
+          to be unusable right now.
+
+        Both raise, which routes to the controller's fatal handler and a clean restart.
+        """
+        if consumer is not None and consumer.done() and not consumer.cancelled():
+            cause = self.consumer_error
+            if cause is None:
+                try:
+                    cause = consumer.exception()
+                except asyncio.CancelledError:  # pragma: no cover - cancelled mid-check
+                    return
+            raise CaptureConsumerFailed(
+                "tick consumer is no longer running "
+                f"({type(cause).__name__ if cause else 'exited without an exception'}); "
+                f"{self.malformed_ticks} malformed tick(s) rejected this session"
+            ) from cause
+        unrecoverable = getattr(bridge, "feed_unrecoverable", None)
+        if unrecoverable is not None and unrecoverable.is_set():
+            raise CaptureStalledError(
+                "ticker could not establish a confirmed subscription after "
+                f"{getattr(bridge, 'subscribe_failures', 0)} subscription failure(s) and "
+                f"{getattr(bridge, 'reconnect_failures', 0)} failed confirmed reconnect(s)"
+            )
 
     def has_received_data(self) -> bool:
         """True once any tick batch has reached the engine from any entry point.
@@ -955,6 +1089,9 @@ class CaptureEngine:
                     snapshot = self.capture_snapshot(ts)
                     if broadcaster is not None:
                         broadcaster.publish_latest(snapshot)
+                # Structural failures first: a dead consumer or an unusable socket is known
+                # now, and must not wait for the freshness monitor's deadline to be noticed.
+                self.check_pipeline_alive(consumer, bridge)
                 # Health check: escalate to a clean process restart if the feed is dead.
                 self.observe_feed_health(self._clock())
         finally:
@@ -974,11 +1111,28 @@ class CaptureEngine:
                     await close_broadcaster()
 
     async def _consume(self, bridge) -> None:  # pragma: no cover - live loop
-        async for batch in bridge.batches():
-            now = self._clock()
-            self.apply_ticks(batch, now)
-            self.stall.mark_message(now)
-            self.freshness.observe(batch, now)
+        """Drain tick batches into the tables until cancelled.
+
+        Individual malformed ticks are absorbed inside :meth:`apply_ticks`. Anything that
+        escapes to here is structural, so it is recorded and re-raised: without ingestion
+        the tables can never update again, and :meth:`check_pipeline_alive` turns that into
+        an immediate, named failure on the next grid tick.
+        """
+        try:
+            async for batch in bridge.batches():
+                now = self._clock()
+                self.apply_ticks(batch, now)
+                self.stall.mark_message(now)
+                self.freshness.observe(batch, now)
+        except asyncio.CancelledError:
+            raise  # normal shutdown path
+        except BaseException as exc:  # noqa: BLE001 - recorded, then re-raised
+            self.consumer_error = exc
+            logger.exception(
+                "tick consumer terminated (%s); no table can update until capture restarts",
+                type(exc).__name__,
+            )
+            raise
 
 
 def build_index_writer(table: IndexTable, path) -> FileWriterThread:
@@ -1052,6 +1206,7 @@ def build_index_fno_writer(matrix, path) -> FileWriterThread:
 
 
 __all__ = [
+    "CaptureConsumerFailed",
     "CaptureEngine",
     "CaptureStalledError",
     "FileWriterThread",

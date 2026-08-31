@@ -21,7 +21,7 @@ related: ["[[live-capture-performance]]", "[[bin-structure-spec]]", "[[live-data
 | BIN encoding | **`struct` + NumPy** (custom codec) | Our own integer-native schema ([[bin-structure-spec]]); `numpy.tobytes` LE layout is the wire layout — exact, zero-parse |
 | Compression | **`zstandard`** (level 17) | Same algorithm/level as `algo_engine` |
 | Numeric arrays | **NumPy** (integer dtypes) | Columnar tables, fast in-place updates, exact `i64`/`u64` |
-| Rate limiting | `aiolimiter` or custom token bucket | Historical download throttling |
+| Rate limiting | custom token bucket (`app/historical/limiter.py`) | Historical download throttling |
 | Config | Pydantic Settings + `.env` | Typed; target runtime uses `KITE_API_KEY`, Calspread session-source config, and data paths. `KITE_API_SECRET` is legacy downloader-login drift and belongs to Calspread. |
 
 > **No `msgpack`, no bincode library, no Parquet.** We define the format ourselves

@@ -184,14 +184,6 @@ export interface IndexFnoBoardPayload {
   daily_spread: number[];
 }
 
-/**
- * One index projected out of the columnar board.
- *
- * Structurally a `StockRow` so the shared row renderers accept it unchanged:
- * `tradingsymbol` carries the underlying and `name` the spot symbol.
- */
-export type IndexFnoRow = StockRow;
-
 export interface PerUnderlyingStatus {
   underlying: string;
   connected: boolean;

@@ -273,7 +273,9 @@ browser tab. `_build_snapshot_messages` runs in `asyncio.to_thread`, which keeps
 responsive but buys no parallelism for pure-Python `math` under the GIL. The stock board ships all
 5 depth levels for all 4 legs of ~210 stocks every second (310 KiB JSON → 119 KiB deflated),
 contradicting `docs/50-frontend/websocket-protocol.md`, which claims depth is excluded.
-`OptionGridDelta` and `KEYFRAME_INTERVAL = 30` are implemented and dead.
+`OptionGridDelta` is implemented but unused by the backend (the frontend consumer in
+`app/option-chain/page.tsx` is live). `KEYFRAME_INTERVAL` was removed in the dead-code
+audit; reinstate it here if the keyframe+delta path is adopted.
 
 ### F6 — IV solve fails on 13–18% of strikes
 
@@ -708,7 +710,8 @@ real LTP and zeroed depth is precisely the fabrication invariant 2 forbids, so `
 ticks carry `flags |= LTP_ONLY` and the writer rejects them outright. They exist to keep the
 display alive and to prove the account still has a working uplink.
 
-Weighted round-robin over the 1 req/s budget using `aiolimiter` (already a dependency): T0 in
+Weighted round-robin over the 1 req/s budget using the existing token bucket in
+`app/historical/limiter.py` (`aiolimiter` was removed as an unused dependency): T0 in
 one slot of every three (≈3 s refresh), T1 and T2 sharing the rest (≈6–9 s). The poller yields
 its budget during bootstrap so the ATM seed is not starved.
 
@@ -908,8 +911,9 @@ The freedom this topology creates, and the reason to prefer it. Suggested starti
 Then take the wins the existing analysis already ranked, in payoff order: drop or lower
 deflate on `stocks`; suppress the stock board entirely when no client has that page open (free
 — the archive is written independently); ship binary using the existing `.bin` layout and a
-browser `DataView`; and activate `OptionGridDelta` / `KEYFRAME_INTERVAL`, which are
-implemented and dead (`ws/protocol.py:40,147`).
+browser `DataView`; and activate `OptionGridDelta` (`ws/protocol.py`), whose builder is
+implemented and whose frontend consumer is live, but which the backend never emits. A
+keyframe interval constant would need reintroducing.
 
 Raising the chain cadence above 1 Hz is only meaningful if ticks actually arrive faster than
 1 Hz per instrument. Measure inter-tick intervals per token from the raw corpus before

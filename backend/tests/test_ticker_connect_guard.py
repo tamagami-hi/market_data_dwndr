@@ -114,12 +114,11 @@ async def test_every_reconnect_re_arms_the_confirmation():
     assert bridge.connect_confirmed.is_set()
 
     bridge._factory = lambda k, t: SilentTicker(k, t)
-    bridge.reconnect()
+    with pytest.raises(TickerConnectFailed):
+        await bridge.reconnect_confirmed(timeout=0.05)
 
     assert bridge.connect_confirmed.is_set() is False
     assert bridge.connect_attempts == 2
-    with pytest.raises(TickerConnectFailed):
-        await bridge.await_connected(timeout=0.05)
 
 
 async def test_full_token_universe_is_replayed_on_every_connect():

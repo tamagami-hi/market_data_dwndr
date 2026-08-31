@@ -35,11 +35,23 @@ def to_paise(value: Any) -> int:
 
 
 def field_int(tick: dict, key: str) -> int:
-    """Non-negative integer field with a 0 default (qty / OI / volume)."""
+    """Non-negative integer field with a 0 default (qty / OI / volume).
+
+    **Clamped at zero**, which is what the docstring always claimed but the code did not
+    enforce. These fields are counts and land in unsigned columns (``DT_U64``/``DT_U32``),
+    so a negative value is nonsense rather than a parse failure — and on NumPy 2.x
+    assigning it raises ``OverflowError`` at ``block.columns[...][idx] = value``. That
+    exception used to escape ``apply_tick`` and terminate the whole tick consumer, freezing
+    every table while the 1 Hz grid kept writing the stale state.
+
+    A value that cannot be coerced to an integer at all still raises: that is a genuinely
+    malformed tick, and the caller counts and skips it
+    (``CaptureEngine.apply_ticks``) rather than losing the batch.
+    """
     value = tick.get(key)
     if value is None:
         return 0
-    return int(value)
+    return max(0, int(value))
 
 
 def ohlc_paise(tick: dict) -> tuple[int, int, int, int]:
@@ -64,11 +76,13 @@ def depth_side(tick: dict, side: str, n_levels: int) -> list[tuple[int, int, int
     for i in range(n_levels):
         if i < len(levels):
             lvl = levels[i]
+            # Quantity and order count are unsigned on the wire format, so clamp for the
+            # same reason as ``field_int``: a negative would raise on column assignment.
             out.append(
                 (
                     to_paise(lvl.get("price")),
-                    int(lvl.get("quantity") or 0),
-                    int(lvl.get("orders") or 0),
+                    max(0, int(lvl.get("quantity") or 0)),
+                    max(0, int(lvl.get("orders") or 0)),
                 )
             )
         else:

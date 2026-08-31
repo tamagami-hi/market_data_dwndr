@@ -45,7 +45,7 @@ volume, oi?]`.
 ## Rate limiting & retries
 
 - **Token-bucket limiter:** configurable requests/second, burst up to ~8; shared across
-  all download tasks (`aiolimiter` or custom).
+  all download tasks (`app/historical/limiter.py`, a custom token bucket).
 - **Retries:** up to 5 attempts with exponential backoff on HTTP 429 / 5xx.
 
 ## Request validation (preserve these guards)
