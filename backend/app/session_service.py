@@ -18,7 +18,7 @@ from collections.abc import Callable
 
 from app.kite.auth import KiteAuthenticator, login_url
 from app.kite.external_rate import resolve_daily_risk_free_rate
-from app.kite.external_token import fetch_external_access_token
+from app.kite.external_token import fetch_external_access_token, token_broker_configured
 from app.kite.login import (
     build_kite_http_client,
     run_login,
@@ -163,7 +163,7 @@ class SessionService:
         """Swap in a genuinely new broker token, or leave the current session untouched.
 
         **Fetch first, replace second.** The previous implementation invalidated the
-        persisted token *before* asking calspread for a replacement, so a broker that
+        persisted token *before* asking the broker for a replacement, so a broker that
         answered ``authenticated: false`` left the deployment with no session at all —
         capture then could not start until someone logged in again. The deployment's own
         state directory recorded 27 such destructive attempts in the 2026-08-06 session
@@ -310,10 +310,7 @@ class SessionService:
 
     @property
     def external_token_source_configured(self) -> bool:
-        return bool(
-            getattr(self.settings, "kite_token_broker_url", None)
-            and getattr(self.settings, "kite_token_broker_passcode", None)
-        )
+        return token_broker_configured(self.settings)
 
     def status(self) -> dict:
         """A JSON-friendly snapshot of auth/session state (no secrets)."""

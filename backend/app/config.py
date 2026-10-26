@@ -5,8 +5,8 @@ Reads a ``.env`` file. ``KITE_API_KEY``, ``KITE_API_SECRET``, ``MARKET_DATA_PATH
 have sensible defaults.
 
 The daily ``access_token`` and the risk-free rate are deliberately *not* here --
-the token is obtained at login and the risk-free rate is fetched daily from the
-calspread broker (``RISK_FREE_RATE`` in the env is the fallback), because they change
+the token is fetched from the broker login service and the risk-free rate daily
+from the calspread broker (``RISK_FREE_RATE`` in the env is the fallback), because they change
 every day.
 
 Derived paths (``indices_dir`` etc.) are rooted at ``MARKET_DATA_PATH`` and match the
@@ -22,6 +22,12 @@ from typing import Annotated
 
 from pydantic import AliasChoices, AnyHttpUrl, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from app.kite.totp import TotpSeedError, decode_seed
+
+# The broker login service's token API; the subdomain lives only in the .env.
+TOKEN_BROKER_HOST_SUFFIX = ".beonedge.in"
+TOKEN_PATH = "/api/v1/token"
 
 # Locked index universe (docs/90-decisions/decisions-and-open-questions.md #9).
 DEFAULT_INDICES = [
@@ -91,14 +97,28 @@ class Settings(BaseSettings):
         ),
     )
 
-    # --- existing-session broker (backend-only; checked before local credentials) ---
+    # --- broker login service token API (backend-only; checked before local credentials) ---
     kite_token_broker_url: AnyHttpUrl | None = Field(
         default=None,
-        description="HTTPS endpoint that returns an existing Kite access token",
+        description=(
+            "The broker login service's token API, https://<subdomain>.beonedge.in/api/v1/token"
+        ),
+    )
+    kite_token_broker_cf_client_id: SecretStr | None = Field(
+        default=None,
+        description="Cloudflare Access service token Client ID for the token API",
+    )
+    kite_token_broker_cf_client_secret: SecretStr | None = Field(
+        default=None,
+        description="Cloudflare Access service token Client Secret for the token API",
+    )
+    kite_token_broker_totp_seed: SecretStr | None = Field(
+        default=None,
+        description="The account's token API seed (base32) from the broker login service",
     )
     kite_token_broker_passcode: SecretStr | None = Field(
         default=None,
-        description="Backend-only x-token-passcode for the Kite token + risk-free-rate brokers",
+        description="Backend-only x-token-passcode for the calspread risk-free-rate broker",
     )
     kite_rate_broker_url: AnyHttpUrl | None = Field(
         default=None,
@@ -612,29 +632,44 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_token_broker(self) -> Settings:
-        url = self.kite_token_broker_url
-        passcode = self.kite_token_broker_passcode
-        if (url is None) != (passcode is None):
-            raise ValueError(
-                "KITE_TOKEN_BROKER_URL and KITE_TOKEN_BROKER_PASSCODE must be set together"
-            )
-        if url is None:
+        values = {
+            "KITE_TOKEN_BROKER_URL": self.kite_token_broker_url,
+            "KITE_TOKEN_BROKER_CF_CLIENT_ID": self.kite_token_broker_cf_client_id,
+            "KITE_TOKEN_BROKER_CF_CLIENT_SECRET": self.kite_token_broker_cf_client_secret,
+            "KITE_TOKEN_BROKER_TOTP_SEED": self.kite_token_broker_totp_seed,
+        }
+        if all(value is None for value in values.values()):
             return self
-        if not passcode or not passcode.get_secret_value().strip():
-            raise ValueError("KITE_TOKEN_BROKER_PASSCODE must not be blank")
+        missing = [name for name, value in values.items() if value is None]
+        if missing:
+            raise ValueError(
+                f"{', '.join(values)} must be set together; missing {', '.join(missing)}"
+            )
+        for name, value in values.items():
+            if name != "KITE_TOKEN_BROKER_URL" and not value.get_secret_value().strip():
+                raise ValueError(f"{name} must not be blank")
+        try:
+            decode_seed(self.kite_token_broker_totp_seed.get_secret_value())
+        except TotpSeedError as exc:
+            raise ValueError(f"KITE_TOKEN_BROKER_TOTP_SEED: {exc}") from exc
         if not self.kite_user_id or not self.kite_user_id.strip():
             raise ValueError("KITE_USER_ID is required when the shared token broker is enabled")
+        url = self.kite_token_broker_url
         if (
             url.scheme != "https"
-            or url.host != "calspread.online"
+            or not url.host
+            or not url.host.endswith(TOKEN_BROKER_HOST_SUFFIX)
             or url.port not in (None, 443)
-            or url.path != "/api/kite/token"
+            or url.path != TOKEN_PATH
             or url.query is not None
             or url.fragment is not None
             or url.username is not None
             or url.password is not None
         ):
-            raise ValueError("KITE_TOKEN_BROKER_URL must be the approved HTTPS token endpoint")
+            raise ValueError(
+                "KITE_TOKEN_BROKER_URL must be the broker login service's HTTPS token API, "
+                f"https://<subdomain>{TOKEN_BROKER_HOST_SUFFIX}{TOKEN_PATH}"
+            )
         return self
 
     @model_validator(mode="after")

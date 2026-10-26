@@ -182,8 +182,10 @@ def _settings(tmp_path):
         kite_api_secret="secret",
         kite_user_id="AB1234",
         kite_password=None,
-        kite_token_broker_url="https://calspread.online/api/kite/token",
-        kite_token_broker_passcode=object(),
+        kite_token_broker_url="https://broker.beonedge.in/api/v1/token",
+        kite_token_broker_cf_client_id=object(),
+        kite_token_broker_cf_client_secret=object(),
+        kite_token_broker_totp_seed=object(),
         risk_free_rate=None,
     )
 

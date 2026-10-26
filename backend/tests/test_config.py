@@ -27,6 +27,9 @@ def _set(monkeypatch, **env):
         "HTTP_HOST",
         "RISK_FREE_RATE",
         "KITE_TOKEN_BROKER_URL",
+        "KITE_TOKEN_BROKER_CF_CLIENT_ID",
+        "KITE_TOKEN_BROKER_CF_CLIENT_SECRET",
+        "KITE_TOKEN_BROKER_TOTP_SEED",
         "KITE_TOKEN_BROKER_PASSCODE",
         "KITE_USER_ID",
         "AUTH_POLL_START",
@@ -317,49 +320,60 @@ def test_release_maintenance_token_rejects_weak_values(monkeypatch, token):
         _settings()
 
 
-def test_token_broker_settings_are_paired_https_and_redacted(monkeypatch):
-    _set(
-        monkeypatch,
-        KITE_TOKEN_BROKER_URL="https://calspread.online/api/kite/token",
-        KITE_TOKEN_BROKER_PASSCODE="never-print-this",
-        KITE_USER_ID="AB1234",
-    )
+_TOKEN_API = {
+    "KITE_TOKEN_BROKER_URL": "https://broker.beonedge.in/api/v1/token",
+    "KITE_TOKEN_BROKER_CF_CLIENT_ID": "client-id.access",
+    "KITE_TOKEN_BROKER_CF_CLIENT_SECRET": "never-print-this",
+    "KITE_TOKEN_BROKER_TOTP_SEED": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+}
+
+
+def test_token_broker_settings_are_set_together_https_and_redacted(monkeypatch):
+    _set(monkeypatch, **_TOKEN_API, KITE_USER_ID="AB1234")
 
     settings = _settings()
 
-    assert str(settings.kite_token_broker_url) == "https://calspread.online/api/kite/token"
-    assert isinstance(settings.kite_token_broker_passcode, SecretStr)
+    assert str(settings.kite_token_broker_url) == _TOKEN_API["KITE_TOKEN_BROKER_URL"]
+    assert isinstance(settings.kite_token_broker_cf_client_secret, SecretStr)
+    assert isinstance(settings.kite_token_broker_totp_seed, SecretStr)
     assert "never-print-this" not in repr(settings)
+    assert _TOKEN_API["KITE_TOKEN_BROKER_TOTP_SEED"] not in repr(settings)
 
 
 @pytest.mark.parametrize(
     "env",
     [
-        {"KITE_TOKEN_BROKER_URL": "https://calspread.online/api/kite/token"},
-        {"KITE_TOKEN_BROKER_PASSCODE": "secret"},
-        {
-            "KITE_TOKEN_BROKER_URL": "http://calspread.online/api/kite/token",
-            "KITE_TOKEN_BROKER_PASSCODE": "secret",
-        },
+        {"KITE_TOKEN_BROKER_URL": _TOKEN_API["KITE_TOKEN_BROKER_URL"]},
+        {key: value for key, value in _TOKEN_API.items() if key != "KITE_TOKEN_BROKER_TOTP_SEED"},
+        {**_TOKEN_API, "KITE_TOKEN_BROKER_URL": "http://broker.beonedge.in/api/v1/token"},
+        {**_TOKEN_API, "KITE_TOKEN_BROKER_URL": "https://calspread.online/api/kite/token"},
+        {**_TOKEN_API, "KITE_TOKEN_BROKER_URL": "https://broker.beonedge.in/api/state"},
+        {**_TOKEN_API, "KITE_TOKEN_BROKER_URL": "https://beonedge.in.evil.example/api/v1/token"},
+        {**_TOKEN_API, "KITE_TOKEN_BROKER_TOTP_SEED": "not base32!"},
+        {**_TOKEN_API, "KITE_TOKEN_BROKER_CF_CLIENT_SECRET": "  "},
     ],
 )
 def test_token_broker_rejects_partial_or_insecure_configuration(monkeypatch, env):
-    _set(monkeypatch, **env)
+    _set(monkeypatch, **env, KITE_USER_ID="AB1234")
 
     with pytest.raises(ValidationError):
         _settings()
 
 
 def test_token_broker_requires_expected_user_identity(monkeypatch):
-    _set(
-        monkeypatch,
-        KITE_TOKEN_BROKER_URL="https://calspread.online/api/kite/token",
-        KITE_TOKEN_BROKER_PASSCODE="secret",
-    )
+    _set(monkeypatch, **_TOKEN_API)
 
     with pytest.raises(ValidationError, match="KITE_USER_ID"):
         _settings()
 
+
+def test_rate_passcode_alone_does_not_enable_the_token_broker(monkeypatch):
+    _set(monkeypatch, KITE_TOKEN_BROKER_PASSCODE="secret")
+
+    settings = _settings()
+
+    assert settings.kite_token_broker_url is None
+    assert isinstance(settings.kite_token_broker_passcode, SecretStr)
 
 
 def test_market_holidays_parse_normalize_and_deduplicate(monkeypatch):

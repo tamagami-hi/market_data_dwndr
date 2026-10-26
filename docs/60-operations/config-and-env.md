@@ -27,8 +27,11 @@ Configuration is via **pydantic-settings** reading a `.env` file (typed, validat
 | `ARCHIVE_DATA_PATH` | ✅ | `/data/z_market_data` | Separate root for verified `.bin.zst` archives |
 | `KITE_USER_ID` | legacy code only | `AB1234` | Current login-oriented setting; target replaces its validation role with non-secret `KITE_EXPECTED_USER_ID` |
 | `KITE_PASSWORD` | legacy code only | `••••` | Must move out of this downloader; Calspread owns broker login |
-| `KITE_TOKEN_BROKER_URL` | – | `https://calspread.online/api/kite/token` | Backend-only lookup of the existing Calspread-held session |
-| `KITE_TOKEN_BROKER_PASSCODE` | – | `••••` | Authenticates `md-control` to Calspread; it is not a Kite credential |
+| `KITE_TOKEN_BROKER_URL` | – | `https://<subdomain>.beonedge.in/api/v1/token` | The broker login service's token API, which hands out the Kite token it logged in for `KITE_USER_ID`; set with the three below |
+| `KITE_TOKEN_BROKER_CF_CLIENT_ID` | with the URL | `••••.access` | Cloudflare Access service token Client ID the token API's Access policy allows |
+| `KITE_TOKEN_BROKER_CF_CLIENT_SECRET` | with the URL | `••••` | That service token's Client Secret |
+| `KITE_TOKEN_BROKER_TOTP_SEED` | with the URL | `••••` | The account's token API seed (base32), shown once by the broker login dashboard; each request sends its current code. Not the Zerodha login seed |
+| `KITE_TOKEN_BROKER_PASSCODE` | with `KITE_RATE_BROKER_URL` | `••••` | `x-token-passcode` for the Calspread risk-free-rate endpoint; it is not a Kite credential |
 | `RELEASE_MAINTENANCE_TOKEN` | release | `••••` | At least 32 characters; authenticates the internal capture drain API |
 | `RELEASE_MAINTENANCE_TTL_SECONDS` | – | `900` | Persistent drain lease lifetime; release tooling requires 600–900 seconds |
 | `RISK_FREE_RATE` | – | `0.0691` | Fallback risk-free rate (decimal) used only when `KITE_RATE_BROKER_URL` is unavailable |

@@ -10,26 +10,31 @@ trading). See the knowledge base under [`../docs`](../docs) and the phase/batch 
 cd backend
 uv venv                      # or: python -m venv .venv
 uv sync --extra dev           # locked runtime + dev dependencies
-cp .env.example .env         # then fill in Calspread/session-source config and data paths
+cp .env.example .env         # then fill in the token API config and data paths
 ```
 
-## Calspread session synchronization and daily initialization
+## Broker login session synchronization and daily initialization
 
-With `KITE_TOKEN_BROKER_URL` and `KITE_TOKEN_BROKER_PASSCODE` configured, the lifespan
-scheduler retrieves and validates Calspread's existing token during the configured
-trading-day window. The frontend `/login` page is a read-only initialization view: it
-shows broker configuration, fetch/validation state, capture readiness, and whether the
-downloader is running. It does not start login or capture.
+With `KITE_TOKEN_BROKER_URL`, `KITE_TOKEN_BROKER_CF_CLIENT_ID`,
+`KITE_TOKEN_BROKER_CF_CLIENT_SECRET` and `KITE_TOKEN_BROKER_TOTP_SEED` configured, the
+lifespan scheduler fetches and validates the Kite token from the broker login service's
+token API (`POST /api/v1/token`) during the configured trading-day window. Each request
+passes Cloudflare Access with the service token and sends `KITE_USER_ID` with the current
+code from the account's token API seed; a code is accepted once, so a second fetch in the
+same 30 s step waits for the next one. `503 no_token_yet` means the morning login has not
+finished, and the scheduler asks again on its next poll. The frontend `/login` page is a
+read-only initialization view: it shows broker configuration, fetch/validation state,
+capture readiness, and whether the downloader is running. It does not start login or capture.
 
-Calspread is the target architecture's sole Kite login/session authority. Repeating a lookup
-normally returns the same access token until an administrator relogs in through Calspread.
-Backend, WS, REST, and container restarts reuse that token; feed recovery never requests a
-different one. The risk-free rate is fetched from the Calspread rate endpoint (env fallback).
+The broker login service is the sole Kite login/session authority. Repeating a lookup
+returns the same access token for the day (it lasts until 06:00 IST). Backend, WS, REST,
+and container restarts reuse that token; feed recovery never requests a different one. The
+risk-free rate is still fetched from the Calspread rate endpoint (env fallback).
 
 The commands below describe a legacy direct-login implementation that still exists in code.
 They are not the target operational fallback and must not be copied into distributed services.
-When Calspread has no session or Kite rejects its current token, the target operation is for an
-administrator to relogin through Calspread.
+When the broker login service has no token or Kite rejects it, the target operation is for an
+administrator to log the account in from the broker login dashboard.
 
 Run it interactively inside the backend container (needs a TTY for the hidden prompts):
 
