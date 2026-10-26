@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "stack": "data_downloader",
+  "environment": "production",
+  "short": "dd",
+  "image_prefix": "market-data-dwndr",
+  "vps": {
+    "root": "/srv/dev_stack/DATA_DOWNLOADER",
+    "stack_dir": "/srv/dev_stack/DATA_DOWNLOADER",
+    "paths_file": "/srv/dev_stack/DATA_DOWNLOADER/paths.json",
+    "images_dir": "/srv/dev_stack/DATA_DOWNLOADER/images",
+    "compose_file": "/srv/dev_stack/DATA_DOWNLOADER/docker-compose.yml",
+    "compose_name": "docker-compose.yml",
+    "env_file": "/srv/dev_stack/DATA_DOWNLOADER/.env",
+    "env_example": "/srv/dev_stack/DATA_DOWNLOADER/.env.example",
+    "version_file": "/srv/dev_stack/DATA_DOWNLOADER/version.json",
+    "version_name": "version.json",
+    "manifest_file": "/srv/dev_stack/DATA_DOWNLOADER/manifest.json",
+    "checksums_file": "/srv/dev_stack/DATA_DOWNLOADER/checksums.sha256",
+    "deploy_script": "/srv/dev_stack/DATA_DOWNLOADER/data_downloader_deploy.sh",
+    "rollback_script": "/srv/dev_stack/DATA_DOWNLOADER/data_downloader_rollback.sh",
+    "guide": "/srv/dev_stack/DATA_DOWNLOADER/APP_GUIDE.md",
+    "market_data_dir": "/srv/dev_stack/DATA_DOWNLOADER/MARKET_DATA",
+    "docker": "docker",
+    "backend_container": "market-data-dwndr-backend",
+    "frontend_container": "market-data-dwndr-frontend",
+    "compose_project": "data-downloader",
+    "lock_file": "/run/lock/data-downloader.lock"
+  },
+  "backup": {
+    "root": "/srv/backup/DATA_DOWNLOADER/backup",
+    "rollback_root": "/srv/backup/DATA_DOWNLOADER/backup/rollback",
+    "rollback_images": "/srv/backup/DATA_DOWNLOADER/backup/rollback/images",
+    "logs_root": "/srv/backup/DATA_DOWNLOADER/logs",
+    "deploy_log": "/srv/backup/DATA_DOWNLOADER/logs/deploy",
+    "app_log": "/srv/backup/DATA_DOWNLOADER/logs/app"
+  },
+  "images": [
+    {
+      "key": "backend",
+      "archive": "backend.tar.gz"
+    },
+    {
+      "key": "frontend",
+      "archive": "frontend.tar.gz"
+    }
+  ],
+  "health": {
+    "mode": "docker",
+    "settle_seconds": 180
+  },
+  "capture": {
+    "default_open": "09:00",
+    "default_close": "15:30",
+    "default_timezone": "Asia/Kolkata"
+  },
+  "retention": {
+    "keep_releases": 5
+  }
+}

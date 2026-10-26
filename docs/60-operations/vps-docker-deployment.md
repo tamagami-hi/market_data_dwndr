@@ -126,22 +126,22 @@ calspread.online (our own AWS-hosted platform) and never required a static IP.
 
 ## 4. Validate, build, and start
 
-```bash
-PROJECT_DIR=/srv/dev_stack/market_data_dwndr ./deploy/preflight.sh
+Releases are built on the build machine and shipped as image bundles; the VPS needs no
+checkout and builds nothing. From the build machine:
 
-./release_manager/status.sh
-./release_manager/deploy.sh
+```bash
+./release_manager/status.sh --diagnose     # the VPS is ready, the layout is the contract's
+./release_manager/status.sh --do export    # build both images, prove they start, stage a bundle
+./release_manager/status.sh --do deploy    # ship it and run the VPS-native deploy
 ```
 
-The release manager verifies that the checkout is clean and exactly matches
-`origin/main`, builds images tagged with the commit plus a non-secret hash of
-`NEXT_PUBLIC_BACKEND_URL`, `APP_UID`, and `APP_GID`, checks capture state again
-immediately before restart, health-checks both services, and records the prior image
-tag for rollback. The config hash prevents changed browser-visible routing or host file
-ownership from reusing stale images. It preserves both VPS env files and both data
-mounts.
+The VPS-native deploy (`data_downloader_deploy.sh`) refuses inside the capture window and
+while capture is running, drains the capture writers through the release-maintenance
+lease, archives the running images for rollback, health-gates both containers, and rolls
+back by itself if they are not healthy. It never touches `.env` or the data mounts. See
+`release_manager/README.md` and `release_manager/stacks/data_downloader/APP_GUIDE.md`.
 
-Use raw Compose only for read-only inspection. Do not replace `deploy.sh` with a manual
+Use raw Compose only for read-only inspection. Do not replace the deploy with a manual
 `up --build`: that bypasses capture-state, immutable-tag, health, and rollback gates.
 
 ```bash
@@ -195,11 +195,12 @@ example and change `WorkingDirectory`, `Environment=PROJECT_DIR`,
 ## 6. Updates and rollback
 
 ```bash
-git pull --ff-only
-./release_manager/deploy.sh
+./release_manager/status.sh --do release patch   # on main: bump, commit, tag, push
+./release_manager/status.sh --do export
+./release_manager/status.sh --do deploy
 
-# Restore the most recently replaced image pair without touching market data:
-./release_manager/rollback.sh
+# Restore the newest archived release without touching market data:
+./release_manager/status.sh --do rollback --latest
 ```
 
 Before deployment after credential exposure, rotate the Calspread endpoint passcode and have an

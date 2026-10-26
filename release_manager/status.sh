@@ -1,387 +1,426 @@
 #!/usr/bin/env bash
-# market_data_dwndr — release & sync console. Run from anywhere inside the repo.
+# ─────────────────────────────────────────────────────────────────────────────
+# status.sh — the CONTROL CENTER, and the only script an operator runs.
 #
-# Modelled on boe_app/release_manager/status.sh, adapted to this repo:
-#   • the version lives in backend/app/__init__.py (__version__), not a VERSION file
-#   • releases are tagged vX.Y.Z (annotated) on main and pushed to origin
-#   • the VPS deploy source is origin/main; the shippable artifact is a cut tag
+# A dashboard plus an interactive menu: Repository → Provision → Export →
+# Ship + Deploy. Keeping main ready, cutting a release, exporting, shipping,
+# deploying, rolling back, reloading and diagnosing all live in lib/ops_*.sh
+# and run from here, so there is exactly one implementation of each.
 #
-# The DEFAULT run is REPORT-ONLY: it prints status + "what to do next" and changes
-# nothing. Pass --interactive (on a terminal) to be prompted y/N before each action
-# (commit, sync local↔remote main, cut a release, build/deploy/ship).
+# Every operation runs in a subshell: an `exit` inside one ends that operation
+# and returns to the menu, never the menu itself.
 #
-# Sections, always in this order:
-#   1. MAIN — REMOTE   origin/main: the canonical version deploy.sh --ship ships.
-#   2. MAIN — LOCAL    local main sync + branches waiting to be integrated.
-#   3. CONTRIBUTORS    open PRs into main (review + approve; needs gh CLI).
-#   4. RELEASE         current version, latest tag, staged build, rollbacks, VPS.
+# The VPS side is separate by necessity: data_downloader_deploy.sh and
+# data_downloader_rollback.sh are shipped to the VPS and own every docker
+# command there. status.sh only uploads files and invokes them over SSH.
 #
-# Flags (default = --all):
-#   --main            sections 1 + 2.
-#   --contributors    section 3 (alias: --prs).
-#   --release         section 4.
-#   --vps <key>       query the live VPS-deployed version (SSH key path).
-#                     alias: --remote <key>.
-#   --interactive/-i  prompt y/N to EXECUTE actions (needs a terminal).
-#   --read-only       force report-only (the default anyway).
-#   --all [key]       everything (default). Optional trailing key queries the VPS.
+# Usage:
+#   ./release_manager/status.sh                    the interactive control center
+#   ./release_manager/status.sh --status           print the dashboard and exit
+#   ./release_manager/status.sh --diagnose         readiness check; exit 1 on blockers
+#   ./release_manager/status.sh --do <op> [opts]   run one operation without the menu
+#
+# Operations for --do (the same ones the menu runs):
+#   commit [--message TEXT] [--yes]  commit every change on main
+#   integrate BRANCH [--yes]         merge origin/BRANCH into main
+#   sync [--yes]                     pull --rebase origin/main, then push main
+#   prs [--approve N] [--yes]        list open PRs into main, or approve one
+#   release patch|minor|major [--yes] [--no-push]
+#                                    bump __version__, commit, tag vX.Y.Z, push both
+#   provision                        create the VPS tree, stage .env.example
+#   export [--skip-build] [--backend-url URL]
+#                                    build both images, prove they start, stage a bundle
+#   ship                             upload the newest bundle, do not deploy
+#   deploy [--yes] [--force]         upload and deploy the newest bundle
+#   rollback --list | --latest | --to VERSION   [--yes] [--force]
+#   reload [--yes] [--force]         recreate containers with the current .env
+#   logs [FILE]                      list and tail the deploy logs
+#   containers                       compose ps and recent logs of both services
+#   validate                         validate the path contract
+#
+# --force on deploy, rollback and reload bypasses the capture-window and
+# capture-running guards, for a stuck stack that must be replaced now.
+# Without a terminal, every operation that would prompt needs --yes.
+# ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
-ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-[[ -n "$ROOT_DIR" ]] || { echo "Not inside a git repo." >&2; exit 1; }
-RELEASE_DIR="$ROOT_DIR/release_manager"
-RELEASE_ENV="$RELEASE_DIR/.env"
-RECENT_DIR="$RELEASE_DIR/recent_builds"
-ROLLBACK_DIR="$RELEASE_DIR/rollback"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RM_DIR="$ROOT_DIR/release_manager"
+BUILD_DIR="$RM_DIR/build"
 
-LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
-# shellcheck source=lib/common.sh
-source "$LIB_DIR/common.sh"
-# shellcheck source=lib/repo_sync.sh
-source "$LIB_DIR/repo_sync.sh"
+# shellcheck source=lib/ui.sh
+source "$RM_DIR/lib/ui.sh"
 # shellcheck source=lib/version.sh
-source "$LIB_DIR/version.sh"
+source "$RM_DIR/lib/version.sh"
+# shellcheck source=lib/stacks.sh
+source "$RM_DIR/lib/stacks.sh"
+# shellcheck source=lib/hosts.sh
+source "$RM_DIR/lib/hosts.sh"
+# shellcheck source=lib/paths.sh
+source "$RM_DIR/lib/paths.sh"
+# shellcheck source=lib/remote_state.sh
+source "$RM_DIR/lib/remote_state.sh"
+# shellcheck source=lib/ops_repo.sh
+source "$RM_DIR/lib/ops_repo.sh"
+# shellcheck source=lib/ops_provision.sh
+source "$RM_DIR/lib/ops_provision.sh"
+# shellcheck source=lib/ops_export.sh
+source "$RM_DIR/lib/ops_export.sh"
+# shellcheck source=lib/ops_release.sh
+source "$RM_DIR/lib/ops_release.sh"
+# shellcheck source=lib/ops_ship.sh
+source "$RM_DIR/lib/ops_ship.sh"
+# shellcheck source=lib/ops_operate.sh
+source "$RM_DIR/lib/ops_operate.sh"
 
-# VPS target (host/user/dir from release_manager/.env; key from --vps/--remote or SHIP_KEY).
-VPS_USER="$(env_value "$RELEASE_ENV" VPS_SSH_USER 2>/dev/null || true)"
-VPS_HOST="$(env_value "$RELEASE_ENV" VPS_SSH_HOST 2>/dev/null || true)"
-VPS_DIR="$(env_value "$RELEASE_ENV" VPS_DEPLOY_DIR 2>/dev/null || true)"
-VPS_KEY="${SHIP_KEY:-}"
+# One stack and one host today. Both are still resolved through their
+# registries so the guards in hosts.sh (no default host) stay in force when a
+# second target is added: then this becomes a picker.
+STACK=data_downloader
+HOST="${DD_TARGET_HOST:-beonedge}"
 
-if [[ -t 1 ]]; then
-    c_bold=$'\033[1m'; c_dim=$'\033[2m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_red=$'\033[31m'; c_rst=$'\033[0m'
-else
-    c_bold=''; c_dim=''; c_grn=''; c_yel=''; c_red=''; c_rst=''
-fi
-hdr() { printf '\n%s── %s ─────────────────────────────────────────%s\n' "$c_bold" "$1" "$c_rst"; }
-count() { git -C "$ROOT_DIR" rev-list --count "$1" 2>/dev/null || echo 0; }
-
-usage() {
-    sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-}
-
-# ── argument parsing ──────────────────────────────────────────────────────────
-SHOW_MAIN=false; SHOW_CONTRIB=false; SHOW_RELEASE=false
-READ_ONLY=false; RUN=false
-take_key() { [[ $# -ge 1 && "${1:-}" != -* && -n "${1:-}" ]] && { VPS_KEY="$1"; return 0; }; return 1; }
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --main)               SHOW_MAIN=true; shift ;;
-        --contributors|--prs) SHOW_CONTRIB=true; shift ;;
-        --release)            SHOW_RELEASE=true; shift ;;
-        --vps|--remote)
-            SHOW_RELEASE=true
-            [[ $# -ge 2 && "${2:-}" != -* ]] || { echo "$1 requires a path to the SSH key" >&2; exit 1; }
-            VPS_KEY="$2"; shift 2 ;;
-        --interactive|-i) RUN=true; shift ;;
-        --read-only) READ_ONLY=true; shift ;;
-        --all)
-            SHOW_MAIN=true; SHOW_CONTRIB=true; SHOW_RELEASE=true
-            if take_key "${2:-}"; then shift 2; else shift; fi ;;
-        --help|-h) usage; exit 0 ;;
-        *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 1 ;;
-    esac
+for c in jq git ssh; do
+    command -v "$c" >/dev/null || { err "$c is required"; exit 1; }
 done
-if [[ "$SHOW_MAIN" == false && "$SHOW_CONTRIB" == false && "$SHOW_RELEASE" == false ]]; then
-    SHOW_MAIN=true; SHOW_CONTRIB=true; SHOW_RELEASE=true
-fi
 
-INTERACTIVE=false
-if [[ "$RUN" == true && "$READ_ONLY" != true && -t 0 && -t 1 ]]; then INTERACTIVE=true; fi
-if [[ "$RUN" == true && "$INTERACTIVE" != true ]]; then
-    printf '%s--interactive given but no terminal to prompt on — showing read-only status.%s\n' "$c_yel" "$c_rst" >&2
-fi
+host_require "$HOST" || exit 1
+PATHS_FILE="$(stack_paths_file "$STACK")" || exit 1
+paths_validate "$STACK" "$PATHS_FILE" \
+    || { err "the path contract failed validation — fix stacks/$STACK/paths.json"; exit 1; }
 
-confirm() {
-    local ans
-    [[ "$INTERACTIVE" == true ]] || return 1
-    printf '%s    ➜ %s [y/N] %s' "$c_bold" "$1" "$c_rst" >/dev/tty
-    read -r ans </dev/tty || return 1
-    [[ "$ans" == [yY] || "$ans" == [yY][eE][sS] ]]
-}
-# ask_run <prompt> <display-cmd> <argv...>
-ask_run() {
-    local prompt="$1" disp="$2"; shift 2
-    if [[ "$INTERACTIVE" == true ]]; then
-        if confirm "$prompt"; then
-            printf '      %s$ %s%s\n' "$c_dim" "$disp" "$c_rst"
-            if "$@"; then printf '      %s✓ done%s\n' "$c_grn" "$c_rst"
-            else printf '      %s✗ failed — resolve manually%s\n' "$c_red" "$c_rst"; fi
-        else
-            printf '      %s· skipped%s\n' "$c_dim" "$c_rst"
-        fi
-    else
-        printf '      %srun: %s%s\n' "$c_dim" "$disp" "$c_rst"
-    fi
-}
-# ask_commit <message-default> — commit ALL changes in the repo (main worktree).
-ask_commit() {
-    local default_msg="$1" msg
-    if [[ "$INTERACTIVE" != true ]]; then
-        printf '      %scd %s && git add -A && git commit%s\n' "$c_dim" "$ROOT_DIR" "$c_rst"; return 0
-    fi
-    confirm "Commit all uncommitted changes on main?" || { printf '      %s· skipped%s\n' "$c_dim" "$c_rst"; return 0; }
-    printf '%s    ➜ Commit message [Enter = "%s"]: %s' "$c_bold" "$default_msg" "$c_rst" >/dev/tty
-    read -r msg </dev/tty || msg=""
-    [[ -z "$msg" ]] && msg="$default_msg"
-    if ( cd "$ROOT_DIR" && git add -A && git commit -q -m "$msg" ); then
-        printf '      %s✓ committed%s\n' "$c_grn" "$c_rst"
-    else
-        printf '      %s✗ commit failed — resolve manually%s\n' "$c_red" "$c_rst"
-    fi
+# ── helpers ─────────────────────────────────────────────────────────────────
+
+run_op() { ( "$@" ); }
+
+newest_bundle() { bundle_path_newest "$BUILD_DIR/$(host_build_dir "$STACK")"; }
+
+bundle_version() {
+    local b; b="$(newest_bundle)"
+    [[ -n "$b" && -f "$b/manifest.json" ]] || return 0
+    jq -r '.version // empty' "$b/manifest.json" 2>/dev/null || true
 }
 
-# cut_release — tag the CURRENT version (from __init__.py) as vX.Y.Z and push
-# main + tag. In this repo export.sh owns the version bump, so a "cut" simply
-# stamps an immutable git tag on the released commit. Interactive only; the
-# pipeline gates it on a clean, in-sync main so the tagged commit is on origin.
-cut_release() {
-    local current tagref
-    current="$(canonical_version "$ROOT_DIR")"
-    tagref="v$current"
-    printf '%saction:%s tag the current version %s%s%s\n' "$c_bold" "$c_rst" "$c_grn" "$current" "$c_rst"
-    if tag_exists "$ROOT_DIR" "$tagref"; then
-        printf '      %s· %s is already tagged — nothing to cut%s\n' "$c_dim" "$tagref" "$c_rst"; return 0
-    fi
-    confirm "Tag current version $tagref on HEAD and push (main + tag)?" || {
-        printf '      %s· skipped%s\n' "$c_dim" "$c_rst"; return 0; }
-    printf '      %s$ git tag -a %s && git push origin main + %s%s\n' "$c_dim" "$tagref" "$tagref" "$c_rst"
-    if git -C "$ROOT_DIR" tag -a "$tagref" -m "release $tagref" \
-       && git -C "$ROOT_DIR" push -q origin main \
-       && git -C "$ROOT_DIR" push -q origin "$tagref"; then
-        printf '      %s✓ tagged %s and pushed to origin%s\n' "$c_grn" "$tagref" "$c_rst"
-        printf '      %snote: the version bump lives in export.sh; this step tags what it produced%s\n' "$c_dim" "$c_rst"
-    else
-        printf '      %s✗ tagging failed. To undo a local-only tag: git -C %s tag -d %s%s\n' "$c_red" "$ROOT_DIR" "$tagref" "$c_rst"
-        return 1
-    fi
+next_label() {
+    local label
+    label="$(build_label "$ROOT_DIR" 2>&1)" || { printf '%s\n' "$label"; return 0; }
+    printf '%s (%s)\n' "${label% *}" "${label##* }"
 }
 
-# ── header ─────────────────────────────────────────────────────────────────────
-printf '%s═══ market_data_dwndr — release & sync console ═══%s\n' "$c_bold" "$c_rst"
-if [[ "$INTERACTIVE" == true ]]; then
-    printf '%sinteractive: y/N prompts will act on your repo (commit, sync, cut, build/ship)%s\n' "$c_dim" "$c_rst"
-else
-    printf '%sread-only (default): status + next steps. Re-run with --interactive to act.%s\n' "$c_dim" "$c_rst"
-fi
+rollbacks_line() {
+    local list; list="$(rs ROLLBACKS)"
+    if [[ -n "$list" ]]; then printf '%s (%s)\n' "${list//,/, }" "$(rs ROLLBACKS_SIZE)"; else printf 'none\n'; fi
+}
 
-repo_sync_eval "$ROOT_DIR"
-local_branch="$(git -C "$ROOT_DIR" symbolic-ref --short -q HEAD || echo '?')"
+# ── dashboard ───────────────────────────────────────────────────────────────
 
-# ── 1. MAIN — REMOTE ────────────────────────────────────────────────────────────
-if [[ "$SHOW_MAIN" == true ]]; then
-    hdr "1 · MAIN — REMOTE (origin/main → deploys to the VPS)"
-    if [[ "$RS_HAS_REMOTE" == true ]]; then
-        printf 'origin/main tip  : %s\n' "$(git -C "$ROOT_DIR" log -1 --format='%h  %s  (%cr)' origin/main 2>/dev/null)"
-        printf 'deploy note      : %sthis is the tree deploy.sh --ship pushes to %s@%s%s\n' \
-            "$c_dim" "${VPS_USER:-?}" "${VPS_HOST:-?}" "$c_rst"
+show_repository() {
+    section "━━ repository"
+    repo_eval
+    local branch dirty=clean ahead rb n
+    branch="$(git -C "$ROOT_DIR" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
+    git_dirty "$ROOT_DIR" && dirty="${c_ylw}${RS_DIRTY} uncommitted${c_rst}"
+    printf '     %-14s %s%s\n' "branch" "$branch" \
+        "$([[ "$branch" == main ]] || printf '  %s(releases come from main)%s' "$c_ylw" "$c_rst")"
+    printf '     %-14s %s (%b)\n' "commit" "$(git -C "$ROOT_DIR" rev-parse --short=9 HEAD 2>/dev/null || echo '?')" "$dirty"
+    [[ "$RS_FETCHED" == true ]] || warn "could not fetch origin — the comparison may be stale"
+    if [[ "$RS_HAS_REMOTE" != true ]]; then
+        warn "origin/main not found"
+    elif (( RS_AHEAD == 0 && RS_BEHIND == 0 )); then
+        ok "main is level with origin/main"
     else
-        printf 'origin/main      : %snot found on origin%s\n' "$c_yel" "$c_rst"
+        (( RS_AHEAD > 0 ))  && warn "main is $RS_AHEAD commit(s) ahead of origin/main — Repository → Sync"
+        (( RS_BEHIND > 0 )) && warn "main is $RS_BEHIND commit(s) behind origin/main — Repository → Sync"
     fi
-fi
+    ahead="$(repo_branches_ahead)"
+    if [[ -n "$ahead" ]]; then
+        while IFS=$'\t' read -r rb n; do
+            info "origin/$rb has $n commit(s) main lacks — Repository → Integrate"
+        done <<<"$ahead"
+    fi
+    field "next label"   "$(next_label)"
+    field "last release" "$(release_label "$(latest_release_tag "$ROOT_DIR")")"
+}
 
-# ── 2. MAIN — LOCAL ─────────────────────────────────────────────────────────────
-CB_NAME=(); CB_AHEAD=()
-if [[ "$SHOW_MAIN" == true ]]; then
-    hdr "2 · MAIN — LOCAL (integrate → sync → push to remote main)"
-    printf 'local main tip   : %s\n' "$(git -C "$ROOT_DIR" log -1 --format='%h  %s' main 2>/dev/null || echo '?')"
-    printf 'on branch        : %s' "$local_branch"
-    [[ "$local_branch" == "main" ]] && printf '  %s(on main)%s\n' "$c_grn" "$c_rst" \
-                                    || printf '  %s(checkout main to integrate/cut)%s\n' "$c_yel" "$c_rst"
-    repo_sync_notice
+show_status() {
+    remote_state_fetch "$PATHS_FILE"
 
-    # Remote branches ahead of local main = contributor work to integrate.
-    while read -r rb; do
-        [[ "$rb" == "main" || -z "$rb" ]] && continue
-        a="$(count "main..origin/$rb")"
-        [[ "$a" -gt 0 ]] && { CB_NAME+=("$rb"); CB_AHEAD+=("$a"); }
-    done < <(git -C "$ROOT_DIR" for-each-ref --format='%(refname)' refs/remotes/origin \
-                | grep -v '/HEAD$' | sed 's#^refs/remotes/origin/##')
-    if [[ "${#CB_NAME[@]}" -eq 0 ]]; then
-        printf 'to integrate     : %snone — local main has all remote-branch commits%s\n' "$c_dim" "$c_rst"
+    printf '\n%s╔════════════════════════════════════════════════════════════════╗%s\n' "$c_bold" "$c_rst"
+    printf '%s║  DATA_DOWNLOADER · release control center                      ║%s\n' "$c_bold" "$c_rst"
+    printf '%s╚════════════════════════════════════════════════════════════════╝%s\n' "$c_bold" "$c_rst"
+
+    show_repository
+
+    section "━━ vps $(host_describe)"
+    if [[ "$(rs REACHABLE)" != yes ]]; then
+        err "unreachable over SSH"
+        printf '\n'
+        return 0
+    fi
+    ok "reachable as $(rs USER)"
+    [[ "$(rs DOCKER)" == yes ]] && ok "docker usable" || err "docker NOT usable"
+    if [[ "$(rs ROOT_STATE)" == writable && "$(rs BACKUP_STATE)" == writable ]]; then
+        ok "deploy and backup roots writable"
     else
-        printf 'to integrate     :\n'
-        for i in "${!CB_NAME[@]}"; do
-            printf '  origin/%-14s %s%s commit(s) ahead of local main%s\n' "${CB_NAME[$i]}" "$c_yel" "${CB_AHEAD[$i]}" "$c_rst"
-        done
+        err "a root is not writable (root: $(rs ROOT_STATE), backup: $(rs BACKUP_STATE)) — Provision shows the fix"
     fi
-fi
+    case "$(rs ENV)" in
+        present) ok ".env present (mode $(rs ENV_MODE))" ;;
+        *)       warn ".env not placed yet" ;;
+    esac
+    if [[ "$(rs LEGACY_ROLLBACKS)" == yes || "$(rs LEGACY_SCRIPTS)" == yes ]]; then
+        warn "the one-time move to the contract layout is pending — see APP_GUIDE.md"
+    fi
+    field "free disk" "stack $(rs DISK_STACK) · backup $(rs DISK_BACKUP) · docker $(rs DISK_DOCKER)"
 
-# ── 3. CONTRIBUTORS (PRs) ───────────────────────────────────────────────────────
-if [[ "$SHOW_CONTRIB" == true ]]; then
-    hdr "3 · CONTRIBUTORS (open PRs → main · review + approve)"
-    if command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
-        repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
-        printf 'repo             : %s\n' "${repo:-unknown}"
-        P_NUM=(); P_BR=(); P_AUTHOR=(); P_DEC=()
-        while IFS=$'\t' read -r num br author dec; do
-            [[ -z "$num" ]] && continue
-            P_NUM+=("$num"); P_BR+=("$br"); P_AUTHOR+=("$author"); P_DEC+=("$dec")
-        done < <(gh pr list --base main --state open \
-                    --json number,headRefName,author,reviewDecision \
-                    --jq '.[] | [.number, .headRefName, .author.login, (.reviewDecision // "REVIEW_REQUIRED")] | @tsv' 2>/dev/null)
-        if [[ "${#P_NUM[@]}" -eq 0 ]]; then
-            printf 'open PRs → main  : %s(none)%s\n' "$c_dim" "$c_rst"
-        else
-            printf 'open PRs → main  :\n'
-            for i in "${!P_NUM[@]}"; do
-                if [[ "${P_DEC[$i]}" == "APPROVED" ]]; then ac="$c_grn"; else ac="$c_yel"; fi
-                printf '  #%-4s %-18s %-14s %s%s%s\n' "${P_NUM[$i]}" "${P_BR[$i]}" "${P_AUTHOR[$i]}" "$ac" "${P_DEC[$i]}" "$c_rst"
+    section "━━ release"
+    local built live
+    built="$(bundle_version)"; live="$(rs LIVE_VERSION)"
+    field "staged"   "${built:-—}"
+    local live_status; live_status="$(rs LIVE_STATUS)"
+    field "deployed" "${live:-—}${live_status:+ ($live_status)}"
+    if [[ -n "$built" && "$built" == "$live" ]]; then
+        ok "in sync"
+    elif [[ -n "$built" ]]; then
+        warn "ship pending"
+    fi
+    if [[ -n "$live" ]]; then
+        if rs_healthy; then ok "backend and frontend healthy"
+        else err "backend: $(rs BACKEND) · frontend: $(rs FRONTEND)"; fi
+    fi
+    field "rollbacks" "$(rollbacks_line)"
+
+    local containers
+    containers="$(rs_containers)"
+    section "━━ containers"
+    if [[ -n "$containers" ]]; then
+        while IFS=$'\t' read -r name st; do printf '     %-28s %s\n' "$name" "$st"; done <<<"$containers"
+    else
+        info "none"
+    fi
+    printf '\n'
+}
+
+# ── menus ───────────────────────────────────────────────────────────────────
+
+pause_after() {
+    printf '\n%s   ➜ press Enter to continue %s' "$c_dim" "$c_rst"
+    read -r _ || true
+}
+
+choose() {
+    local prompt="$1" reply
+    printf '%s   ➜ %s: %s' "$c_bold" "$prompt" "$c_rst" >&2
+    read -r reply || reply=q
+    printf '%s\n' "$reply"
+}
+
+menu_repository() {
+    local b n
+    while true; do
+        cat <<MENU
+
+${c_bold}━━ Repository${c_rst}   releases are cut from main; origin/main is what ships
+   1) Commit                  commit every change on main
+   2) Integrate a branch      merge a remote branch that is ahead of main
+   3) Sync main               pull --rebase origin/main, then push main
+   4) Pull requests           list open PRs into main, approve one
+   b) Back
+MENU
+        case "$(choose 'Repository choice')" in
+            1) run_op op_repo_commit || true ;;
+            2) repo_eval
+               while IFS=$'\t' read -r b n; do
+                   [[ -n "$b" ]] && printf '     origin/%-24s %s commit(s) ahead\n' "$b" "$n"
+               done < <(repo_branches_ahead)
+               b="$(choose 'branch to merge (blank to cancel)')"
+               [[ -z "$b" ]] || run_op op_repo_integrate "$b" || true ;;
+            3) run_op op_repo_sync || true ;;
+            4) run_op op_repo_prs || true
+               n="$(choose 'PR number to approve (blank to skip)')"
+               [[ -z "$n" ]] || run_op op_repo_prs --approve "$n" || true ;;
+            b|B) return 0 ;;
+            q|Q) exit 0 ;;
+            *) warn "unknown choice"; continue ;;
+        esac
+        pause_after
+    done
+}
+
+menu_provision() {
+    while true; do
+        cat <<MENU
+
+${c_bold}━━ Provision${c_rst}
+   1) Diagnose the VPS        readiness checks, blockers and their fixes
+   2) Provision the VPS       create the folder tree, stage .env.example
+   3) Validate the contract   check stacks/$STACK/paths.json
+   b) Back
+MENU
+        case "$(choose 'Provision choice')" in
+            1) run_op op_diagnose "$PATHS_FILE" || true ;;
+            2) run_op op_provision "$PATHS_FILE" "$STACK" || warn "provisioning did not complete" ;;
+            3) paths_validate "$STACK" "$PATHS_FILE" && ok "paths.json validates" ;;
+            b|B) return 0 ;;
+            q|Q) exit 0 ;;
+            *) warn "unknown choice"; continue ;;
+        esac
+        pause_after
+    done
+}
+
+menu_export() {
+    while true; do
+        cat <<MENU
+
+${c_bold}━━ Export${c_rst}
+   1) Build bundle            build both images, prove they start, stage a bundle
+   2) Re-stage bundle         reuse the images already built for this version
+   3) Cut a release           bump the version, commit, tag and push (then Build)
+   b) Back
+MENU
+        case "$(choose 'Export choice')" in
+            1) run_op op_export "$PATHS_FILE" "$STACK" || warn "export did not complete" ;;
+            2) run_op op_export "$PATHS_FILE" "$STACK" --skip-build || warn "re-stage did not complete" ;;
+            3) menu_release || true ;;
+            b|B) return 0 ;;
+            q|Q) exit 0 ;;
+            *) warn "unknown choice"; continue ;;
+        esac
+        pause_after
+    done
+}
+
+# Each part with the version it would cut, read from __version__ now.
+menu_release() {
+    local current latest
+    current="$(pkg_version "$ROOT_DIR")" || return 1
+    assert_semver "$current" || return 1
+    latest="$(latest_release_tag "$ROOT_DIR")"
+    cat <<MENU
+
+${c_bold}━━ Cut a release${c_rst}   __version__ $current · last release $(release_label "$latest")
+   1) Patch   $current → $(bump_version "$current" patch)   fixes only
+   2) Minor   $current → $(bump_version "$current" minor)   new features, nothing breaks
+   3) Major   $current → $(bump_version "$current" major)   breaking changes
+   b) Back
+MENU
+    case "$(choose 'Release choice')" in
+        1) run_op op_release patch || warn "release did not complete" ;;
+        2) run_op op_release minor || warn "release did not complete" ;;
+        3) run_op op_release major || warn "release did not complete" ;;
+        b|B) return 0 ;;
+        q|Q) exit 0 ;;
+        *) warn "unknown choice" ;;
+    esac
+}
+
+menu_ship() {
+    local v
+    while true; do
+        cat <<MENU
+
+${c_bold}━━ Ship + Deploy${c_rst}
+   1) Ship + deploy           upload the newest bundle and deploy it
+   2) Ship only               upload for inspection; do not deploy
+   3) Force redeploy          same version, and bypass the capture guards
+   4) Reload                  recreate containers with the current .env
+   5) Roll back               to the newest archived release
+   6) Roll back to …          pick a version from the list
+   7) View deploy logs        tail a deploy log
+   8) Inspect containers      compose ps and recent logs
+   b) Back
+MENU
+        case "$(choose 'Ship + Deploy choice')" in
+            1) run_op op_ship "$PATHS_FILE" "$STACK" deploy || warn "deploy did not complete" ;;
+            2) run_op op_ship "$PATHS_FILE" "$STACK" ship-only || warn "shipping did not complete" ;;
+            3) run_op op_ship "$PATHS_FILE" "$STACK" force || warn "redeploy did not complete" ;;
+            4) run_op op_reload "$PATHS_FILE" "$STACK" || warn "reload did not complete" ;;
+            5) run_op op_rollback "$PATHS_FILE" "$STACK" --latest || warn "rollback did not complete" ;;
+            6) run_op op_rollback "$PATHS_FILE" "$STACK" --list || true
+               v="$(choose 'version to restore (blank to cancel)')"
+               [[ -z "$v" ]] || run_op op_rollback "$PATHS_FILE" "$STACK" --to "$v" || warn "rollback did not complete" ;;
+            7) run_op op_logs "$PATHS_FILE" || true ;;
+            8) run_op op_containers "$PATHS_FILE" || true ;;
+            b|B) return 0 ;;
+            q|Q) exit 0 ;;
+            *) warn "unknown choice"; continue ;;
+        esac
+        remote_state_reset
+        pause_after
+    done
+}
+
+menu_main() {
+    while true; do
+        show_status
+        cat <<MENU
+${c_bold}━━ workflows${c_rst}
+   1) Repository              commit, integrate, sync main, pull requests
+   2) Provision               diagnose the VPS and prepare its folders
+   3) Export                  cut a release, build and stage a bundle
+   4) Ship + Deploy           deploy, reload, roll back, logs
+   r) Refresh
+   q) Quit
+
+MENU
+        case "$(choose 'workflow')" in
+            1) menu_repository ;;
+            2) menu_provision ;;
+            3) menu_export ;;
+            4) menu_ship ;;
+            r|R) remote_state_reset ;;
+            q|Q) printf '\n'; return 0 ;;
+            *) warn "unknown workflow" ;;
+        esac
+        remote_state_reset
+    done
+}
+
+# ── entry ───────────────────────────────────────────────────────────────────
+
+do_op() {
+    local op="${1:-}"; shift || true
+    case "$op" in
+        commit)     run_op op_repo_commit "$@" ;;
+        integrate)  run_op op_repo_integrate "$@" ;;
+        sync)       run_op op_repo_sync "$@" ;;
+        prs)        run_op op_repo_prs "$@" ;;
+        release)    run_op op_release "$@" ;;
+        provision)  run_op op_provision "$PATHS_FILE" "$STACK" ;;
+        export)     run_op op_export "$PATHS_FILE" "$STACK" "$@" ;;
+        ship)       run_op op_ship "$PATHS_FILE" "$STACK" ship-only "$@" ;;
+        deploy)
+            local mode=deploy a
+            local -a rest=()
+            for a in "$@"; do
+                if [[ "$a" == --force ]]; then mode=force; else rest+=("$a"); fi
             done
-            for i in "${!P_NUM[@]}"; do
-                [[ "${P_DEC[$i]}" == "APPROVED" ]] && continue
-                ask_run "Approve PR #${P_NUM[$i]} (${P_BR[$i]})?" \
-                        "gh pr review ${P_NUM[$i]} --approve" \
-                        gh pr review "${P_NUM[$i]}" --approve
-            done
-        fi
-    else
-        printf '%sgh CLI missing or not authenticated — PR review skipped.%s\n' "$c_yel" "$c_rst"
-        printf '%sInstall https://cli.github.com then: gh auth login%s\n' "$c_dim" "$c_rst"
-    fi
+            run_op op_ship "$PATHS_FILE" "$STACK" "$mode" "${rest[@]}" ;;
+        rollback)   run_op op_rollback "$PATHS_FILE" "$STACK" "$@" ;;
+        reload)     run_op op_reload "$PATHS_FILE" "$STACK" "$@" ;;
+        logs)       run_op op_logs "$PATHS_FILE" "$@" ;;
+        containers) run_op op_containers "$PATHS_FILE" ;;
+        validate)   paths_validate "$STACK" "$PATHS_FILE" && ok "paths.json validates" ;;
+        diagnose)   run_op op_diagnose "$PATHS_FILE" ;;
+        *) err "unknown operation: ${op:-<none>} (see --help)"; return 1 ;;
+    esac
+}
+
+status_main() {
+    case "${1:-}" in
+        --status)   show_status ;;
+        --diagnose) run_op op_diagnose "$PATHS_FILE" ;;
+        --do)       shift; do_op "$@" ;;
+        --help|-h)  sed -n '2,/^# ───.*$/{/^# ───/d;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}" | sed -n '1,50p' ;;
+        "")
+            [[ "$UI_INTERACTIVE" == true ]] \
+                || { err "not a terminal — use --status, --diagnose or --do <op>"; return 1; }
+            menu_main ;;
+        *) err "unknown argument: $1 (see --help)"; return 1 ;;
+    esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    status_main "$@"
 fi
-
-# ── 4. RELEASE ──────────────────────────────────────────────────────────────────
-cur_ver=""; last_tag=""
-if [[ "$SHOW_RELEASE" == true ]]; then
-    hdr "4 · RELEASE (version · tag · staged build · VPS)"
-    cur_ver="$(canonical_version "$ROOT_DIR")"
-    last_tag="$(latest_tag "$ROOT_DIR")"
-    printf 'version (__init__): %s%s%s\n' "$c_grn" "$cur_ver" "$c_rst"
-    if [[ -n "$last_tag" ]]; then
-        if [[ "$last_tag" == "v$cur_ver" ]]; then
-            if on_exact_release_tag "$ROOT_DIR" "$cur_ver"; then
-                printf 'latest tag       : %s%s%s  %s(HEAD is on this tag, tree clean — shippable)%s\n' "$c_grn" "$last_tag" "$c_rst" "$c_dim" "$c_rst"
-            else
-                printf 'latest tag       : %s%s%s  %s(matches version, but HEAD/tree moved — cut or commit)%s\n' "$c_yel" "$last_tag" "$c_rst" "$c_dim" "$c_rst"
-            fi
-        else
-            printf 'latest tag       : %s%s%s  %s(version %s is NOT tagged yet — cut a release)%s\n' "$c_yel" "$last_tag" "$c_rst" "$c_dim" "$cur_ver" "$c_rst"
-        fi
-    else
-        printf 'latest tag       : %s(none yet)%s\n' "$c_yel" "$c_rst"
-    fi
-
-    staged="$(find "$RECENT_DIR" -mindepth 1 -maxdepth 1 -type d ! -name '.export-*' 2>/dev/null | sort | tail -1)"
-    [[ -n "$staged" ]] && printf 'staged build     : %s%s%s\n' "$c_grn" "$(basename "$staged")" "$c_rst" \
-                        || printf 'staged build     : %s(none)%s\n' "$c_dim" "$c_rst"
-    printf 'rollbacks        : %s\n' "$(find "$ROLLBACK_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
-
-    # Live VPS-deployed version (from version.json), if a key was supplied.
-    if [[ -n "$VPS_KEY" ]]; then
-        if [[ ! -f "$VPS_KEY" ]]; then
-            printf 'vps deployed     : %skey not found: %s%s\n' "$c_yel" "$VPS_KEY" "$c_rst"
-        elif [[ -z "$VPS_USER" || -z "$VPS_HOST" || -z "$VPS_DIR" ]]; then
-            printf 'vps deployed     : %sVPS_SSH_USER/HOST/DEPLOY_DIR missing in release_manager/.env%s\n' "$c_yel" "$c_rst"
-        else
-            vps_ver="$(ssh -i "$VPS_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 \
-                "$VPS_USER@$VPS_HOST" "cat $VPS_DIR/version.json 2>/dev/null" 2>/dev/null \
-                | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
-            if [[ -z "$vps_ver" ]]; then
-                printf 'vps deployed     : %sunreachable or no release%s  %s(%s@%s)%s\n' "$c_yel" "$c_rst" "$c_dim" "$VPS_USER" "$VPS_HOST" "$c_rst"
-            elif [[ "$vps_ver" == "v$cur_ver" ]]; then
-                printf 'vps deployed     : %s%s%s  %s(in sync with local)%s\n' "$c_grn" "$vps_ver" "$c_rst" "$c_dim" "$c_rst"
-            else
-                printf 'vps deployed     : %s%s%s  %s(local is v%s)%s\n' "$c_yel" "$vps_ver" "$c_rst" "$c_dim" "$cur_ver" "$c_rst"
-            fi
-        fi
-    else
-        printf 'vps deployed     : %s(pass an SSH key to query: --vps <key>)%s\n' "$c_dim" "$c_rst"
-    fi
-fi
-
-# ── DO THIS NEXT — the interactive action pipeline, in dependency order ──────────
-hdr "DO THIS NEXT"
-step=1
-say() { printf '\n %s%s.%s %s\n' "$c_bold" "$step" "$c_rst" "$1"; step=$((step+1)); }
-cmd() { printf '      %s%s%s\n' "$c_dim" "$1" "$c_rst"; }
-
-# 1 · commit uncommitted work on main.
-if [[ "$RS_DIRTY" -gt 0 ]]; then
-    say "Local main has $RS_DIRTY uncommitted change(s) — commit them:"
-    if [[ "$local_branch" == "main" ]]; then ask_commit "chore: update working tree"
-    else cmd "checkout main first: git -C $ROOT_DIR checkout main"; fi
-fi
-
-# 2 · integrate remote branches into local main.
-if [[ "$SHOW_MAIN" == true && "${#CB_NAME[@]}" -gt 0 ]]; then
-    say "Integrate remote-branch work into local main:"
-    if [[ "$local_branch" != "main" ]]; then
-        cmd "checkout main first: git -C $ROOT_DIR checkout main"
-    else
-        for i in "${!CB_NAME[@]}"; do
-            ask_run "Merge origin/${CB_NAME[$i]} into local main (${CB_AHEAD[$i]} commit(s))?" \
-                    "git -C $ROOT_DIR merge --no-edit origin/${CB_NAME[$i]}" \
-                    git -C "$ROOT_DIR" merge --no-edit "origin/${CB_NAME[$i]}"
-        done
-    fi
-fi
-
-# 3 · sync local main ↔ remote main.
-if [[ "$SHOW_MAIN" == true && "$RS_HAS_REMOTE" == true ]]; then
-    [[ "$INTERACTIVE" == true ]] && repo_sync_eval "$ROOT_DIR"
-    if [[ "$RS_BEHIND" -gt 0 || "$RS_AHEAD" -gt 0 ]]; then
-        say "Sync local main ↔ remote main:"
-        if [[ "$RS_BEHIND" -gt 0 ]]; then
-            [[ "$RS_DIRTY" -gt 0 ]] && cmd "note: commit/stash first — rebase refuses a dirty tree"
-            ask_run "Pull --rebase remote main → local (behind by $RS_BEHIND)?" \
-                    "git -C $ROOT_DIR pull --rebase origin main" \
-                    git -C "$ROOT_DIR" pull --rebase origin main
-            [[ "$INTERACTIVE" == true ]] && repo_sync_eval "$ROOT_DIR"
-        fi
-        if [[ "$RS_AHEAD" -gt 0 ]]; then
-            ask_run "Push local main → remote main (ahead by $RS_AHEAD)?" \
-                    "git -C $ROOT_DIR push origin main" \
-                    git -C "$ROOT_DIR" push origin main
-        fi
-    else
-        printf '\n %s· local main is level with remote main — in sync.%s\n' "$c_dim" "$c_rst"
-    fi
-fi
-
-# 4 · cut a stable release (bump __version__ → commit → tag → push).
-if [[ "$SHOW_RELEASE" == true || "$SHOW_MAIN" == true ]]; then
-    say "Cut a stable release (tag the current version vX.Y.Z, push):"
-    if [[ "$INTERACTIVE" == true && "$local_branch" == "main" && "$RS_HAS_REMOTE" == true ]]; then
-        repo_sync_eval "$ROOT_DIR"
-        if [[ "$RS_CLEAN_SYNC" == true ]]; then
-            cut_release || true
-        else
-            printf '      %s· main is not clean + in sync yet — finish the steps above, then re-run to cut.%s\n' "$c_dim" "$c_rst"
-        fi
-    else
-        cmd "cd $ROOT_DIR && ./release_manager/status.sh --interactive   # answer the cut prompt"
-    fi
-fi
-
-# 5 · build / deploy / ship.
-if [[ "$SHOW_RELEASE" == true ]]; then
-    cur_ver="$(canonical_version "$ROOT_DIR")"
-    if on_exact_release_tag "$ROOT_DIR" "$cur_ver"; then
-        printf '\n %s✓ clean tree on tag v%s — ready to build + ship.%s\n' "$c_grn" "$cur_ver" "$c_rst"
-    else
-        printf '\n %s⚠ not on a clean release tag — cut a release first so HEAD == v%s (build will still work locally).%s\n' \
-            "$c_yel" "$cur_ver" "$c_rst"
-    fi
-    say "Build the release bundle from the current tree:"
-    ask_run "Build the release bundle now (export.sh)?" \
-            "cd $ROOT_DIR && ./release_manager/export.sh" \
-            "$RELEASE_DIR/export.sh"
-    say "Deploy locally to test (compose up, health-checked):"
-    ask_run "Deploy the staged bundle locally now (deploy.sh)?" \
-            "cd $ROOT_DIR && ./release_manager/deploy.sh" \
-            "$RELEASE_DIR/deploy.sh"
-    say "Ship the staged bundle to the VPS (after a local test):"
-    if [[ -n "$VPS_KEY" && -f "$VPS_KEY" ]]; then
-        ask_run "Ship to the VPS now (deploy.sh --ship)?" \
-                "cd $ROOT_DIR && ./release_manager/deploy.sh --ship $VPS_KEY" \
-                "$RELEASE_DIR/deploy.sh" --ship "$VPS_KEY"
-    else
-        cmd "cd $ROOT_DIR && ./release_manager/deploy.sh --ship <key>"
-        printf '      %s(pass the key to enable this prompt: --all <key> or --vps <key>)%s\n' "$c_dim" "$c_rst"
-    fi
-fi
-
-printf '\n%sFlow:%s commit → integrate branches → sync local↔remote main → cut (tag vX.Y.Z) → export → deploy (local test) → ship to VPS.\n' "$c_dim" "$c_rst"
-exit 0

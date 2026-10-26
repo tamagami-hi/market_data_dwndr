@@ -1,3 +1,6 @@
-DATA_DOWNLOADER/MARKET_DATA
-# runtime concurrency lock for export/deploy (kept inside release_manager, not /tmp)
-.release.lock
+# Staged bundles and the local ship ledger; see the repository .gitignore.
+build/
+state/*
+!state/.gitkeep
+# The operator's own settings, if any. Nothing in the pipeline reads it.
+.env

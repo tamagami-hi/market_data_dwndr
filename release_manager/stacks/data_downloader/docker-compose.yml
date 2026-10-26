@@ -1,9 +1,9 @@
 name: data-downloader
 
-# Self-contained DEPLOY compose (image-based; NO build). Shipped inside the
-# DATA_DOWNLOADER bundle as docker-compose.yml and run on the VPS by
-# DATA_DOWNLOADER/deploy.sh. All interpolation + backend config come from the
-# sibling `.env` (the VPS operator fills it once; it is preserved across updates).
+# The image-based deploy compose (no build). Shipped as docker-compose.yml and run
+# on the VPS only by data_downloader_deploy.sh and data_downloader_rollback.sh,
+# which set DD_VERSION to the release they start. Everything else comes from the
+# sibling `.env`, which the operator places and no script reads or writes.
 # The frontend image already has NEXT_PUBLIC_* baked in at build time, so it only
 # needs PORT at runtime and never receives backend secrets.
 
@@ -27,7 +27,7 @@ services:
     container_name: market-data-dwndr-backend
     <<: *service-security
     stop_grace_period: 30s
-    image: market-data-dwndr-backend:${APP_VERSION:?Set APP_VERSION (managed by deploy.sh)}
+    image: market-data-dwndr-backend:${DD_VERSION:?DD_VERSION is set by the deploy and rollback scripts}
     env_file:
       - ./.env
     environment:
@@ -67,7 +67,7 @@ services:
   frontend:
     container_name: market-data-dwndr-frontend
     <<: *service-security
-    image: market-data-dwndr-frontend:${APP_VERSION:?Set APP_VERSION (managed by deploy.sh)}
+    image: market-data-dwndr-frontend:${DD_VERSION:?DD_VERSION is set by the deploy and rollback scripts}
     # No env_file: the browser URL + product name are baked at build; only PORT is
     # needed at runtime, so backend secrets never enter the frontend container.
     environment:

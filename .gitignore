@@ -30,20 +30,16 @@ dist/
 .DS_Store
 *.log
 
-# Local/VPS release state (images and data remain outside Git)
-release_manager/rollback/*
-!release_manager/rollback/.gitkeep
-release_manager/current-version
-release_manager/.operation.lock
-release_manager/.bundle-stage.*
-release_manager/recent_builds/*
-!release_manager/recent_builds/.gitkeep
-release_manager/DATA_DOWNLOADER/docker-compose.yml
-release_manager/DATA_DOWNLOADER/manifest.json
-release_manager/DATA_DOWNLOADER/manifest.sig
-release_manager/DATA_DOWNLOADER/version.json
-release_manager/DATA_DOWNLOADER/images/*
-!release_manager/DATA_DOWNLOADER/images/.gitkeep
+# Release state: staged bundles and the local ship ledger (images and data
+# remain outside Git). The last four lines are leftovers of the pipeline before
+# release_manager/status.sh; they stay ignored until removed by hand.
+release_manager/build/
+release_manager/state/*
+!release_manager/state/.gitkeep
+release_manager/DATA_DOWNLOADER/
+release_manager/recent_builds/
+release_manager/rollback/
+release_manager/.release.lock
 
 # Obsidian workspace (keep notes, ignore local UI state)
 .obsidian/workspace*
