@@ -232,7 +232,7 @@ except ValidationError as exc:
         field = ".".join(str(part) for part in error.get("loc", ())) or "settings"
         print("%s: %s" % (field, error["msg"]))
     sys.exit(3)
-' 2>&1)"; then
+' 2>&1 </dev/null)"; then
         ok "the backend accepts the current .env"
         return 0
     fi
