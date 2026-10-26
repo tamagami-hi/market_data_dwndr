@@ -173,6 +173,12 @@ FAKE_CAPTURE=down expect "a backend that cannot report its capture refuses" 1 de
 FAKE_NO_LEASE=1 expect "no maintenance lease refuses before the swap" 1 deploy
 expect "  …the old release still runs" 0 test "$(running)" == v0.1.52
 
+FAKE_BAD_CONFIG=0.1.53 expect "a release that rejects the .env is refused before the swap" 1 deploy
+contains "  …naming the setting" "KITE_TOKEN_BROKER_TOTP_SEED missing"
+expect "  …without echoing input values" 1 grep -q SECRET <<<"$LAST_OUT"
+expect "  …the old release still runs" 0 test "$(running)" == v0.1.52
+expect "  …and no lease was taken" 0 test ! -s "$FAKE_STATE/leases.log"
+
 expect "a deploy outside the window succeeds" 0 deploy
 expect "  …0.1.53 runs" 0 test "$(running)" == 0.1.53
 expect "  …version.json records it, and what ran before" 0 \
@@ -207,6 +213,8 @@ expect "  …0.1.53 was archived on the way out" 0 test -f "$BACKUP/backup/rollb
 expect "a bare rollback picks the newest other archive" 0 rollback
 expect "  …which is 0.1.53, the one just left" 0 test "$(running)" == 0.1.53
 
+FAKE_BAD_CONFIG=0.1.53 expect "a reload with a rejected .env changes nothing" 1 \
+    bash -c 'cd "$1" && DD_TEST_HHMM=18:00 ./data_downloader_deploy.sh --reload --yes </dev/null' _ "$STACK_DIR"
 expect "reload recreates the running release" 0 \
     bash -c 'cd "$1" && DD_TEST_HHMM=18:00 ./data_downloader_deploy.sh --reload --yes </dev/null' _ "$STACK_DIR"
 

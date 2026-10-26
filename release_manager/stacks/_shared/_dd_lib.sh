@@ -214,6 +214,36 @@ dd_validate_compose() {
     ok "compose file validates"
 }
 
+# dd_check_config — the backend of DD_VERSION_FOR_COMPOSE validates its
+# settings against the current .env in a one-off container, before anything
+# running is touched. Started through compose, so the .env reaches it exactly
+# as it reaches the real service (env_file), and read by Docker alone. Only the
+# validation messages are printed: pydantic's own report repeats input values.
+dd_check_config() {
+    local out
+    if out="$(compose run --rm --no-deps -T --entrypoint python backend -c '
+import sys
+from pydantic import ValidationError
+from app.config import Settings
+try:
+    Settings()
+except ValidationError as exc:
+    for error in exc.errors(include_input=False, include_url=False):
+        field = ".".join(str(part) for part in error.get("loc", ())) or "settings"
+        print("%s: %s" % (field, error["msg"]))
+    sys.exit(3)
+' 2>&1)"; then
+        ok "the backend accepts the current .env"
+        return 0
+    fi
+    if grep -qE '^[A-Za-z_.]+: ' <<<"$out"; then
+        grep -E '^[A-Za-z_.]+: ' <<<"$out" | sed 's/^/     /' >&2
+    else
+        tail -n 5 <<<"$out" | sed 's/^/     /' >&2
+    fi
+    die "the backend of ${DD_VERSION_FOR_COMPOSE} rejects the current .env — fix .env, nothing was changed"
+}
+
 # ── capture guards ──────────────────────────────────────────────────────────
 # A deploy restarts the backend, and a restart during the session loses ticks
 # that can never be captured again. These guards run against the RUNNING

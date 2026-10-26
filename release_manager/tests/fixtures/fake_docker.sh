@@ -6,6 +6,7 @@
 #   FAKE_CAPTURE      stopped | running | down   what /api/capture/status answers
 #   FAKE_BAD_VERSION  a version whose containers turn unhealthy
 #   FAKE_NO_LEASE     non-empty: the maintenance lease is refused
+#   FAKE_BAD_CONFIG   a version whose backend rejects the .env
 #   FAKE_MARKET_OPEN / FAKE_MARKET_CLOSE / FAKE_MARKET_TIMEZONE  the backend's env
 
 set -euo pipefail
@@ -76,6 +77,12 @@ case "${1:-}" in
         while [[ "$1" == --project-name || "$1" == --file ]]; do shift 2; done
         case "$1" in
             config) [[ -n "${DD_VERSION:-}" ]] ;;
+            run)
+                if [[ "$DD_VERSION" == "${FAKE_BAD_CONFIG:-}" ]]; then
+                    printf 'configuration error: 1 validation error for Settings input_value={SECRET}\n'
+                    printf 'settings: Value error, KITE_TOKEN_BROKER_TOTP_SEED missing\n'
+                    exit 3
+                fi ;;
             up)
                 for svc in backend frontend; do
                     [[ -f "$(tag_file "market-data-dwndr-$svc:$DD_VERSION")" ]] \

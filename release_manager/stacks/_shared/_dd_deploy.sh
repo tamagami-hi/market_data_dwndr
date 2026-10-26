@@ -106,9 +106,12 @@ dd_deploy_main() {
         info "first deploy — nothing to preserve"
     fi
 
-    step "10/13 load new images"
+    step "10/13 load new images and check them against .env"
     dd_load_images
     dd_assert_images_present "$incoming"
+    # Before the swap: a setting the new release rejects must stop the deploy
+    # here, with the running release untouched, not after a restart.
+    dd_check_config
 
     step "11/13 drain capture writers and start the stack"
     trap dd_release_lease EXIT
@@ -165,6 +168,7 @@ dd_reload_main() {
     [[ -n "$current" ]] || die "nothing is deployed yet; there is nothing to reload"
     DD_VERSION_FOR_COMPOSE="$current"
     dd_validate_compose
+    dd_check_config
     dd_guard_capture "$force"
     if [[ "$assume_yes" != true ]]; then
         [[ -t 0 ]] || die "reload needs --yes when running non-interactively"
