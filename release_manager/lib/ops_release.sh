@@ -118,7 +118,7 @@ op_release() {
     fi
     git -C "$ROOT_DIR" add -- "$RELEASE_FILE"
     git -C "$ROOT_DIR" commit -q -m "chore(release): v$target" \
-        -m "A $part release: __version__ moves from $current to $target, and this commit is tagged v$target, so Export builds $target rather than a dev label." \
+        -m "Version $current → $target." \
         || { err "the release commit failed"; git -C "$ROOT_DIR" reset -q HEAD -- "$RELEASE_FILE"; restore_versions; exit 1; }
     ok "committed $(git -C "$ROOT_DIR" rev-parse --short=9 HEAD)"
 
