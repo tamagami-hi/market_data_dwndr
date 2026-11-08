@@ -265,20 +265,78 @@ dd_backend_env() {
     "$(docker_bin)" exec "${P[backend_container]}" printenv "$1" 2>/dev/null || true
 }
 
-# dd_in_capture_window — true while the clock is inside MARKET_OPEN..MARKET_CLOSE
-# as the running backend has them (the contract's defaults otherwise).
+# dd_today_schedule — what the running backend's trading calendar says about
+# today: "closed" (weekend, MARKET_HOLIDAYS or an operator holiday), "regular",
+# "special HH:MM HH:MM" (an operator special session's open and close), or
+# "unknown" when the backend cannot answer (older release without
+# /api/calendar, not configured, or unreachable).
+dd_today_schedule() {
+    local answer
+    answer="$(dd_backend_python '
+import json, os, urllib.request
+url = "http://127.0.0.1:%s/api/calendar" % os.environ["HTTP_PORT"]
+today = json.load(urllib.request.urlopen(url, timeout=5))["today"]
+special = today.get("special_session")
+if not today.get("is_trading_day"):
+    print("closed")
+elif special:
+    print("special %s %s" % (special["open"], special["close"]))
+else:
+    print("regular")
+' 2>/dev/null)" || answer=""
+    case "$answer" in
+        closed|regular) printf '%s\n' "$answer" ;;
+        special\ *) printf '%s\n' "$answer" ;;
+        *) printf 'unknown\n' ;;
+    esac
+}
+
+# dd_is_weekday_session_day <tz> — the fallback when the backend's calendar is
+# unavailable: Monday-Friday and not in the backend's MARKET_HOLIDAYS.
+dd_is_weekday_session_day() {
+    local tz="$1" today dow holidays
+    today="${DD_TEST_DATE:-$(TZ="$tz" date +%F)}"
+    dow="$(date -d "$today" +%u)"
+    (( dow <= 5 )) || return 1
+    holidays="$(dd_backend_env MARKET_HOLIDAYS)"
+    [[ ",${holidays// /}," != *",$today,"* ]]
+}
+
+# dd_in_capture_window — true while a market session is open today.
+#
+# Only a real session blocks a restart. Mon-Fri that is MARKET_OPEN..MARKET_CLOSE
+# as the running backend has them (the contract's defaults otherwise); weekends
+# and holidays have none; an operator special session replaces the regular
+# hours with its own. The calendar comes from the running backend. When it
+# cannot answer, the fallback is the regular window on weekdays outside
+# MARKET_HOLIDAYS — and the separate capture-state check still refuses a
+# backend whose capture it cannot read.
 dd_in_capture_window() {
-    local open close tz now open_min close_min now_min
+    local open close tz now open_min close_min now_min schedule
     open="$(dd_backend_env MARKET_OPEN)";      open="${open:-${P[capture_open]}}"
     close="$(dd_backend_env MARKET_CLOSE)";    close="${close:-${P[capture_close]}}"
     tz="$(dd_backend_env MARKET_TIMEZONE)";    tz="${tz:-${P[capture_timezone]}}"
+    schedule="$(dd_today_schedule)"
+    case "$schedule" in
+        closed)
+            DD_WINDOW="no market session today (weekend or holiday)"
+            return 1 ;;
+        special\ *)
+            read -r _ open close <<<"$schedule" ;;
+        unknown)
+            if ! dd_is_weekday_session_day "$tz"; then
+                DD_WINDOW="no market session today (weekend or MARKET_HOLIDAYS)"
+                return 1
+            fi ;;
+    esac
     [[ "$open" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ && "$close" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] \
-        || die "the backend's MARKET_OPEN/MARKET_CLOSE are not HH:MM ($open, $close)"
+        || die "the backend's market window is not HH:MM ($open, $close)"
     now="${DD_TEST_HHMM:-$(TZ="$tz" date +%H:%M)}"
     open_min=$((10#${open%:*} * 60 + 10#${open#*:}))
     close_min=$((10#${close%:*} * 60 + 10#${close#*:}))
     now_min=$((10#${now%:*} * 60 + 10#${now#*:}))
     DD_WINDOW="$open-$close $tz"
+    [[ "$schedule" == special\ * ]] && DD_WINDOW="special session $DD_WINDOW"
     if (( open_min < close_min )); then
         (( now_min >= open_min && now_min < close_min ))
     else

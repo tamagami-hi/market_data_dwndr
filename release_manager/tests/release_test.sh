@@ -143,8 +143,9 @@ stage_release() {
     jq -n --arg v "$version" '{version: $v}' > "$STACK_DIR/manifest.json"
     ( cd "$STACK_DIR" && sha256sum manifest.json paths.json docker-compose.yml images/*.tar.gz > checksums.sha256 )
 }
-deploy()   { ( cd "$STACK_DIR" && DD_TEST_HHMM="${HHMM:-18:00}" ./data_downloader_deploy.sh --yes "$@" ) </dev/null; }
-rollback() { ( cd "$STACK_DIR" && DD_TEST_HHMM="${HHMM:-18:00}" ./data_downloader_rollback.sh --yes "$@" ) </dev/null; }
+# A Monday unless a test says otherwise, so the clock-only window applies by default.
+deploy()   { ( cd "$STACK_DIR" && DD_TEST_DATE="${DD_TEST_DATE:-2026-11-09}" DD_TEST_HHMM="${HHMM:-18:00}" ./data_downloader_deploy.sh --yes "$@" ) </dev/null; }
+rollback() { ( cd "$STACK_DIR" && DD_TEST_DATE="${DD_TEST_DATE:-2026-11-09}" DD_TEST_HHMM="${HHMM:-18:00}" ./data_downloader_rollback.sh --yes "$@" ) </dev/null; }
 live()     { jq -r .version "$STACK_DIR/version.json"; }
 running()  { cat "$FAKE_STATE/containers/market-data-dwndr-backend"; }
 
@@ -172,6 +173,31 @@ contains "  …so 10:15 is outside 11:00-12:00, and a running capture still refu
 FAKE_CAPTURE=down expect "a backend that cannot report its capture refuses" 1 deploy
 FAKE_NO_LEASE=1 expect "no maintenance lease refuses before the swap" 1 deploy
 expect "  …the old release still runs" 0 test "$(running)" == v0.1.52
+
+# Only a real market session blocks a deploy: weekends and holidays never do, and an
+# operator special session replaces the regular hours. Each case below ends at the
+# refused lease, after the guard, so nothing is swapped.
+OUTSIDE="outside the capture window"
+HHMM=10:15 DD_TEST_DATE=2026-11-08 FAKE_NO_LEASE=1 \
+    expect "a Sunday is not blocked by the weekday window (older backend, no calendar)" 1 deploy
+contains "  …it passes the window" "$OUTSIDE (no market session today (weekend or MARKET_HOLIDAYS))"
+HHMM=10:15 DD_TEST_DATE=2026-11-10 FAKE_MARKET_HOLIDAYS=2026-11-09,2026-11-10 FAKE_NO_LEASE=1 \
+    expect "a MARKET_HOLIDAYS weekday is not blocked (older backend, no calendar)" 1 deploy
+contains "  …it passes the window" "$OUTSIDE (no market session today (weekend or MARKET_HOLIDAYS))"
+HHMM=10:15 FAKE_CALENDAR=closed FAKE_NO_LEASE=1 \
+    expect "a weekday the calendar marks closed is not blocked" 1 deploy
+contains "  …it passes the window" "$OUTSIDE (no market session today (weekend or holiday))"
+HHMM=10:15 FAKE_CALENDAR=regular expect "a regular trading day keeps the .env window" 1 deploy
+contains "  …and refuses inside it" "refusing during the capture window (09:00-15:30"
+HHMM=14:30 DD_TEST_DATE=2026-11-08 FAKE_CALENDAR="special 14:20 15:30" \
+    expect "a special session on a Sunday blocks inside its own hours" 1 deploy
+contains "  …naming the special window" "refusing during the capture window (special session 14:20-15:30"
+HHMM=10:15 FAKE_CALENDAR="special 14:20 15:30" FAKE_NO_LEASE=1 \
+    expect "a special session replaces the regular hours" 1 deploy
+contains "  …so 10:15 is outside 14:20-15:30" "$OUTSIDE (special session 14:20-15:30"
+HHMM=10:15 DD_TEST_DATE=2026-11-08 FAKE_CAPTURE=running \
+    expect "a running capture still refuses on a closed day" 1 deploy
+contains "  …by the capture-state check" "capture is running"
 
 FAKE_BAD_CONFIG=0.1.53 expect "a release that rejects the .env is refused before the swap" 1 deploy
 contains "  …naming the setting" "KITE_TOKEN_BROKER_TOTP_SEED missing"
@@ -214,9 +240,9 @@ expect "a bare rollback picks the newest other archive" 0 rollback
 expect "  …which is 0.1.53, the one just left" 0 test "$(running)" == 0.1.53
 
 FAKE_BAD_CONFIG=0.1.53 expect "a reload with a rejected .env changes nothing" 1 \
-    bash -c 'cd "$1" && DD_TEST_HHMM=18:00 ./data_downloader_deploy.sh --reload --yes </dev/null' _ "$STACK_DIR"
+    bash -c 'cd "$1" && DD_TEST_DATE=2026-11-09 DD_TEST_HHMM=18:00 ./data_downloader_deploy.sh --reload --yes </dev/null' _ "$STACK_DIR"
 expect "reload recreates the running release" 0 \
-    bash -c 'cd "$1" && DD_TEST_HHMM=18:00 ./data_downloader_deploy.sh --reload --yes </dev/null' _ "$STACK_DIR"
+    bash -c 'cd "$1" && DD_TEST_DATE=2026-11-09 DD_TEST_HHMM=18:00 ./data_downloader_deploy.sh --reload --yes </dev/null' _ "$STACK_DIR"
 
 for v in 0.2.0 0.2.1 0.2.2 0.2.3 0.2.4; do
     stage_release "$v"; deploy >/dev/null 2>&1 || t_bad "deploy $v for retention"

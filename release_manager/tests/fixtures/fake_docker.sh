@@ -8,6 +8,9 @@
 #   FAKE_NO_LEASE     non-empty: the maintenance lease is refused
 #   FAKE_BAD_CONFIG   a version whose backend rejects the .env
 #   FAKE_MARKET_OPEN / FAKE_MARKET_CLOSE / FAKE_MARKET_TIMEZONE  the backend's env
+#   FAKE_MARKET_HOLIDAYS  the backend's MARKET_HOLIDAYS env (comma-separated dates)
+#   FAKE_CALENDAR     closed | regular | "special HH:MM HH:MM"   what /api/calendar
+#                     says about today; unset = an older backend without it
 
 set -euo pipefail
 : "${FAKE_STATE:?FAKE_STATE not set}"
@@ -40,12 +43,16 @@ case "${1:-}" in
                 MARKET_OPEN)     [[ -n "${FAKE_MARKET_OPEN:-}" ]] && printf '%s\n' "$FAKE_MARKET_OPEN" || exit 1 ;;
                 MARKET_CLOSE)    [[ -n "${FAKE_MARKET_CLOSE:-}" ]] && printf '%s\n' "$FAKE_MARKET_CLOSE" || exit 1 ;;
                 MARKET_TIMEZONE) [[ -n "${FAKE_MARKET_TIMEZONE:-}" ]] && printf '%s\n' "$FAKE_MARKET_TIMEZONE" || exit 1 ;;
+                MARKET_HOLIDAYS) [[ -n "${FAKE_MARKET_HOLIDAYS:-}" ]] && printf '%s\n' "$FAKE_MARKET_HOLIDAYS" || exit 1 ;;
                 *) exit 1 ;;
             esac
             exit 0
         fi
         code="$(cat)"
         case "$code" in
+            *api/calendar*)
+                [[ -n "${FAKE_CALENDAR:-}" ]] || exit 1
+                printf '%s\n' "$FAKE_CALENDAR" ;;
             *capture/status*)
                 [[ "${FAKE_CAPTURE:-stopped}" != down ]] || exit 1
                 printf '%s\n' "${FAKE_CAPTURE:-stopped}" ;;
