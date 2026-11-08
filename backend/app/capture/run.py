@@ -38,7 +38,7 @@ async def _run(context, settings, *, interval_s: float, gate_market_hours: bool,
                force_eod: bool) -> bool:  # pragma: no cover - live loop
     """Drive capture until stop; returns True if an EOD sweep should run."""
     from app.capture.bootstrap import run_capture
-    from app.ops.calendar import PHASE_OPEN, TradingCalendar
+    from app.ops.calendar import PHASE_CLOSED, PHASE_HOLIDAY, TradingCalendar
     from app.session import now_ms
 
     stop_event = asyncio.Event()
@@ -64,7 +64,9 @@ async def _run(context, settings, *, interval_s: float, gate_market_hours: bool,
 
     async def _market_watch() -> None:
         while not stop_event.is_set():
-            if calendar.phase(now_ms()) != PHASE_OPEN:
+            # PRE_OPEN is the capture lead before the open (09:10-09:15, or a special
+            # session's lead): stopping there captured nothing and ran the EOD sweep.
+            if calendar.phase(now_ms()) in (PHASE_CLOSED, PHASE_HOLIDAY):
                 state["eod"] = True
                 _stop("market closed")
                 return

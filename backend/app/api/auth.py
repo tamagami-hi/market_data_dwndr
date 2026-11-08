@@ -53,7 +53,7 @@ class LoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_token: Annotated[str, Field(min_length=1)]
-    risk_free_rate: Annotated[FiniteFloat, Field(ge=0)]
+    risk_free_rate: Annotated[FiniteFloat, Field(ge=0, le=1)]
 
 
 class TotpRequest(BaseModel):
@@ -61,7 +61,7 @@ class TotpRequest(BaseModel):
 
 
 class RiskFreeRateRequest(BaseModel):
-    risk_free_rate: Annotated[FiniteFloat, Field(ge=0)]
+    risk_free_rate: Annotated[FiniteFloat, Field(ge=0, le=1)]
 
 
 class LoginProgressResponse(BaseModel):
@@ -277,7 +277,10 @@ def create_auth_router() -> APIRouter:
             raise HTTPException(status_code=503, detail="backend not configured")
         _authorize(service, operator_token)
         try:
-            state = service.login(
+            # Off the event loop: the exchange is a blocking HTTP call made under the
+            # session lock, and must not stall every other request and WebSocket.
+            state = await run_in_threadpool(
+                service.login,
                 request_token=body.request_token,
                 risk_free_rate=body.risk_free_rate,
             )

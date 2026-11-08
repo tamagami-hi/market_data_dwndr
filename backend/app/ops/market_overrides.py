@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 import threading
 import time as _time
@@ -39,6 +40,8 @@ DEFAULT_TOKEN_LEAD_MINUTES = 60
 MAX_CAPTURE_LEAD_MINUTES = 120
 MAX_NOTE_LENGTH = 120
 MAX_ENTRIES = 400
+# Latest special close: leaves room for the EOD drain tail before midnight.
+LATEST_SPECIAL_CLOSE = time(23, 30)
 _HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -57,6 +60,22 @@ def _minutes(moment: time) -> int:
 
 def _hhmm_from_minutes(total: int) -> str:
     return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def _lead_minutes(value: object) -> int:
+    if value is None:
+        return DEFAULT_CAPTURE_LEAD_MINUTES
+    if isinstance(value, bool):
+        raise OverrideValidationError("capture lead must be a whole number of minutes")
+    try:
+        lead = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise OverrideValidationError(
+            f"capture lead must be a whole number of minutes, got {value!r}"
+        ) from exc
+    if isinstance(value, float) and value != lead:
+        raise OverrideValidationError("capture lead must be a whole number of minutes")
+    return lead
 
 
 def _validate_date(value: str) -> str:
@@ -115,9 +134,12 @@ class SpecialSession:
         closed = _validate_hhmm(close_at, "close")
         if _parse_hhmm(closed) <= _parse_hhmm(opened):
             raise OverrideValidationError("close must be after open")
-        lead = DEFAULT_CAPTURE_LEAD_MINUTES if capture_lead_minutes is None else int(
-            capture_lead_minutes
-        )
+        if _parse_hhmm(closed) > LATEST_SPECIAL_CLOSE:
+            raise OverrideValidationError(
+                f"close must be at or before {LATEST_SPECIAL_CLOSE:%H:%M} so the "
+                "end-of-day sweep can run the same day"
+            )
+        lead = _lead_minutes(capture_lead_minutes)
         if not 0 <= lead <= MAX_CAPTURE_LEAD_MINUTES:
             raise OverrideValidationError(
                 f"capture lead must be between 0 and {MAX_CAPTURE_LEAD_MINUTES} minutes"
@@ -236,12 +258,20 @@ class MarketOverrides:
             return cls(), ("calendar file is not a JSON object",)
         result = cls()
         errors: list[str] = []
-        for item in payload.get("holidays", []) or []:
+        holidays = payload.get("holidays") or []
+        specials = payload.get("special_sessions") or []
+        if not isinstance(holidays, list):
+            errors.append("'holidays' is not a list; all holidays skipped")
+            holidays = []
+        if not isinstance(specials, list):
+            errors.append("'special_sessions' is not a list; all special sessions skipped")
+            specials = []
+        for item in holidays:
             try:
                 result = result.with_holiday(Holiday.create(item["date"], item.get("note")))
-            except (OverrideValidationError, KeyError, TypeError, AttributeError) as exc:
+            except (ValueError, OverflowError, KeyError, TypeError, AttributeError) as exc:
                 errors.append(f"holiday {item!r} skipped: {exc}")
-        for item in payload.get("special_sessions", []) or []:
+        for item in specials:
             try:
                 result = result.with_special(
                     SpecialSession.create(
@@ -253,7 +283,7 @@ class MarketOverrides:
                         item.get("note"),
                     )
                 )
-            except (OverrideValidationError, KeyError, TypeError, AttributeError) as exc:
+            except (ValueError, OverflowError, KeyError, TypeError, AttributeError) as exc:
                 errors.append(f"special session {item!r} skipped: {exc}")
         return result, tuple(errors)
 
@@ -305,7 +335,12 @@ class MarketOverrideStore:
                     self.path,
                 )
                 return self._cached
-            self._cached, self._errors = MarketOverrides.parse_lenient(payload)
+            try:
+                self._cached, self._errors = MarketOverrides.parse_lenient(payload)
+            except Exception as exc:  # noqa: BLE001 - never lose the last good copy
+                self._errors = (f"calendar file could not be parsed: {exc}",)
+                logger.error("market calendar %s could not be parsed", self.path, exc_info=True)
+                return self._cached
             for error in self._errors:
                 logger.error("market calendar %s: %s", self.path, error)
             return self._cached
@@ -313,6 +348,7 @@ class MarketOverrideStore:
     def save(self, overrides: MarketOverrides) -> MarketOverrides:
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._preserve_rejected_file()
             fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".market_calendar.")
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -329,9 +365,31 @@ class MarketOverrideStore:
             self._checked_at = _time.monotonic()
             return overrides
 
+    def _preserve_rejected_file(self) -> None:
+        """Keep a copy of a file that had problems before it is overwritten.
+
+        A UI write rebuilds the file from the parsed entries, so anything the parser
+        skipped (or a file that was not valid JSON at all) would otherwise be lost.
+        """
+        if not self._errors or not self.path.exists():
+            return
+        stamp = _time.strftime("%Y%m%d-%H%M%S")
+        backup = self.path.with_name(f"{self.path.stem}.rejected-{stamp}{self.path.suffix}")
+        try:
+            shutil.copy2(self.path, backup)
+            logger.warning(
+                "market calendar had problems; previous file kept as %s", backup.name
+            )
+        except OSError:
+            logger.warning("could not keep a copy of the problem calendar file", exc_info=True)
+
     def reload(self) -> MarketOverrides:
         self._checked_at = 0.0
         return self.load()
+
+    def cached(self) -> MarketOverrides:
+        """The last successfully loaded overrides, without touching the disk."""
+        return self._cached
 
 
 _installed: MarketOverrideStore | None = None
@@ -354,8 +412,10 @@ def active_overrides() -> MarketOverrides:
     try:
         return store.load()
     except Exception:  # noqa: BLE001 - the calendar must never fail on the overrides file
+        # The last good copy, never EMPTY: an empty answer mid-session reads as "not a
+        # trading day" and would stop capture during a special session.
         logger.warning("market calendar overrides unavailable", exc_info=True)
-        return EMPTY
+        return store.cached()
 
 
 def default_store_path(state_dir: Path) -> Path:

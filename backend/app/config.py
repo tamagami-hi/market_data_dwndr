@@ -91,6 +91,8 @@ class Settings(BaseSettings):
     )
     risk_free_rate: float | None = Field(
         default=None,
+        ge=0,
+        le=1,
         description=(
             "Fallback risk-free rate (decimal) stamped into headers when the rate "
             "broker is unavailable; the daily value is normally fetched from calspread."
@@ -692,6 +694,39 @@ class Settings(BaseSettings):
                 "daily schedule must satisfy AUTH_POLL_START < AUTH_POLL_END "
                 "<= MARKET_OPEN < MARKET_CLOSE"
             )
+        # The capture window may come from CAPTURE_START/END_TIME, but MARKET_OPEN and
+        # MARKET_CLOSE still size the frame baseline and fall back for blank segment
+        # times, so they must be a real, ordered window on their own.
+        if not _parse_hhmm(self.market_open) < _parse_hhmm(self.market_close):
+            raise ValueError("MARKET_OPEN must be before MARKET_CLOSE")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_timezone(self) -> Settings:
+        """Reject an unknown zone instead of silently running the schedule in UTC."""
+        if self.timezone in ("Asia/Kolkata", "Asia/Calcutta"):
+            return self  # the calendar has a fixed +05:30 fallback without tzdata
+        try:
+            from zoneinfo import ZoneInfo
+
+            ZoneInfo(self.timezone)
+        except Exception as exc:  # noqa: BLE001 - any lookup failure is a bad zone
+            raise ValueError(f"unknown TIMEZONE {self.timezone!r}") from exc
+        return self
+
+    @model_validator(mode="after")
+    def _validate_market_sessions(self) -> Settings:
+        """Build the per-segment sessions now, so a bad EQUITY_* time fails at startup.
+
+        Otherwise the error only surfaces when capture bootstrap builds the registry —
+        on every automation tick, inside the market window.
+        """
+        from app.ops.sessions import build_session_registry
+
+        try:
+            build_session_registry(self)
+        except ValueError as exc:
+            raise ValueError(f"invalid EQUITY_* session schedule: {exc}") from exc
         return self
 
     @property

@@ -257,7 +257,15 @@ class CaptureController:
             raise MaintenanceUnavailableError("release maintenance is not configured")
         async with self._lifecycle_lock:
             lease = self._maintenance_store.acquire()
-            await self._stop_unlocked()
+            try:
+                await self._stop_unlocked()
+            except CaptureError:
+                # The capture task is stopped either way (it had failed, or was cancelled
+                # after the stop timeout). Hand the lease back so the release can end it;
+                # raising here orphaned it and blocked the next process until its TTL.
+                logger.warning(
+                    "maintenance lease granted although capture did not stop cleanly"
+                )
             return lease
 
     async def release_maintenance(self, provided_token: str | None, lease_id: str) -> bool:

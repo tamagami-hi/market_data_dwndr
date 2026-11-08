@@ -72,7 +72,11 @@ def _store():
 
 def _require_not_past(service, day: str) -> None:
     today = service.trading_date()
-    if date.fromisoformat(day).isoformat() < today:
+    try:
+        parsed = date.fromisoformat(day)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"{day} is not a real date") from exc
+    if parsed.isoformat() < today:
         raise HTTPException(
             status_code=422, detail=f"{day} is in the past (today is {today})"
         )

@@ -52,6 +52,21 @@ def _market_phase(app_state) -> str | None:
 NOT_CAPTURING_DEAD_AFTER_S = 120
 
 
+def _seconds_since_open(service) -> int:
+    """Seconds since today's market open (a special session's open on a special day)."""
+    try:
+        calendar = service.calendar
+        current = now_ms()
+        open_at, _ = calendar.window(current)
+        local = calendar.local_dt(current)
+        opened = local.replace(
+            hour=open_at.hour, minute=open_at.minute, second=0, microsecond=0
+        )
+        return max(0, int((local - opened).total_seconds()))
+    except Exception:  # noqa: BLE001 - a probe must never raise
+        return 0
+
+
 def _auth_check(app_state, controller) -> dict:
     """Report broker-session health, and escalate an unmet obligation to *dead*.
 
@@ -86,6 +101,10 @@ def _auth_check(app_state, controller) -> dict:
 
     auth_state = status.get("auth_state") or AUTH_OK
     blocked_s = int(status.get("auth_blocked_seconds") or 0)
+    # How long frames have been owed without capture: from the session open, not from
+    # the auth state — a healthy token with capture down (no rate, bootstrap failure)
+    # kept auth_blocked_seconds at 0 and never escalated.
+    not_capturing_s = max(blocked_s, _seconds_since_open(service))
     phase = status.get("market_phase")
     running = bool(controller is not None and getattr(controller, "running", False))
     detail = {
@@ -98,7 +117,7 @@ def _auth_check(app_state, controller) -> dict:
 
     # Frames are owed and nothing is capturing them. Anything else is secondary.
     if phase == PHASE_OPEN and not running:
-        if blocked_s >= NOT_CAPTURING_DEAD_AFTER_S or auth_state == AUTH_BLOCKED:
+        if not_capturing_s >= NOT_CAPTURING_DEAD_AFTER_S or auth_state == AUTH_BLOCKED:
             reason = (
                 "the broker's access token is rejected by Kite; an administrator must "
                 "log in again through the broker"
@@ -110,7 +129,7 @@ def _auth_check(app_state, controller) -> dict:
                 "status": "dead",
                 "code": CODE_DEAD,
                 "message": (
-                    f"market session is OPEN and capture is NOT running ({blocked_s}s): "
+                    f"market session is OPEN and capture is NOT running ({not_capturing_s}s): "
                     f"{reason}. Every second in this state is unrecoverable data loss."
                 ),
                 **detail,
@@ -120,7 +139,7 @@ def _auth_check(app_state, controller) -> dict:
             "status": "stale",
             "code": CODE_STALE,
             "message": (
-                f"market session is OPEN but capture has not started yet ({blocked_s}s, "
+                f"market session is OPEN but capture has not started yet ({not_capturing_s}s, "
                 f"{auth_state}); escalates to dead after {NOT_CAPTURING_DEAD_AFTER_S}s"
             ),
             **detail,
