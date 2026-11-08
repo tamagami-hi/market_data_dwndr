@@ -64,6 +64,12 @@ class CaptureContext:
     skipped_indices: list[str] = field(default_factory=list)
     subscription: object | None = None  # SubscriptionPlan
     bus: object | None = None  # BusPublisher | NullBusPublisher
+    # Why each skipped index was skipped, the LTP quote failure behind it (if any), and
+    # what resuming from disk found — recorded in the day's incident ledger, so "6 index
+    # chains skipped because the quote failed on DNS" is on record, not only in the logs.
+    skip_reasons: dict[str, str] = field(default_factory=dict)
+    quote_error: str | None = None
+    resume: dict = field(default_factory=dict)
 
 
 def _default_instrument_store(settings, access_token: str) -> InstrumentStore:
@@ -106,18 +112,21 @@ def bootstrap_capture(
     # --- seed spot prices (LTP) for the configured indices + VIX ---
     configs = {name: get_index_config(name) for name in settings.indices}
     spot_symbols = [cfg.spot_symbol for cfg in configs.values()]
+    quote_error: str | None = None
     try:
         ltps = quote_fn([*spot_symbols, VIX_SYMBOL])
     except Exception as exc:  # noqa: BLE001 - a quote failure shouldn't abort stocks
         if is_authentication_error(exc):
             raise KiteAuthenticationError("Kite access token was rejected") from exc
         logger.warning("LTP quote failed; index chains may be skipped: %s", exc)
+        quote_error = f"{type(exc).__name__}: {exc}"
         ltps = {}
 
     # --- index option chains (L1) ---
     index_tables: dict[str, IndexTable] = {}
     index_writers: dict = {}
     skipped: list[str] = []
+    skip_reasons: dict[str, str] = {}
     for name, cfg in configs.items():
         try:
             instruments = instrument_store.get(cfg.options_exchange, trading_date)
@@ -133,6 +142,7 @@ def bootstrap_capture(
             if is_authentication_error(exc):
                 raise KiteAuthenticationError("Kite access token was rejected") from exc
             skipped.append(name)
+            skip_reasons[name] = str(exc)
             logger.warning("skipping index %s: %s", name, exc)
 
     # --- F&O stock board (L5) ---
@@ -522,6 +532,9 @@ def bootstrap_capture(
         skipped_indices=skipped,
         subscription=subscription,
         bus=bus,
+        skip_reasons=skip_reasons,
+        quote_error=quote_error,
+        resume=dict(resume or {}),
     )
 
 

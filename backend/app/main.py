@@ -63,6 +63,7 @@ def _init_session_service(app: FastAPI) -> None:
         from app.ops.automation import DailyAutomationService
 
         app.state.capture_controller = CaptureController(settings, service, app.state.ws_hub)
+        _record_process_start(settings, service)
         app.state.daily_automation = DailyAutomationService(
             settings,
             service,
@@ -89,6 +90,27 @@ def _init_session_service(app: FastAPI) -> None:
         app.state.capture_controller = None
         app.state.daily_automation = None
         logger.warning("session service not initialised (backend unconfigured): %s", exc)
+
+
+def _record_process_start(settings, service) -> None:
+    """One ``process_start`` per backend process in the day's incident ledger.
+
+    The only honest restart count: a crash loop exits before any summary is written, so
+    process starts have to be counted by the process that starts. Never raises.
+    """
+    import os
+
+    from app.ops import incidents
+    from app.session import now_ms
+
+    incidents.record_incident(
+        getattr(settings, "stats_dir", None),
+        service.trading_date(),
+        incidents.KIND_PROCESS_START,
+        now_ms(),
+        version=__version__,
+        pid=os.getpid(),
+    )
 
 
 @asynccontextmanager

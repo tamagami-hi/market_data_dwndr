@@ -215,9 +215,9 @@ class CaptureMonitor:
         * ``grid_seconds_elapsed`` — every grid second the capture loop reached, whether
           a frame was persisted or not. The honest denominator for *total* market-data
           loss, and the only one that still moves while stale writes are suppressed.
-        * ``writable_seconds`` — elapsed seconds minus the stale ones, i.e. the seconds a
-          frame *could* legitimately have been written for. Loss against this isolates
-          gaps and write-path failures from an upstream feed that had nothing to give.
+        * ``writable_seconds`` — elapsed minus stale, first-tick wait and restart downtime:
+          the seconds a frame *could* have been written for. Loss against this isolates
+          gaps and write-path failures (restart downtime used to stay in, 2026-11-05).
         * ``stale_seconds`` — seconds deliberately not written because the feed was
           frozen or absent (see ``CaptureEngine.capture_snapshot``).
         """
@@ -230,9 +230,9 @@ class CaptureMonitor:
         elapsed = expected_frames_elapsed(first_grid, last_grid)
         stale_seconds = int(getattr(self.engine, "stale_seconds", 0))
         awaiting = int(getattr(self.engine, "awaiting_first_tick_seconds", 0))
-        # Seconds a frame could legitimately have been written for: neither the feed frozen
-        # nor the feed not started yet.
-        writable = max(0, elapsed - stale_seconds - awaiting)
+        restarting = int(getattr(self.engine, "restart_downtime_seconds", 0))
+        # Neither the feed frozen, nor not started yet, nor the process restarting.
+        writable = max(0, elapsed - stale_seconds - awaiting - restarting)
         return elapsed, writable, stale_seconds
 
     def _queue_depth(self) -> int:
@@ -348,8 +348,8 @@ class CaptureMonitor:
         #                      reads ~75%, because most of the day has not happened yet.
         #                      It is a completeness/progress measure, not a fault.
         #   session_loss_pct – vs the grid seconds a frame COULD have been written for
-        #                      (elapsed minus stale). This isolates gaps and write-path
-        #                      failures: anything above ~0 means frames we owed and lost.
+        #                      (elapsed minus stale/first-tick/restart): write-path and
+        #                      grid-gap loss only; anything above ~0 is a pipeline fault.
         #   data_loss_pct    – vs every elapsed grid second, stale ones included. This is
         #                      the "how much of the session is actually missing from the
         #                      archive" number, and the one a frozen feed moves.
@@ -574,7 +574,7 @@ class CaptureMonitor:
         stale_events = int(getattr(self.engine, "stale_events", 0))
         grid_seconds_elapsed, writable_seconds, stale_seconds = self._loss_baselines()
         # Loss measured against the seconds a frame could legitimately have been written
-        # for (elapsed minus stale) — gaps and write-path failures only.
+        # for (see _loss_baselines) — gaps and write-path failures only.
         session_loss_pct = round(frame_loss_pct(captures, writable_seconds), 3)
         # Total market-data loss: every elapsed grid second with no frame in the archive,
         # whether it was lost to a gap or skipped because the feed had frozen. This is the

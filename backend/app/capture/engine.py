@@ -444,7 +444,10 @@ class CaptureEngine:
         * the bridge has exhausted its confirmed-reconnect ladder, so the socket is known
           to be unusable right now.
 
-        Both raise, which routes to the controller's fatal handler and a clean restart.
+        Both raise, which routes to the controller's fatal handler and a clean restart —
+        so both are escalations and are counted like the stale-feed one. The ticker path
+        used to raise without counting, which is why 2026-11-05 recorded ``escalations: 0``
+        for a session with two CaptureStalledError restarts.
         """
         if consumer is not None and consumer.done() and not consumer.cancelled():
             cause = self.consumer_error
@@ -453,6 +456,7 @@ class CaptureEngine:
                     cause = consumer.exception()
                 except asyncio.CancelledError:  # pragma: no cover - cancelled mid-check
                     return
+            self._count_escalation()
             raise CaptureConsumerFailed(
                 "tick consumer is no longer running "
                 f"({type(cause).__name__ if cause else 'exited without an exception'}); "
@@ -460,6 +464,7 @@ class CaptureEngine:
             ) from cause
         unrecoverable = getattr(bridge, "feed_unrecoverable", None)
         if unrecoverable is not None and unrecoverable.is_set():
+            self._count_escalation()
             raise CaptureStalledError(
                 "ticker could not establish a confirmed subscription after "
                 f"{getattr(bridge, 'subscribe_failures', 0)} subscription failure(s) and "
@@ -1121,12 +1126,7 @@ class CaptureEngine:
                 self.escalations + 1,
             )
 
-        self.escalations += 1
-        # Flush telemetry BEFORE raising. The snapshot is written on a throttle, so without
-        # this the last minute of stale/gap accounting never reaches disk and the restarted
-        # process carries a stale lower bound (the reason a three-restart session reported
-        # 67 stale seconds against a real ~105).
-        self._persist_telemetry_now()
+        self._count_escalation()
         # Best-effort: give the replacement process a fresh token to start from. This is
         # a *swap*, never a delete — the old ladder invalidated the persisted session
         # before fetching, so a broker that returned nothing (every recorded day) left
@@ -1136,16 +1136,29 @@ class CaptureEngine:
                 self._token_refresher()
             except Exception:  # noqa: BLE001 - must never mask the escalation
                 logger.warning("pre-restart token refresh failed", exc_info=True)
-        if self._escalation_recorder is not None:
-            try:
-                self._escalation_recorder()
-            except Exception:  # noqa: BLE001 - ledger is advisory, not a gate
-                logger.warning("could not record the escalation", exc_info=True)
         raise CaptureStalledError(
             f"live feed stale for {spell_s}s while the market is trading "
             f"(escalation {self.escalations}/{self.escalation_limit or '∞'}); "
             "restarting the process for a clean session and fresh token"
         )
+
+    def _count_escalation(self) -> None:
+        """Count one escalation to a process restart, persist it, and flush telemetry.
+
+        Every path that raises for a restart goes through here, so the in-memory count,
+        the per-day ledger and the persisted snapshot can never disagree about how many
+        restarts the day took. The snapshot is flushed BEFORE raising: it is written on a
+        throttle, so without this the last minute of stale/gap accounting never reaches
+        disk and the restarted process carries a stale lower bound (the reason a
+        three-restart session reported 67 stale seconds against a real ~105).
+        """
+        self.escalations += 1
+        self._persist_telemetry_now()
+        if self._escalation_recorder is not None:
+            try:
+                self._escalation_recorder()
+            except Exception:  # noqa: BLE001 - ledger is advisory, not a gate
+                logger.warning("could not record the escalation", exc_info=True)
 
     def _persist_telemetry_now(self) -> None:
         """Force the throttled monitor snapshot to disk (best effort, never raises)."""

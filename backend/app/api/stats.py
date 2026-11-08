@@ -8,20 +8,35 @@
   (from ``_state/stats/``) so the dashboard still shows meaningful numbers
   after hours / before capture starts.
 
+Every session-history row (and the current day in ``session_outcome``) is described by
+:func:`app.ops.session_outcome.describe_session`: one primary ``completeness_pct``, an
+``outcome`` class, every missing second attributed to a cause, the day's incidents and
+the archive reconciliation figure. ``GET /api/stats/sessions`` pages through the full,
+never-pruned history; ``GET /api/stats/incidents/{date}`` returns one day's raw ledger.
+
 Read-only and secret-free, like ``/api/status``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from typing import Annotated
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Path, Query, Request
 
 from app.config import Settings, get_settings
 from app.ops import stats_store
+from app.ops.session_report import describe_monitor, describe_rows, incident_report
 from app.session import now_ms
 
 logger = logging.getLogger(__name__)
+
+# ``/api/stats`` is polled every few seconds, so it carries only the recent history.
+RECENT_SESSIONS = 30
+SESSION_PAGE_DEFAULT = 50
+SESSION_PAGE_MAX = 500
+ISO_DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
 
 
 def _trading_date(session_service) -> str | None:
@@ -177,7 +192,12 @@ def collect_stats(app_state) -> dict:
         except Exception:  # noqa: BLE001
             logger.debug("compression history read failed", exc_info=True)
         try:
-            payload["session_history"] = stats_store.session_history(state_dir)
+            payload["session_history"] = describe_rows(
+                stats_store.session_history(state_dir, RECENT_SESSIONS),
+                settings=settings,
+                stats_dir=state_dir,
+                now_ms=payload["generated_at"],
+            )
         except Exception:  # noqa: BLE001
             logger.debug("session history read failed", exc_info=True)
         if payload["monitor"] is None:
@@ -202,7 +222,55 @@ def collect_stats(app_state) -> dict:
             except Exception:  # noqa: BLE001
                 logger.debug("persisted capture snapshot read failed", exc_info=True)
 
+    _attach_day_outcome(payload, settings, state_dir)
     return payload
+
+
+def _attach_day_outcome(payload: dict, settings, state_dir) -> None:
+    """``session_outcome`` + ``incident_ledger`` for the monitor's (or today's) date."""
+    payload["session_outcome"] = None
+    payload["incident_ledger"] = None
+    day = payload.get("monitor_trading_date") or payload.get("trading_date")
+    if state_dir is None or not day or not stats_store.is_iso_date(str(day)):
+        return
+    now = payload["generated_at"]
+    try:
+        payload["session_outcome"] = describe_monitor(
+            payload.get("monitor"), day, settings=settings, stats_dir=state_dir, now_ms=now
+        )
+        payload["incident_ledger"] = incident_report(
+            state_dir, day, settings=settings, now_ms=now
+        )
+    except Exception:  # noqa: BLE001 - an explanation must never break the read
+        logger.debug("session outcome failed for /api/stats", exc_info=True)
+
+
+def _settings_or_none():
+    try:
+        return get_settings()
+    except Exception:  # noqa: BLE001 - settings unavailable in some test contexts
+        return None
+
+
+def collect_session_page(limit: int, before: str | None) -> dict:
+    """One page of the full session history, described like ``session_history``."""
+    settings = _settings_or_none()
+    state_dir = getattr(settings, "stats_dir", None) if settings is not None else None
+    if state_dir is None:
+        return {"sessions": [], "total": 0, "next_before": None}
+    page = stats_store.session_history_page(state_dir, limit=limit, before=before)
+    return {
+        **page,
+        "sessions": describe_rows(
+            page["sessions"], settings=settings, stats_dir=state_dir, now_ms=now_ms()
+        ),
+    }
+
+
+def collect_incidents(trading_date: str) -> dict:
+    settings = _settings_or_none()
+    state_dir = getattr(settings, "stats_dir", None) if settings is not None else None
+    return incident_report(state_dir, trading_date, settings=settings, now_ms=now_ms())
 
 
 def create_stats_router() -> APIRouter:
@@ -211,5 +279,26 @@ def create_stats_router() -> APIRouter:
     @router.get("/api/stats")
     async def stats(request: Request) -> dict:
         return collect_stats(request.app.state)
+
+    @router.get("/api/stats/sessions")
+    async def sessions(
+        limit: Annotated[int, Query(ge=1, le=SESSION_PAGE_MAX)] = SESSION_PAGE_DEFAULT,
+        before: Annotated[
+            str | None, Query(pattern=ISO_DATE_PATTERN, description="YYYY-MM-DD, exclusive")
+        ] = None,
+    ) -> dict:
+        """The full session history, newest first, ``limit`` rows before ``before``."""
+        if before is not None and not stats_store.is_iso_date(before):
+            raise HTTPException(status_code=422, detail="before must be a valid YYYY-MM-DD date")
+        return await asyncio.to_thread(collect_session_page, limit, before)
+
+    @router.get("/api/stats/incidents/{trading_date}")
+    async def incidents_for_day(
+        trading_date: Annotated[str, Path(pattern=ISO_DATE_PATTERN)],
+    ) -> dict:
+        """One trading date's incident ledger and its timeline analysis."""
+        if not stats_store.is_iso_date(trading_date):
+            raise HTTPException(status_code=422, detail="trading_date must be YYYY-MM-DD")
+        return await asyncio.to_thread(collect_incidents, trading_date)
 
     return router

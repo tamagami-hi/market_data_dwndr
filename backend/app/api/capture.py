@@ -24,6 +24,8 @@ from app.capture.maintenance import (
 )
 from app.config import secret_text as config_secret_text
 from app.kite.errors import KiteAuthenticationError
+from app.ops import incidents
+from app.session import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +92,7 @@ class CaptureController:
         run_fn=None,
         maintenance_store: MaintenanceLeaseStore | None = None,
         fatal_handler=None,
+        clock=now_ms,
     ) -> None:
         self.settings = settings
         self.session_service = session_service
@@ -102,6 +105,7 @@ class CaptureController:
         self._error: str | None = None
         self._has_failed = False
         self._fatal_handler = fatal_handler or _default_fatal_handler
+        self._clock = clock
         self._lifecycle_lock = asyncio.Lock()
         self._maintenance_token = _secret_value(
             getattr(settings, "release_maintenance_token", None)
@@ -159,38 +163,45 @@ class CaptureController:
 
         bootstrap_fn, run_fn = self._resolve_fns()
         try:
-            context = bootstrap_fn(
-                self.settings,
-                session.access_token,
-                session.risk_free_rate,
-                hub=self.hub,
-                token_refresher=self._make_token_refresher(session.access_token),
-            )
-        except TypeError:
-            # Injected test doubles may not accept the recovery hook.
-            context = bootstrap_fn(
-                self.settings, session.access_token, session.risk_free_rate, hub=self.hub
-            )
+            context = self._bootstrap(bootstrap_fn, session)
         except KiteAuthenticationError as exc:
+            self._record_incident(None, incidents.KIND_START_FAILED, exception=type(exc).__name__)
             self._handle_authentication_failure(session.access_token)
             raise CaptureError(
                 "broker session expired; waiting for automatic token refresh"
             ) from exc
+        except Exception as exc:
+            self._record_incident(
+                None,
+                incidents.KIND_START_FAILED,
+                exception=type(exc).__name__,
+                reason=incidents.sanitize_reason(exc),
+            )
+            raise
         self._context = context
         self._stop = asyncio.Event()
         self._error = None
         self._has_failed = False
 
         async def _runner() -> None:
+            must_exit = False
             try:
                 await run_fn(context, self._stop)
-            except KiteAuthenticationError:
+            except KiteAuthenticationError as exc:
+                self._note_capture_failure(context, exc, process_exit=False)
                 self._handle_authentication_failure(session.access_token)
                 logger.warning("capture stopped because the Kite session expired")
             except Exception as exc:  # noqa: BLE001 - record, then self-exit for restart
                 self._has_failed = True
                 self._error = "capture task failed; inspect backend logs"
                 logger.error("capture task failed (%s)", type(exc).__name__)
+                self._note_capture_failure(context, exc, process_exit=True)
+                must_exit = True
+            finally:
+                # Exactly once per run, however it ended: a crash exits the process without
+                # a stop, so recording only on stop lost every crashed run from the history.
+                self._record_session_summary(context)
+            if must_exit:
                 # Unrecoverable in-process: trigger a process exit so Docker's
                 # restart policy recovers with a clean slate (see _default_fatal_handler).
                 # Fires only on a genuine crash — never on normal stop/auth-expiry — so an
@@ -201,14 +212,32 @@ class CaptureController:
                     logger.exception("fatal handler failed after capture crash")
 
         self._task = asyncio.create_task(_runner())
+        self._note_capture_start(context)
         logger.info("capture started for %s (%d tokens)", context.trading_date, len(context.tokens))
         return self.status()
 
-    async def stop(self) -> dict:
-        async with self._lifecycle_lock:
-            return await self._stop_unlocked()
+    def _bootstrap(self, bootstrap_fn, session):
+        try:
+            return bootstrap_fn(
+                self.settings,
+                session.access_token,
+                session.risk_free_rate,
+                hub=self.hub,
+                token_refresher=self._make_token_refresher(session.access_token),
+            )
+        except TypeError:
+            # Injected test doubles may not accept the recovery hook.
+            return bootstrap_fn(
+                self.settings, session.access_token, session.risk_free_rate, hub=self.hub
+            )
 
-    async def _stop_unlocked(self) -> dict:
+    async def stop(self, reason: str = incidents.STOP_REASON_SHUTDOWN) -> dict:
+        """Stop capture; ``reason`` (market close, maintenance, …) goes to the ledger."""
+        async with self._lifecycle_lock:
+            return await self._stop_unlocked(reason)
+
+    async def _stop_unlocked(self, reason: str = incidents.STOP_REASON_SHUTDOWN) -> dict:
+        was_running = self.running
         if self._stop is not None:
             self._stop.set()
         if self._task is not None:
@@ -223,20 +252,25 @@ class CaptureController:
             except asyncio.CancelledError:
                 if not self._task.cancelled():
                     raise
-        self._record_session_summary()
+        if was_running:
+            self._record_incident(
+                self._context,
+                incidents.KIND_CAPTURE_STOPPED,
+                reason=reason,
+                clean=not self._has_failed,
+            )
         self._task = None
         self._stop = None
         if self._has_failed:
             raise CaptureError("capture did not flush and stop safely")
         return self.status()
 
-    def _record_session_summary(self) -> None:
-        """Persist this session's data-loss summary so the dashboard can show history.
+    def _record_session_summary(self, ctx) -> None:
+        """Persist this run's data-loss summary so the dashboard can show history.
 
         Best-effort and never raises: a telemetry/persistence failure must not turn a
         clean capture stop into a reported failure (which would block the EOD sweep).
         """
-        ctx = self._context
         monitor = getattr(ctx, "monitor", None) if ctx is not None else None
         if monitor is None:
             return
@@ -245,11 +279,62 @@ class CaptureController:
             return
         try:
             from app.ops import stats_store
+            from app.ops.session_report import safe_session_window
 
-            summary = monitor.session_summary(getattr(ctx, "trading_date", "unknown"))
+            trading_date = getattr(ctx, "trading_date", "unknown")
+            summary = monitor.session_summary(trading_date)
+            window = safe_session_window(self.settings, trading_date)
+            if window is not None:
+                summary = {**summary, "session_window": window}
             stats_store.record_session_summary(stats_root, summary)
         except Exception:  # noqa: BLE001 - telemetry must never break a clean stop
             logger.debug("failed to record capture session summary", exc_info=True)
+
+    # --- incident ledger --------------------------------------------------------- #
+
+    def _record_incident(self, ctx, kind: str, **fields) -> None:
+        """Best-effort incident for ``ctx``'s trading date (today's when no context)."""
+        trading_date = getattr(ctx, "trading_date", None) if ctx is not None else None
+        if trading_date is None:
+            try:
+                trading_date = self.session_service.trading_date()
+            except Exception:  # noqa: BLE001 - telemetry must never break capture
+                return
+        incidents.record_incident(
+            getattr(self.settings, "stats_dir", None), trading_date, kind, self._clock(), **fields
+        )
+
+    def _note_capture_start(self, ctx) -> None:
+        resume = getattr(ctx, "resume", None) or {}
+        quote_error = getattr(ctx, "quote_error", None)
+        self._record_incident(
+            ctx,
+            incidents.KIND_CAPTURE_START,
+            tokens=len(getattr(ctx, "tokens", ()) or ()),
+            indices=len(getattr(ctx, "index_tables", {}) or {}),
+            skipped_indices=sorted(getattr(ctx, "skipped_indices", ()) or ()),
+            skip_reasons={
+                name: incidents.sanitize_reason(reason)
+                for name, reason in (getattr(ctx, "skip_reasons", None) or {}).items()
+            },
+            quote_error_type=(quote_error or "").split(":", 1)[0] or None,
+            quote_error=incidents.sanitize_reason(quote_error) if quote_error else None,
+            resumed_frames=int(resume.get("frames_on_disk") or 0),
+            resume_downtime_seconds=int(resume.get("downtime_seconds") or 0),
+        )
+
+    def _note_capture_failure(self, ctx, exc: BaseException, *, process_exit: bool) -> None:
+        bridge = getattr(ctx, "bridge", None)
+        self._record_incident(
+            ctx,
+            incidents.KIND_CAPTURE_FAILED,
+            exception=type(exc).__name__,
+            reason=incidents.sanitize_reason(exc),
+            # Whether this run ever had a confirmed live subscription: a run that never did
+            # is a failed start (the 15-second TickerConnectFailed deaths on 2026-11-05).
+            feed_live=bool(getattr(bridge, "connects_confirmed", 0)),
+            process_exit=process_exit,
+        )
 
     async def acquire_maintenance(self, provided_token: str | None) -> MaintenanceLease:
         self._authenticate_maintenance(provided_token)
@@ -257,8 +342,13 @@ class CaptureController:
             raise MaintenanceUnavailableError("release maintenance is not configured")
         async with self._lifecycle_lock:
             lease = self._maintenance_store.acquire()
+            self._record_incident(
+                None,
+                incidents.KIND_MAINTENANCE_ACQUIRED,
+                expires_at=int(getattr(lease, "expires_at_ms", 0)) or None,
+            )
             try:
-                await self._stop_unlocked()
+                await self._stop_unlocked(incidents.STOP_REASON_MAINTENANCE)
             except CaptureError:
                 # The capture task is stopped either way (it had failed, or was cancelled
                 # after the stop timeout). Hand the lease back so the release can end it;
@@ -274,6 +364,7 @@ class CaptureController:
             raise MaintenanceUnavailableError("release maintenance is not configured")
         async with self._lifecycle_lock:
             self._maintenance_store.release(lease_id)
+            self._record_incident(None, incidents.KIND_MAINTENANCE_RELEASED)
             return True
 
     def _make_token_refresher(self, access_token: str):

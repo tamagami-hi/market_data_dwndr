@@ -139,7 +139,28 @@ class SessionService:
             return False
         self._auth_state = state
         self._auth_state_since_ms = self._clock()
+        self._record_auth_transition(state, error)
         return True
+
+    def _record_auth_transition(self, state: str, error: str | None) -> None:
+        """Put the transition in the day's incident ledger (never raises).
+
+        "Waiting for the broker token" is otherwise invisible in the session record: the
+        owed seconds just show up as capture not running.
+        """
+        try:
+            from app.ops import incidents
+
+            incidents.record_incident(
+                getattr(self.settings, "stats_dir", None),
+                self.trading_date(),
+                incidents.KIND_AUTH_STATE,
+                self._auth_state_since_ms or self._clock(),
+                state=state,
+                error=error,
+            )
+        except Exception:  # noqa: BLE001 - telemetry must never break authentication
+            logger.debug("could not record the auth-state transition", exc_info=True)
 
     @property
     def auth_state(self) -> str:

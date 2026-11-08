@@ -357,7 +357,7 @@ async def test_automation_dispatches_broker_start_stop_then_eod_in_order(tmp_pat
             events.append("start")
             self.running = True
 
-        async def stop(self):
+        async def stop(self, reason=None):
             events.append("stop")
             self.running = False
 
@@ -402,7 +402,7 @@ async def test_eod_is_never_started_when_capture_flush_fails(tmp_path):
     class FailedFlushCapture:
         running = True
 
-        async def stop(self):
+        async def stop(self, reason=None):
             events.append("stop")
             raise RuntimeError("writer did not flush")
 
@@ -558,7 +558,7 @@ async def test_eod_is_skipped_when_capture_cannot_prove_writer_flush(tmp_path):
     class UnsafeCapture:
         running = False
 
-        async def stop(self):
+        async def stop(self, reason=None):
             raise RuntimeError("writer did not stop")
 
     eod_calls: list[str] = []

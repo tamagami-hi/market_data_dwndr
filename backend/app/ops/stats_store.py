@@ -8,9 +8,21 @@ seeded from ``STATS_DATA_PATH`` in the env, defaulting to ``MARKET_DATA/_state/s
   throughput_mbps, threads). Append-only; enables cross-day averages.
 - ``capture-<YYYY-MM-DD>.json`` -- the latest enriched monitor snapshot for the
   day (per-underlying + global metrics), rewritten periodically while capture runs.
+- ``session-history.jsonl`` / ``reconciliation-history.jsonl`` -- one line per trading
+  date (telemetry summary / archive-truth completeness).
+- ``escalations-<date>.json`` / ``incidents-<date>.json`` -- per-day recovery ledgers.
+- ``eod-state.json`` -- which trading dates finished their EOD sweep.
+
+**Nothing is ever pruned.** Every recorded session, sweep, reconciliation and escalation
+is kept for good; an operator decides when history goes, not a write-time cap. The
+per-date JSONL logs therefore grow without bound, so they are rewritten from their *raw
+lines* (only the row being replaced is parsed), and paged reads index rows by their
+``trading_date`` with a regex instead of decoding every line: a few thousand sessions
+cost milliseconds, not a full JSON decode per dashboard poll.
 
 All writes are atomic (temp file + rename + fsync), mirroring ``app.session``, so a
-crash mid-write never corrupts a file. Reads tolerate missing/partial data.
+crash mid-write never corrupts a file. Reads tolerate missing/partial data; a line that
+cannot be decoded is skipped on read but preserved on rewrite.
 
 Every function takes ``stats_dir`` -- the directory the files live in directly (no
 extra nesting), so the caller controls the location entirely via configuration.
@@ -21,18 +33,20 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tempfile
+from datetime import date
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 COMPRESSION_HISTORY_FILE = "compression-history.jsonl"
-# Keep cross-day averages bounded to the most recent sweeps.
-MAX_COMPRESSION_HISTORY = 365
-
 SESSION_HISTORY_FILE = "session-history.jsonl"
-# One record per capture session; a year of trading days is plenty.
-MAX_SESSION_HISTORY = 365
+EOD_STATE_FILE = "eod-state.json"
+
+# The ``trading_date`` of a JSONL row without decoding the whole line.
+_TRADING_DATE = re.compile(r'"trading_date":\s*"([^"\\]*)"')
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def stats_dir(root: str | os.PathLike[str]) -> Path:
@@ -85,8 +99,8 @@ def record_compression(
     """Append one EOD sweep summary to the compression history log.
 
     ``result`` is an ``app.ops.eod.EODResult`` (uses its ``ratio``, ``avg_file_ms``,
-    ``throughput_mbps`` properties). The append is done by rewriting the (small,
-    capped) file atomically so a crash never leaves a torn line.
+    ``throughput_mbps`` properties). The append is done by rewriting the file's raw lines
+    atomically so a crash never leaves a torn line. Nothing earlier is ever dropped.
     """
     record = {
         "trading_date": trading_date,
@@ -100,11 +114,7 @@ def record_compression(
         "threads": int(threads) if threads is not None else None,
     }
     path = compression_history_path(state_dir)
-    existing = load_compression_history(state_dir)
-    existing.append(record)
-    existing = existing[-MAX_COMPRESSION_HISTORY:]
-    text = "\n".join(json.dumps(row) for row in existing) + "\n"
-    _atomic_write_text(path, text)
+    _write_lines(path, [*_read_lines(path), json.dumps(record)])
     return path
 
 
@@ -226,17 +236,10 @@ def record_session_summary(
     the newest value.
     """
     trading_date = str(summary.get("trading_date") or "unknown")
-    history = load_session_history(state_dir)
-    previous = next(
-        (r for r in reversed(history) if r.get("trading_date") == trading_date), None
-    )
-    merged = _merge_session_summary(previous, summary)
-    history = [r for r in history if r.get("trading_date") != trading_date]
-    history.append(merged)
-    history = history[-MAX_SESSION_HISTORY:]
     path = session_history_path(state_dir)
-    text = "\n".join(json.dumps(row) for row in history) + "\n"
-    _atomic_write_text(path, text)
+    kept, previous = _split_rows_for_date(_read_lines(path), trading_date)
+    merged = {"trading_date": trading_date, **_merge_session_summary(previous, summary)}
+    _write_lines(path, [*kept, json.dumps(merged)])
     return path
 
 
@@ -267,9 +270,16 @@ _CUMULATIVE_SESSION_FIELDS = (
 
 
 def _merge_session_summary(previous: dict | None, latest: dict) -> dict:
-    """Merge a new session summary over an earlier one for the same trading date."""
+    """Merge a new session summary over an earlier one for the same trading date.
+
+    ``generations`` counts the capture runs that recorded a summary for the date: the
+    controller records exactly once per run (clean stop, auth expiry or crash), so it is
+    the number of runs, starting at 1. It used to be absent on the first record and then
+    bumped by the pre-EOD "final flush" stop re-recording the same run, which is why
+    almost every day in the history read ``generations: 2``.
+    """
     if not previous:
-        return dict(latest)
+        return {**latest, "generations": 1}
     merged = {**previous, **latest}
     for field in _CUMULATIVE_SESSION_FIELDS:
         old, new = previous.get(field), latest.get(field)
@@ -280,7 +290,6 @@ def _merge_session_summary(previous: dict | None, latest: dict) -> dict:
 
 
 RECONCILIATION_FILE = "reconciliation-history.jsonl"
-MAX_RECONCILIATION_HISTORY = 365
 
 
 def reconciliation_history_path(stats_dir_path: str | os.PathLike[str]) -> Path:
@@ -297,15 +306,9 @@ def record_reconciliation(
     the two can be compared: when they disagree, the archive is right.
     """
     trading_date = str(record.get("trading_date") or "unknown")
-    history = [
-        r
-        for r in load_reconciliation_history(state_dir)
-        if r.get("trading_date") != trading_date
-    ]
-    history.append(record)
-    history = history[-MAX_RECONCILIATION_HISTORY:]
     path = reconciliation_history_path(state_dir)
-    _atomic_write_text(path, "\n".join(json.dumps(row) for row in history) + "\n")
+    kept, _previous = _split_rows_for_date(_read_lines(path), trading_date)
+    _write_lines(path, [*kept, json.dumps({"trading_date": trading_date, **record})])
     return path
 
 
@@ -351,9 +354,165 @@ def load_session_history(state_dir: str | os.PathLike[str]) -> list[dict]:
 
 def session_history(state_dir: str | os.PathLike[str], limit: int = 30) -> list[dict]:
     """Most recent session summaries, newest first (bounded by ``limit``)."""
-    records = load_session_history(state_dir)
-    records.sort(key=lambda r: str(r.get("trading_date") or ""), reverse=True)
-    return records[: max(0, int(limit))]
+    return session_history_page(state_dir, limit=limit)["sessions"]
+
+
+def session_history_page(
+    state_dir: str | os.PathLike[str],
+    *,
+    limit: int = 30,
+    before: str | None = None,
+) -> dict:
+    """One page of the full session history, newest trading date first.
+
+    Returns ``{"sessions": [...], "total": N, "next_before": date | None}``: ``total``
+    counts every dated row in the history, and ``next_before`` is the cursor for the
+    following (older) page, ``None`` on the last page. Only the rows on the page are
+    decoded; the rest are ordered by their regex-extracted ``trading_date``.
+    """
+    dated = [
+        (row_date, index, line)
+        for index, (row_date, line) in enumerate(_dated_lines(session_history_path(state_dir)))
+        if row_date is not None and _ISO_DATE.match(row_date)
+    ]
+    dated.sort(reverse=True)
+    total = len(dated)
+    if before is not None:
+        dated = [row for row in dated if row[0] < before]
+    size = max(0, int(limit))
+    page = dated[:size]
+    sessions = [row for row in (_decode(line) for _d, _i, line in page) if row is not None]
+    next_before = page[-1][0] if page and len(dated) > size else None
+    return {"sessions": sessions, "total": total, "next_before": next_before}
+
+
+def reconciliation_for_dates(
+    state_dir: str | os.PathLike[str], dates: set[str] | frozenset[str]
+) -> dict[str, dict]:
+    """Archive reconciliation records for ``dates`` only (newest row wins per date)."""
+    found: dict[str, dict] = {}
+    for row_date, line in _dated_lines(reconciliation_history_path(state_dir)):
+        if row_date in dates:
+            row = _decode(line)
+            if row is not None and row.get("trading_date") == row_date:
+                found[row_date] = row
+    return found
+
+
+# --- raw-line JSONL helpers ---------------------------------------------------------
+
+
+def _read_lines(path: Path) -> list[str]:
+    """Non-empty raw lines of a JSONL file (missing file -> empty)."""
+    if not path.exists():
+        return []
+    stripped = (line.strip() for line in path.read_text(encoding="utf-8").splitlines())
+    return [line for line in stripped if line]
+
+
+def _write_lines(path: Path, lines: list[str]) -> None:
+    _atomic_write_text(path, "\n".join(lines) + "\n" if lines else "")
+
+
+def _decode(line: str) -> dict | None:
+    try:
+        row = json.loads(line)
+    except json.JSONDecodeError:
+        logger.debug("skipping a corrupt JSONL row")
+        return None
+    return row if isinstance(row, dict) else None
+
+
+def _line_date(line: str) -> str | None:
+    match = _TRADING_DATE.search(line)
+    return match.group(1) if match else None
+
+
+def _dated_lines(path: Path) -> list[tuple[str | None, str]]:
+    return [(_line_date(line), line) for line in _read_lines(path)]
+
+
+def _split_rows_for_date(lines: list[str], trading_date: str) -> tuple[list[str], dict | None]:
+    """``(lines without trading_date's rows, that date's newest decoded row)``.
+
+    Rows for other dates — and undecodable lines — pass through byte for byte, so a
+    rewrite can never lose or reformat history it did not mean to touch.
+    """
+    kept: list[str] = []
+    previous: dict | None = None
+    for line in lines:
+        if _line_date(line) == trading_date:
+            row = _decode(line)
+            if row is not None and row.get("trading_date") == trading_date:
+                previous = row
+                continue
+        kept.append(line)
+    return kept, previous
+
+
+# --- EOD completion -----------------------------------------------------------------
+#
+# The scheduler kept "EOD done for <date>" in memory only, so a process that restarted
+# after the sweep (18:53 on 2026-11-05) ran a second EOD for the same date — compressing
+# nothing and recording a zero-file sweep into the cross-day averages.
+
+
+def eod_state_path(stats_dir_path: str | os.PathLike[str]) -> Path:
+    return Path(stats_dir_path) / EOD_STATE_FILE
+
+
+def load_eod_state(state_dir: str | os.PathLike[str]) -> dict:
+    """``{"last_completed_date": str | None, "completed": {date: completed_at_ms}}``."""
+    empty: dict = {"last_completed_date": None, "completed": {}}
+    path = eod_state_path(state_dir)
+    if not path.exists():
+        return empty
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("EOD state file is unreadable; assuming no completed sweep")
+        return empty
+    if not isinstance(payload, dict):
+        return empty
+    raw = payload.get("completed")
+    completed = (
+        {str(k): v for k, v in raw.items() if isinstance(v, int)} if isinstance(raw, dict) else {}
+    )
+    last = payload.get("last_completed_date")
+    return {
+        "last_completed_date": last if isinstance(last, str) else None,
+        "completed": completed,
+    }
+
+
+def is_eod_completed(state_dir: str | os.PathLike[str], trading_date: str) -> bool:
+    return trading_date in load_eod_state(state_dir)["completed"]
+
+
+def record_eod_completed(
+    state_dir: str | os.PathLike[str], trading_date: str, at_ms: int
+) -> Path:
+    """Persist that ``trading_date``'s EOD sweep finished (every date is kept)."""
+    state = load_eod_state(state_dir)
+    completed = {**state["completed"], trading_date: int(at_ms)}
+    latest = max(completed)
+    path = eod_state_path(state_dir)
+    _atomic_write_text(
+        path,
+        json.dumps({"last_completed_date": latest, "completed": completed}, indent=1),
+    )
+    return path
+
+
+def is_iso_date(value: str) -> bool:
+    """True for a real ``YYYY-MM-DD`` calendar date."""
+    if not _ISO_DATE.match(value or ""):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 
@@ -413,7 +572,8 @@ def record_escalation(
     """Append one escalation for the day and return the new count."""
     ledger = load_escalations(state_dir, trading_date)
     ledger["count"] += 1
-    ledger["timestamps"] = [*ledger["timestamps"], int(at_ms)][-50:]
+    # Every escalation is kept: the count and its timestamps never diverge.
+    ledger["timestamps"] = [*ledger["timestamps"], int(at_ms)]
     _atomic_write_text(
         escalation_ledger_path(state_dir, trading_date), json.dumps(ledger, indent=2)
     )

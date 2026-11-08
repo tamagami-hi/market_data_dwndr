@@ -92,16 +92,17 @@ def test_writes_are_atomic_no_temp_left(tmp_path):
     assert leftovers == []
 
 
-def test_history_is_capped(tmp_path, monkeypatch):
-    monkeypatch.setattr(stats_store, "MAX_COMPRESSION_HISTORY", 3)
-    for i in range(5):
+def test_compression_history_is_never_capped(tmp_path):
+    """Every sweep is kept: there is no write-time retention limit any more."""
+    assert not hasattr(stats_store, "MAX_COMPRESSION_HISTORY")
+    for i in range(400):
         stats_store.record_compression(
-            tmp_path, _result(1000, 200, 400), trading_date=f"2026-07-{20 + i:02d}"
+            tmp_path, _result(1000, 200, 400), trading_date=f"day-{i:04d}"
         )
     history = stats_store.load_compression_history(tmp_path)
-    assert len(history) == 3
-    assert history[0]["trading_date"] == "2026-07-22"  # oldest two dropped
-    assert history[-1]["trading_date"] == "2026-07-24"
+    assert len(history) == 400
+    assert history[0]["trading_date"] == "day-0000"  # the first sweep survives
+    assert history[-1]["trading_date"] == "day-0399"
 
 
 

@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import date, time
 from pathlib import Path
 
+from app.ops import incidents
 from app.ops.calendar import TradingCalendar
 from app.session import now_ms
 from app.ws import protocol
@@ -202,7 +203,10 @@ class DailyAutomationService:
         self._eod_fn = eod_fn
         self._clock = clock
         self._tick_interval_s = tick_interval_s
-        self._state = AutomationState()
+        self._stats_root = getattr(settings, "stats_dir", None)
+        # EOD completion survives a restart: a process that comes up after the day's sweep
+        # (18:53 on 2026-11-05) must not run a second EOD for the same date.
+        self._state = AutomationState(eod_completed_date=self._persisted_eod_date())
         self._last_action: str | None = None
         self._last_error: str | None = None
         self._last_compression: dict | None = None
@@ -264,7 +268,7 @@ class DailyAutomationService:
             elif action == ACTION_START_CAPTURE:
                 await self.capture_controller.start()
             elif action == ACTION_STOP_CAPTURE:
-                await self.capture_controller.stop()
+                await self.capture_controller.stop(reason=self._stop_reason())
             elif action == ACTION_RUN_EOD:
                 loop = asyncio.get_running_loop()
                 # Archive-truth completeness FIRST: compression removes the raw ``.bin``,
@@ -313,12 +317,14 @@ class DailyAutomationService:
                     eod_completed_date=completed_date,
                     eod_in_progress_date=None,
                 )
+                self._note_eod(completed_date, "ok", result)
             return True
         except Exception as exc:  # noqa: BLE001 - keep scheduler alive; redact details
             if action == ACTION_FETCH_BROKER_TOKEN:
                 self._last_error = "shared token is not ready; retrying in the auth window"
             elif action == ACTION_RUN_EOD:
                 self._last_error = "end-of-day compression failed; raw files were retained"
+                self._note_eod(self._state.eod_in_progress_date, "failed", None)
                 failed = {**(self._last_compression or {}), "phase": "failed"}
                 self._last_compression = failed
                 if self.hub is not None:
@@ -341,6 +347,56 @@ class DailyAutomationService:
                 self._last_error = "capture automation action failed; inspect backend logs"
             self._log_action_failure(action, exc)
             return False
+
+    def _persisted_eod_date(self) -> str | None:
+        if self._stats_root is None:
+            return None
+        try:
+            from app.ops import stats_store
+
+            return stats_store.load_eod_state(self._stats_root)["last_completed_date"]
+        except Exception:  # noqa: BLE001 - an unreadable marker must not stop the scheduler
+            logger.warning("could not read the persisted EOD state", exc_info=True)
+            return None
+
+    def _stop_reason(self) -> str:
+        """Why the scheduler is stopping capture right now (for the incident ledger)."""
+        now = self._last_tick_at_ms if self._last_tick_at_ms is not None else self._clock()
+        if not self.calendar.is_trading_day(now):
+            return incidents.STOP_REASON_HOLIDAY
+        windows = day_windows(
+            self.calendar, now, self.settings.auth_poll_start, self.settings.auth_poll_end
+        )
+        local_time = self.calendar.local_dt(now).time().replace(tzinfo=None)
+        if local_time >= windows.capture_end:
+            return incidents.STOP_REASON_MARKET_CLOSE
+        return incidents.STOP_REASON_OUTSIDE_WINDOW
+
+    def _note_eod(self, trading_date: str | None, status: str, result) -> None:
+        """Persist EOD completion (on success) and record the sweep in the incident ledger."""
+        if self._stats_root is None or not trading_date:
+            return
+        if status == "ok":
+            try:
+                from app.ops import stats_store
+
+                stats_store.record_eod_completed(self._stats_root, trading_date, self._clock())
+            except Exception:  # noqa: BLE001 - persistence must not fail EOD
+                logger.warning("could not persist EOD completion", exc_info=True)
+        record = self._last_reconciliation or {}
+        if record.get("trading_date") != trading_date:
+            record = {}
+        incidents.record_incident(
+            self._stats_root,
+            trading_date,
+            incidents.KIND_EOD,
+            self._clock(),
+            status=status,
+            files=len(getattr(result, "compressed", None) or []) if result is not None else None,
+            archive_data_loss_pct=record.get("data_loss_pct"),
+            worst_artifact=record.get("worst_artifact"),
+            artifact_count=record.get("artifact_count"),
+        )
 
     def _reconcile_session_from_archive(self) -> dict | None:
         """Reconcile the day's owed grid against the frames actually on disk.
