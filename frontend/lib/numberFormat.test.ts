@@ -2,8 +2,10 @@ import { expect, test } from "vitest";
 
 import {
   formatBytes,
+  formatDateClock,
   formatDuration,
   formatPercent,
+  formatSecondsCompact,
   formatThroughput,
   formatUptime,
 } from "@/lib/numberFormat";
@@ -39,4 +41,22 @@ test("formatUptime renders HH:MM:SS clock", () => {
 test("formatBytes still works", () => {
   expect(formatBytes(0)).toBe("0 B");
   expect(formatBytes(1024)).toBe("1.0 KB");
+});
+
+test("formatSecondsCompact keeps whole seconds readable at every scale", () => {
+  expect(formatSecondsCompact(0)).toBe("0s");
+  expect(formatSecondsCompact(54)).toBe("54s");
+  expect(formatSecondsCompact(98)).toBe("1m 38s");
+  expect(formatSecondsCompact(3_184)).toBe("53m 04s");
+  expect(formatSecondsCompact(7_509)).toBe("2h 05m 09s");
+  expect(formatSecondsCompact(-1)).toBe("--");
+  expect(formatSecondsCompact(null)).toBe("--");
+  expect(formatSecondsCompact(Number.NaN)).toBe("--");
+});
+
+test("formatDateClock includes the date, in full or short form", () => {
+  const ms = new Date(2026, 10, 6, 15, 40, 0).getTime();
+  expect(formatDateClock(ms)).toBe("2026-11-06 15:40:00");
+  expect(formatDateClock(ms, true)).toBe("11-06 15:40");
+  expect(formatDateClock(null)).toBe("--");
 });

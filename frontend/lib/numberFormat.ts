@@ -95,3 +95,35 @@ export function formatUptime(ms: number | null | undefined): string {
   const pad = (n: number) => n.toString().padStart(2, "0");
   return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
 }
+
+/**
+ * Whole seconds as a compact duration: "0s", "54s", "1m 38s", "53m 04s", "2h 05m 09s".
+ *
+ * Used where the unit is already seconds (loss accounting), so a 54-second stale spell
+ * reads "54s" rather than formatDuration's "54.0 s".
+ */
+export function formatSecondsCompact(seconds: number | null | undefined): string {
+  if (seconds == null || Number.isNaN(seconds) || seconds < 0) return "--";
+  const total = Math.round(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  if (hours > 0) return `${hours}h ${pad(minutes)}m ${pad(secs)}s`;
+  if (minutes > 0) return `${minutes}m ${pad(secs)}s`;
+  return `${secs}s`;
+}
+
+/**
+ * Local date and time, for values that may not be from today: "2026-11-06 15:40:00", or
+ * "11-06 15:40" when ``short`` (dense table cells).
+ */
+export function formatDateClock(ms: number | null | undefined, short = false): string {
+  if (!ms) return "--";
+  const date = new Date(ms);
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  const day = `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  if (short) return `${day} ${clock}`;
+  return `${date.getFullYear()}-${day} ${clock}:${pad(date.getSeconds())}`;
+}

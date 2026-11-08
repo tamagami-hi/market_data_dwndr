@@ -4,8 +4,30 @@ import { Metric } from "@/components/ui/Metric";
 import { Panel } from "@/components/ui/Panel";
 import { StateMessage } from "@/components/ui/StateMessage";
 import type { CompressionHistory } from "@/lib/api";
-import { formatBytes, formatDuration, formatIndianNumber, formatThroughput } from "@/lib/numberFormat";
+import {
+  formatBytes,
+  formatDateClock,
+  formatDuration,
+  formatIndianNumber,
+  formatThroughput,
+} from "@/lib/numberFormat";
 import type { CompressionProgressPayload } from "@/lib/wsTypes";
+
+/**
+ * Which session a sweep belongs to. The live progress payload carries no trading date, so
+ * a finished sweep is matched to the persisted last record by its byte count; failing
+ * that, the day the sweep started is stated, so "done" is never shown undated.
+ */
+function sweepLabel(
+  current: CompressionProgressPayload,
+  history: CompressionHistory | null,
+): string {
+  if (current.phase !== "done") return current.phase;
+  const last = history?.last;
+  if (last && last.raw_bytes === current.bytes_total) return `done · ${last.trading_date}`;
+  if (current.started_at > 0) return `done · started ${formatDateClock(current.started_at, true)}`;
+  return "done";
+}
 
 export const CompressionActivity = memo(function CompressionActivity({
   current,
@@ -31,7 +53,13 @@ export const CompressionActivity = memo(function CompressionActivity({
   return (
     <Panel
       title="Compression"
-      subtitle={current?.phase ?? (retained ? `last sweep · ${retained.trading_date}` : "idle")}
+      subtitle={
+        current
+          ? sweepLabel(current, history)
+          : retained
+            ? `last sweep · ${retained.trading_date}`
+            : "idle"
+      }
       className="panel-compact h-full"
     >
       {current ? (

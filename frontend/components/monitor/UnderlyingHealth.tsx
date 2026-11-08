@@ -2,11 +2,17 @@ import { Panel } from "@/components/ui/Panel";
 import { ResponsiveDisclosure } from "@/components/ui/ResponsiveDisclosure";
 import { StatusIndicator } from "@/components/ui/StatusIndicator";
 import { StateMessage } from "@/components/ui/StateMessage";
-import { formatBytes, formatClockTime, formatIndianNumber, formatPercent } from "@/lib/numberFormat";
+import {
+  formatBytes,
+  formatClockTime,
+  formatDateClock,
+  formatIndianNumber,
+  formatPercent,
+} from "@/lib/numberFormat";
 import { lossSeverity } from "@/lib/monitor/severity";
 import type { PerUnderlyingStatus } from "@/lib/wsTypes";
 
-function StreamDetails({ row }: { row: PerUnderlyingStatus }) {
+function StreamDetails({ row, isRetained }: { row: PerUnderlyingStatus; isRetained: boolean }) {
   const details = [
     ["Full-session loss", formatPercent(row.frame_loss_pct, 2)],
     ["Day complete", formatPercent(row.day_complete_pct ?? 100 - row.frame_loss_pct, 1)],
@@ -14,8 +20,13 @@ function StreamDetails({ row }: { row: PerUnderlyingStatus }) {
     ["Bytes / frame", formatBytes(row.avg_bytes_per_frame)],
     ["Projected EOD", formatBytes(row.projected_eod_bytes)],
     ["File size", formatBytes(row.file_bytes)],
-    ["Last tick", formatClockTime(row.last_tick_ms)],
-    ["Heartbeat age", row.heartbeat_age_ms === null ? "--" : `${(row.heartbeat_age_ms / 1000).toFixed(1)}s`],
+    ["Last tick", isRetained ? formatDateClock(row.last_tick_ms) : formatClockTime(row.last_tick_ms)],
+    [
+      "Heartbeat age",
+      isRetained || row.heartbeat_age_ms === null
+        ? "--"
+        : `${(row.heartbeat_age_ms / 1000).toFixed(1)}s`,
+    ],
     ["Applied ticks", formatIndianNumber(row.applied ?? 0, 0)],
     ["Unmatched ticks", formatIndianNumber(row.unmatched, 0)],
     ["Writer pending", formatIndianNumber(row.writer_pending ?? 0, 0)],
@@ -77,16 +88,31 @@ const SHORT_PHASE: Record<string, string> = {
   BOOTSTRAP: "BOOT",
   PRE_OPEN: "PRE",
   OPEN: "OPEN",
+  AUCTION: "AUCT",
   CLOSED: "CLSD",
+  HOLIDAY: "HOL",
 };
 
 function StreamConnectionIndicator({
   connected,
   underlying,
+  isRetained,
 }: {
   connected: boolean;
   underlying: string;
+  isRetained: boolean;
 }) {
+  // A retained snapshot's "connected" is how the link stood when that session ended; a
+  // green dot on a Sunday read as a live connection.
+  if (isRetained) {
+    return (
+      <span
+        aria-label={`${underlying} connection: not live (last session)`}
+        className="inline-block size-2.5 rounded-full border-2 border-border-strong bg-transparent"
+        role="img"
+      />
+    );
+  }
   return (
     <span
       aria-label={`${underlying} connection: ${connected ? "connected" : "offline"}`}
@@ -98,14 +124,24 @@ function StreamConnectionIndicator({
   );
 }
 
-export function UnderlyingHealth({ rows }: { rows: PerUnderlyingStatus[] }) {
+export function UnderlyingHealth({
+  rows,
+  retainedDate = null,
+}: {
+  rows: PerUnderlyingStatus[];
+  /** Set when the rows are a retained snapshot of that session, not live telemetry. */
+  retainedDate?: string | null;
+}) {
+  const isRetained = retainedDate !== null;
   // Rendered purely from the artifact list the backend sends — there is deliberately no
   // assumption about how many capture domains exist, so the consolidated index-F&O
   // dataset (and anything added later) appears without a change here.
   return (
     <Panel
       title="Per-underlying health"
-      subtitle={`${rows.length} ${rows.length === 1 ? "artifact" : "artifacts"}`}
+      subtitle={`${rows.length} ${rows.length === 1 ? "artifact" : "artifacts"}${
+        isRetained ? ` · last session ${retainedDate}` : ""
+      }`}
       className="h-full"
     >
       {rows.length === 0 ? (
@@ -134,19 +170,28 @@ export function UnderlyingHealth({ rows }: { rows: PerUnderlyingStatus[] }) {
                       </div>
                     </div>
                     <div className="flex flex-col items-end gap-1">
-                      <StatusIndicator
-                        compact
-                        label={row.connected ? "connected" : "offline"}
-                        severity={row.connected ? "success" : "danger"}
-                      />
-                      <span className={row.heartbeat_ok ? "text-success" : "text-danger"}>
-                        {row.heartbeat_ok ? "1 Hz heartbeat" : "stale heartbeat"}
-                      </span>
+                      {isRetained ? (
+                        <>
+                          <StatusIndicator compact label="last session" severity="neutral" />
+                          <span className="text-muted">not live</span>
+                        </>
+                      ) : (
+                        <>
+                          <StatusIndicator
+                            compact
+                            label={row.connected ? "connected" : "offline"}
+                            severity={row.connected ? "success" : "danger"}
+                          />
+                          <span className={row.heartbeat_ok ? "text-success" : "text-danger"}>
+                            {row.heartbeat_ok ? "1 Hz heartbeat" : "stale heartbeat"}
+                          </span>
+                        </>
+                      )}
                     </div>
                   </div>
                 }
               >
-                <StreamDetails row={row} />
+                <StreamDetails row={row} isRetained={isRetained} />
               </ResponsiveDisclosure>
             ))}
           </div>
@@ -197,6 +242,7 @@ export function UnderlyingHealth({ rows }: { rows: PerUnderlyingStatus[] }) {
                       <StreamConnectionIndicator
                         connected={row.connected}
                         underlying={row.underlying}
+                        isRetained={isRetained}
                       />
                     </td>
                     <td className="text-right text-primary">{formatIndianNumber(row.frames_written, 0)}</td>
@@ -209,10 +255,16 @@ export function UnderlyingHealth({ rows }: { rows: PerUnderlyingStatus[] }) {
                     <td className="text-right text-secondary">{formatBytes(row.avg_bytes_per_frame)}</td>
                     <td className="text-right text-secondary">{formatBytes(row.projected_eod_bytes)}</td>
                     <td className="text-right text-secondary">{formatBytes(row.file_bytes)}</td>
-                    <td className="text-right text-secondary">{formatClockTime(row.last_tick_ms)}</td>
-                    <td className={`text-right ${row.heartbeat_ok ? "text-success" : "text-danger"}`}>
-                      {row.heartbeat_ok ? "1 Hz" : "stale"}
+                    <td className="text-right text-secondary">
+                      {isRetained ? formatDateClock(row.last_tick_ms, true) : formatClockTime(row.last_tick_ms)}
                     </td>
+                    {isRetained ? (
+                      <td className="text-right text-muted" title="Not live: last session">--</td>
+                    ) : (
+                      <td className={`text-right ${row.heartbeat_ok ? "text-success" : "text-danger"}`}>
+                        {row.heartbeat_ok ? "1 Hz" : "stale"}
+                      </td>
+                    )}
                     {/* Each artifact's own session phase. An artifact outside its session
                         is idle by design, which must not read like a failure. */}
                     <td

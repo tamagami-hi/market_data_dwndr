@@ -63,8 +63,8 @@ export function MonitorConnections() {
           <ConnectionDetails label="Session" state={session} profile="transport" />
         </div>
         <p className="mt-3 border-t border-border pt-2 text-muted">
-          Frozen seconds are separate from elapsed missing-frame loss: frozen snapshots
-          were written on time but contained stale feed values.
+          Stale seconds are not written: while the feed is frozen no frame is persisted,
+          so those seconds count as missing data alongside gaps and downtime.
         </p>
       </Explanation>
     </div>

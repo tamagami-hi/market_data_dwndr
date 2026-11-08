@@ -1,6 +1,8 @@
+import { LossCauseBar, LossCauseLegend } from "@/components/monitor/LossCauseBar";
 import { Metric } from "@/components/ui/Metric";
 import { Panel } from "@/components/ui/Panel";
 import { StateMessage } from "@/components/ui/StateMessage";
+import { activeLossCauses } from "@/lib/monitor/lossCauses";
 import { formatIndianNumber, formatPercent } from "@/lib/numberFormat";
 import { lossSeverity } from "@/lib/monitor/severity";
 import type { GlobalStatus } from "@/lib/wsTypes";
@@ -60,7 +62,7 @@ function RecoveryBanner({ globals }: { globals: GlobalStatus }) {
  * The denominator is the session schedule rather than anything the process observed, which
  * is the only way downtime can appear at all: a process that was not running cannot count
  * the seconds it missed. The causes reconcile with the total, and whatever cannot be
- * attributed stays visible as "unknown" instead of being quietly dropped.
+ * attributed stays visible as "unclassified" / "unaccounted" instead of being dropped.
  */
 function LossBreakdown({ globals }: { globals: GlobalStatus }) {
   const scheduled = globals.scheduled_seconds_elapsed ?? 0;
@@ -68,16 +70,10 @@ function LossBreakdown({ globals }: { globals: GlobalStatus }) {
   const captured = globals.captured_seconds ?? 0;
   const missing = globals.missing_seconds ?? 0;
   // Each bucket is a counter the engine incremented once, at the moment the second was
-  // missed. "write fail" previously also carried restart downtime, so a session in which
-  // no write ever failed reported "write fail 147s"; restart downtime now sits inside
-  // `downtime` where it belongs.
-  const causes: Array<[string, number]> = [
-    ["no feed yet", globals.awaiting_first_tick_seconds ?? 0],
-    ["feed stale", globals.stale_feed_seconds ?? 0],
-    ["downtime", globals.downtime_seconds ?? 0],
-    ["write fail", globals.write_path_seconds ?? 0],
-    ["unknown", globals.unclassified_seconds ?? 0],
-  ];
+  // missed, so the parts reconcile with Missing. Downtime is shown split: a process that
+  // restarted (crash loop) and a process that was not there at all call for different
+  // fixes, and folding them into one "downtime" figure hid which one cost the time.
+  const causes = activeLossCauses(globals);
   return (
     <div className="border-b border-border px-3 py-2 text-xs" aria-label="Loss breakdown">
       {/* One wrapping row rather than a totals line with the causes beneath it: the
@@ -95,15 +91,9 @@ function LossBreakdown({ globals }: { globals: GlobalStatus }) {
           Missing <span className="font-mono">{formatIndianNumber(missing, 0)}s</span>
           {" "}({formatPercent(globals.scheduled_loss_pct ?? 0, 2)})
         </span>
-        {missing > 0 &&
-          causes
-            .filter(([, seconds]) => seconds > 0)
-            .map(([label, seconds]) => (
-              <span key={label} className="text-muted">
-                {label} <span className="font-mono text-secondary">{formatIndianNumber(seconds, 0)}s</span>
-              </span>
-            ))}
+        {missing > 0 && <LossCauseLegend causes={causes} />}
       </div>
+      {missing > 0 && <LossCauseBar causes={causes} missingSeconds={missing} />}
     </div>
   );
 }
@@ -180,7 +170,14 @@ function FeedHealthStrip({ globals }: { globals: GlobalStatus }) {
   );
 }
 
-export function DataLossDiagnostics({ globals }: { globals: GlobalStatus | null }) {
+export function DataLossDiagnostics({
+  globals,
+  retainedDate = null,
+}: {
+  globals: GlobalStatus | null;
+  /** Set when the figures are a retained snapshot of that session, not live telemetry. */
+  retainedDate?: string | null;
+}) {
   const staleSeconds = globals?.stale_seconds ?? 0;
   const gridElapsed = globals?.grid_seconds_elapsed ?? 0;
   const stalePct = gridElapsed > 0 ? (staleSeconds / gridElapsed) * 100 : 0;
@@ -210,15 +207,21 @@ export function DataLossDiagnostics({ globals }: { globals: GlobalStatus | null 
           severity: globals.stale_events ? "warning" as const : "success" as const,
         },
         {
-          label: "Gap loss",
+          // session_loss_pct: missed seconds over the seconds a frame COULD have been
+          // written for (elapsed minus stale and pre-first-tick). It includes gaps, write
+          // failures AND restart/not-running downtime inside the grid — it was labelled
+          // "Gap loss", which read 13.58% beside "Seconds lost 0" on 2026-11-05.
+          label: "Loss excl. stale",
           value: formatPercent(globals.session_loss_pct ?? 0, 3),
-          detail: "vs observed, excl. stale",
+          detail: "gaps + downtime, stale excluded",
           severity: lossSeverity(globals.session_loss_pct),
         },
         {
+          // data_loss_pct spans the grid from the first frame, so restarts after that are
+          // counted; only a late start (before the first frame) escapes it.
           label: "Loss vs observed",
           value: formatPercent(globals.data_loss_pct ?? 0, 3),
-          detail: "incl. stale — cannot see downtime",
+          detail: "incl. stale — misses a late start",
           severity: lossSeverity(globals.data_loss_pct),
         },
         {
@@ -227,8 +230,11 @@ export function DataLossDiagnostics({ globals }: { globals: GlobalStatus | null 
           severity: globals.unmatched_ticks ? "warning" as const : "neutral" as const,
         },
         {
+          // A trailing-window rate: in a retained snapshot it is the last window before
+          // the process stopped, which says nothing about now.
           label: "Ticks / sec",
-          value: formatIndianNumber(globals.ticks_per_sec ?? 0, 1),
+          value: retainedDate ? "--" : formatIndianNumber(globals.ticks_per_sec ?? 0, 1),
+          detail: retainedDate ? "not live" : undefined,
           severity: "neutral" as const,
         },
         {
@@ -246,7 +252,7 @@ export function DataLossDiagnostics({ globals }: { globals: GlobalStatus | null 
   return (
     <Panel
       title="Data-loss diagnostics"
-      subtitle="current session"
+      subtitle={retainedDate ? `last session ${retainedDate}` : "current session"}
       className="h-full"
       action={globals ? <MarketPhaseTag globals={globals} /> : undefined}
     >

@@ -4,6 +4,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getStats: vi.fn(),
   getCaptureHistory: vi.fn(),
+  getMarketCalendar: vi.fn(),
   envelopeHandlers: [] as Array<(envelope: { type: string; payload?: unknown }) => void>,
 }));
 
@@ -15,6 +16,10 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getCaptureHistory: mocks.getCaptureHistory,
   };
 });
+
+vi.mock("@/lib/marketCalendar", () => ({
+  getMarketCalendar: mocks.getMarketCalendar,
+}));
 
 vi.mock("@/lib/useTopic", () => ({
   useTopicEnvelopes: (_connection: unknown, handler: (envelope: { type: string; payload?: unknown }) => void) => {
@@ -54,6 +59,9 @@ beforeEach(() => {
   mocks.envelopeHandlers.length = 0;
   mocks.getStats.mockReset();
   mocks.getCaptureHistory.mockReset();
+  mocks.getMarketCalendar.mockReset();
+  // The calendar is advisory: a failure must never surface as a telemetry error.
+  mocks.getMarketCalendar.mockRejectedValue(new Error("calendar offline"));
   mocks.getStats.mockResolvedValue({
     generated_at: 1,
     capture_running: false,
@@ -204,5 +212,51 @@ test("surfaces REST rejection and recovers on the next visible refresh", async (
   act(() => document.dispatchEvent(new Event("visibilitychange")));
   await waitFor(() => expect(result.current.context.tradingDate).toBe("2026-07-29"));
   expect(result.current.freshness.restError).toMatch(/history is unavailable/);
+  unmount();
+});
+
+test("marks Friday's snapshot as retained on Sunday and carries today's phase and calendar", async () => {
+  mocks.getStats.mockResolvedValue({
+    generated_at: 1,
+    capture_running: false,
+    trading_date: "2026-11-08",
+    market_phase: "HOLIDAY",
+    monitor_persisted: true,
+    monitor_trading_date: "2026-11-06",
+    monitor: capturePayload({ fps: 0.627 }),
+    compression: null,
+    compression_history: compressionHistory,
+  });
+  mocks.getMarketCalendar.mockResolvedValue({
+    today: { date: "2026-11-08", is_trading_day: false, capture_window: ["09:10", "15:45"] },
+  });
+  const { result, unmount } = renderHook(() => useMonitorTelemetry());
+  await waitFor(() => expect(result.current.source.retainedDate).toBe("2026-11-06"));
+  expect(result.current.context.marketPhase).toBe("HOLIDAY");
+  await waitFor(() => expect(result.current.context.calendarDay?.isTradingDay).toBe(false));
+  expect(result.current.freshness.restError).toBeNull();
+  unmount();
+});
+
+test("ignores a calendar entry for another day and has no retained date while live", async () => {
+  mocks.getStats.mockResolvedValue({
+    generated_at: 1,
+    capture_running: true,
+    trading_date: "2026-11-09",
+    market_phase: "OPEN",
+    monitor_persisted: true,
+    monitor_trading_date: "2026-11-06",
+    monitor: capturePayload({ fps: 1 }),
+    compression: null,
+    compression_history: compressionHistory,
+  });
+  mocks.getMarketCalendar.mockResolvedValue({
+    today: { date: "2026-11-08", is_trading_day: false },
+  });
+  const { result, unmount } = renderHook(() => useMonitorTelemetry());
+  await waitFor(() => expect(mocks.getMarketCalendar).toHaveBeenCalled());
+  await waitFor(() => expect(result.current.context.captureRunning).toBe(true));
+  expect(result.current.source.retainedDate).toBeNull();
+  expect(result.current.context.calendarDay).toBeNull();
   unmount();
 });

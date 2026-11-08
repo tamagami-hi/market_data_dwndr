@@ -26,12 +26,17 @@ test("separates gap-only loss from total loss including stale seconds", () => {
   // Both tiles are denominator-explicit now: the old "Elapsed loss" / "Data loss" pair
   // read as two measures of the same thing, which is how a schedule-relative 14.69% and a
   // process-relative 0.77% for one session came to be compared with each other.
-  const elapsed = screen.getByText("Gap loss").closest(".metric");
+  // "Gap loss" was renamed: session_loss_pct also counts downtime inside the grid, so on
+  // 2026-11-05 it read 13.58% beside "Seconds lost 0".
+  const elapsed = screen.getByText("Loss excl. stale").closest(".metric");
   const total = screen.getByText("Loss vs observed").closest(".metric");
   expect(within(stale as HTMLElement).getByText("188")).toBeInTheDocument();
   expect(stale).toHaveTextContent("18.8% of session not written");
   expect(within(elapsed as HTMLElement).getByText("0.000%")).toBeInTheDocument();
   expect(within(total as HTMLElement).getByText("18.800%")).toBeInTheDocument();
+  expect(elapsed).toHaveTextContent("gaps + downtime, stale excluded");
+  expect(total).toHaveTextContent("incl. stale — misses a late start");
+  expect(total).not.toHaveTextContent("cannot see downtime");
   expect(within(screen.getByText("Stale events").closest(".metric") as HTMLElement)
     .getByText("2")).toBeInTheDocument();
 });
@@ -181,10 +186,55 @@ test("downtime is shown as a distinct cause of missing data", () => {
   expect(breakdown).toHaveTextContent("3,000s");
   expect(breakdown).toHaveTextContent("Missing");
   expect(breakdown).toHaveTextContent("600s");
-  expect(breakdown).toHaveTextContent("feed stale");
-  expect(breakdown).toHaveTextContent("100s");
-  expect(breakdown).toHaveTextContent("downtime");
-  expect(breakdown).toHaveTextContent("500s");
+  expect(breakdown).toHaveTextContent("stale feed");
+  expect(breakdown).toHaveTextContent("1m 40s");
+  // No restart / not-running split in this payload: the whole figure stays visible.
+  expect(breakdown).toHaveTextContent("downtime (unsplit)");
+  expect(breakdown).toHaveTextContent("8m 20s");
+});
+
+test("downtime is split into process restart and not running (2026-11-05)", () => {
+  render(
+    <DataLossDiagnostics
+      globals={globalsFrom({
+        scheduled_seconds_elapsed: 23_100,
+        captured_seconds: 19_916,
+        missing_seconds: 3_184,
+        scheduled_loss_pct: 13.784,
+        stale_feed_seconds: 54,
+        downtime_seconds: 3_130,
+        restart_downtime_seconds: 98,
+        not_running_seconds: 3_032,
+      })}
+    />,
+  );
+  const breakdown = screen.getByLabelText("Loss breakdown");
+  const causes = within(breakdown).getByLabelText("Missing-time causes");
+  expect(within(causes).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+    "stale feed54s",
+    "process restart1m 38s",
+    "not running50m 32s",
+  ]);
+  expect(breakdown).not.toHaveTextContent("unsplit");
+  expect(within(breakdown).getByRole("img")).toHaveAccessibleName(
+    "Missing 53m 04s: stale feed 54s, process restart 1m 38s, not running 50m 32s",
+  );
+});
+
+test("a retained snapshot is labelled as the last session and drops the live tick rate", () => {
+  render(
+    <DataLossDiagnostics
+      globals={globalsFrom({ ticks_per_sec: 721.07, grid_seconds_elapsed: 23_100 })}
+      retainedDate="2026-11-06"
+    />,
+  );
+  const panel = screen.getByRole("heading", { name: "Data-loss diagnostics" }).closest(".panel");
+  expect(panel).toHaveTextContent("last session 2026-11-06");
+  expect(panel).not.toHaveTextContent("current session");
+  const ticks = screen.getByText("Ticks / sec").closest(".metric") as HTMLElement;
+  expect(ticks).toHaveTextContent("--");
+  expect(ticks).toHaveTextContent("not live");
+  expect(ticks).not.toHaveTextContent("721.1");
 });
 
 test("a complete session shows no cause list at all", () => {

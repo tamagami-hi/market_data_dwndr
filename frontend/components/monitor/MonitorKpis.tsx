@@ -17,18 +17,30 @@ export function MonitorKpis({
   expectedFrames,
   fpsHistory = [],
   series,
+  isRetained = false,
 }: {
   globals: GlobalStatus | null;
   expectedFrames: number;
   fpsHistory?: number[];
   series?: KpiSeries;
+  /** The figures are a retained snapshot: rates are frozen, not live. */
+  isRetained?: boolean;
 }) {
   const diskPercent =
     globals && globals.disk_total_bytes > 0
       ? ((globals.disk_total_bytes - globals.disk_free_bytes) / globals.disk_total_bytes) * 100
       : 0;
-  const baseline = globals?.frames_expected || expectedFrames;
+  // `captures` counts grid SECONDS, so its baseline is the scheduled session in seconds.
+  // frames_expected is every stream's frames combined (8 streams x 23,100), which made a
+  // complete session read "13% of the session baseline".
+  const baseline = globals?.scheduled_seconds || expectedFrames;
   const capturePercent = baseline > 0 ? ((globals?.captures ?? 0) / baseline) * 100 : 0;
+  const fpsTone = isRetained ? "neutral" : fpsSeverity(globals?.fps);
+  const fpsDetail = !globals
+    ? undefined
+    : isRetained
+      ? "last session, not live"
+      : `${globals.snapshot_ms.toFixed(1)}ms snapshot build`;
   const completeness = globals ? Math.max(0, 100 - globals.frame_loss_pct) : 0;
   return (
     <section aria-label="Primary capture metrics" className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
@@ -36,18 +48,20 @@ export function MonitorKpis({
         compact
         label="Tokens"
         value={globals ? formatIndianNumber(globals.tokens, 0) : "--"}
-        detail="subscribed instruments"
+        detail={isRetained ? "subscribed (last session)" : "subscribed instruments"}
         // Subscription count should be flat; a step down means instruments were dropped.
         accessory={<Sparkline values={series?.tokens ?? []} tone="neutral" />}
       />
       <Metric
         compact
         label="Frames / sec"
+        // A retained snapshot's rate is whatever the last second happened to be; it is
+        // not a live reading, so it is not coloured as one.
         value={globals ? globals.fps.toFixed(2) : "--"}
-        severity={fpsSeverity(globals?.fps)}
-        detail={globals ? `${globals.snapshot_ms.toFixed(1)}ms snapshot build` : undefined}
+        severity={fpsTone}
+        detail={fpsDetail}
         // The 1 Hz grid: a flat line is healthy, dips are missed seconds.
-        accessory={<Sparkline values={fpsHistory} tone={fpsSeverity(globals?.fps)} />}
+        accessory={<Sparkline values={fpsHistory} tone={fpsTone} />}
       />
       <Metric
         compact
@@ -56,7 +70,7 @@ export function MonitorKpis({
         detail="grid snapshots written"
         // Cumulative, so a trend line would be a straight ramp; progress through the
         // session baseline is the useful reading.
-        accessory={<MiniGauge percent={capturePercent} tone="neutral" title={`${capturePercent.toFixed(0)}% of the session baseline`} />}
+        accessory={<MiniGauge percent={capturePercent} tone="neutral" title={`${capturePercent.toFixed(0)}% of the scheduled session (${formatIndianNumber(baseline, 0)} s)`} />}
       />
       <Metric
         compact

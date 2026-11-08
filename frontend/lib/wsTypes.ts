@@ -228,7 +228,14 @@ export interface PerUnderlyingStatus {
 }
 
 /** Market-session lifecycle phase. Independent of feed health. */
-export type MarketPhase = "INACTIVE" | "BOOTSTRAP" | "PRE_OPEN" | "OPEN" | "CLOSED";
+export type MarketPhase =
+  | "INACTIVE"
+  | "BOOTSTRAP"
+  | "PRE_OPEN"
+  | "OPEN"
+  | "AUCTION"
+  | "CLOSED"
+  | "HOLIDAY";
 
 /**
  * Feed health, kept strictly separate from the market phase: PRE_OPEN + HEALTHY and

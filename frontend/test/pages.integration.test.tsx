@@ -398,7 +398,7 @@ test("renders rich monitor sections, alerts, disclosures, and native logs dialog
   expect(connectionDetails).toHaveTextContent("Option Chain");
   expect(connectionDetails).toHaveTextContent("Stocks Board");
   expect(connectionDetails).toHaveTextContent("Session");
-  expect(connectionDetails).toHaveTextContent("Frozen seconds are separate from elapsed missing-frame loss");
+  expect(connectionDetails).toHaveTextContent("Stale seconds are not written");
   await user.click(screen.getByRole("button", { name: "Open log viewer" }));
   expect(screen.getByRole("dialog")).toBeInTheDocument();
   const degradedGlobals = {
@@ -429,13 +429,27 @@ test("renders rich monitor sections, alerts, disclosures, and native logs dialog
   view.rerender(<MonitorPage />);
   expect(screen.getByText("Capture history unavailable")).toBeInTheDocument();
   expect(screen.getAllByText("No session messages yet.").length).toBeGreaterThan(0);
-  render(<MonitorAlerts globals={degradedGlobals} restError={null} payloadError={null} isRestStale />);
+  render(
+    <MonitorAlerts
+      globals={degradedGlobals}
+      restError={null}
+      payloadError={null}
+      isRestStale
+      lastSuccessAt={1}
+    />,
+  );
   expect(screen.getByText("Capture is degraded")).toBeInTheDocument();
 });
 
 test("balances single monitor alerts and paired monitor panels", () => {
   const alerts = render(
-    <MonitorAlerts globals={null} restError="History retrying." payloadError={null} isRestStale={false} />,
+    <MonitorAlerts
+      globals={null}
+      restError="History retrying."
+      payloadError={null}
+      isRestStale={false}
+      lastSuccessAt={1}
+    />,
   );
   expect(alerts.queryByRole("alert")).not.toBeInTheDocument();
   expect(alerts.queryByText("REST refresh failed")).not.toBeInTheDocument();
@@ -445,6 +459,7 @@ test("balances single monitor alerts and paired monitor panels", () => {
       restError="History retrying."
       payloadError="One telemetry payload was rejected because it was malformed."
       isRestStale={false}
+      lastSuccessAt={1}
     />,
   );
   expect(alerts.getByRole("alert")).toHaveClass("h-full");

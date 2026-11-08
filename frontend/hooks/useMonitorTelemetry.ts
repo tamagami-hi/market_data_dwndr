@@ -9,6 +9,8 @@ import {
   type CaptureHistory,
   type DashboardStats,
 } from "@/lib/api";
+import { getMarketCalendar } from "@/lib/marketCalendar";
+import { normalizeCalendarDay, type CalendarDay } from "@/lib/monitor/retainedSession";
 import {
   deriveMonitorView,
   normalizeCaptureHistory,
@@ -59,6 +61,9 @@ export function useMonitorTelemetry() {
   const [kpiSeries, setKpiSeries] = useState<KpiSeries>({ tokens: [], drop: [], loss: [] });
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [captureHistory, setCaptureHistory] = useState<CaptureHistory | null>(null);
+  // Today's calendar entry (holiday / special session / capture window). Advisory only:
+  // it explains an idle page, so a failed fetch is not a telemetry error.
+  const [calendarDay, setCalendarDay] = useState<CalendarDay | null>(null);
   const [restError, setRestError] = useState<string | null>(null);
   const [payloadError, setPayloadError] = useState<string | null>(null);
   const [lastSuccessAt, setLastSuccessAt] = useState<number | null>(null);
@@ -111,11 +116,18 @@ export function useMonitorTelemetry() {
       },
       isPaused: () => document.hidden,
       task: async (signal) => {
-        const [statsResult, historyResult] = await Promise.allSettled([
+        const [statsResult, historyResult, calendarResult] = await Promise.allSettled([
           getStats(signal),
           getCaptureHistory(signal),
+          getMarketCalendar(signal),
         ]);
         if (signal.aborted) return;
+        if (calendarResult.status === "fulfilled") {
+          const nextDay = normalizeCalendarDay(calendarResult.value.today);
+          setCalendarDay((current) =>
+            nextDay !== null && sameValue(current, nextDay) ? current : nextDay,
+          );
+        }
 
         const errors: string[] = [];
         let hasPollFailure = false;
@@ -205,6 +217,18 @@ export function useMonitorTelemetry() {
     [clockNow, hasLiveCaptureTelemetry, lastSuccessAt, restError, stats],
   );
 
+  // The snapshot on screen is RETAINED (not live) whenever capture is not running and the
+  // stats carried a monitor snapshot — the same condition that loads it into `globals`.
+  const retainedDate =
+    stats && !stats.capture_running && stats.monitor
+      ? (stats.monitor_trading_date ?? stats.trading_date)
+      : null;
+  // A calendar entry for another day (fetched across midnight) must not explain today.
+  const todayCalendar =
+    calendarDay && (calendarDay.date === null || calendarDay.date === stats?.trading_date)
+      ? calendarDay
+      : null;
+
   return {
     live: { rows, globals, compression, fpsHistory, kpiSeries },
     history: {
@@ -216,10 +240,13 @@ export function useMonitorTelemetry() {
       captureRunning: stats?.capture_running ?? false,
       tradingDate: stats?.trading_date ?? null,
       shownDate: stats?.monitor_trading_date ?? null,
+      /** Calendar phase for today: HOLIDAY / PRE_OPEN / OPEN / CLOSED. */
+      marketPhase: stats?.market_phase ?? null,
+      calendarDay: todayCalendar,
       refreshWindow: stats?.refresh_window ?? null,
       expectedFrames: stats?.expected_frames_per_session ?? 23_400,
     },
     freshness: { lastSuccessAt, restError, payloadError, isRestStale: view.isRestStale },
-    source: { type: view.source, isPastSession: view.isPastSession },
+    source: { type: view.source, isPastSession: view.isPastSession, retainedDate },
   };
 }

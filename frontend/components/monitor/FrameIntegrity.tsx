@@ -71,17 +71,29 @@ export function FrameIntegrity({
   rows,
   globals,
   expectedFrames,
+  retainedDate = null,
 }: {
   rows: PerUnderlyingStatus[];
   globals: GlobalStatus | null;
   expectedFrames: number;
+  /** Set when the figures are a retained snapshot of that session, not live telemetry. */
+  retainedDate?: string | null;
 }) {
   const overall = globals ? Math.max(0, 100 - globals.frame_loss_pct) : 0;
+  // While the session runs, the uncaptured share is mostly the part of the day still to
+  // come. Once it has closed nothing remains to be captured: the same figure is LOST.
+  const isClosed =
+    retainedDate !== null ||
+    globals?.market_phase === "CLOSED" ||
+    globals?.market_phase === "HOLIDAY";
+  const shortfallLabel = isClosed ? "lost" : "remaining";
 
   return (
     <Panel
       title="Frame integrity"
-      subtitle={`baseline ${formatIndianNumber(expectedFrames, 0)} frames / session`}
+      subtitle={`baseline ${formatIndianNumber(expectedFrames, 0)} frames / session${
+        retainedDate ? ` · last session ${retainedDate}` : ""
+      }`}
     >
       {/* Compact gauge row so the per-stream list below keeps real height rather than
           being squeezed to a few pixels. */}
@@ -117,7 +129,7 @@ export function FrameIntegrity({
                   <div className="mb-0.5 flex justify-between gap-2">
                     <span className="truncate font-medium text-secondary">{row.underlying}</span>
                     <span className="shrink-0 font-mono tabular-nums text-muted">
-                      {formatIndianNumber(row.frames_written, 0)} · remaining{" "}
+                      {formatIndianNumber(row.frames_written, 0)} · {shortfallLabel}{" "}
                       {formatPercent(row.frame_loss_pct, 1)}
                     </span>
                   </div>

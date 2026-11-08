@@ -6,7 +6,7 @@ import { CompressionActivity } from "@/components/monitor/CompressionActivity";
 import { DataLossDiagnostics } from "@/components/monitor/DataLossDiagnostics";
 import { FrameIntegrity } from "@/components/monitor/FrameIntegrity";
 import { MonitorAlerts } from "@/components/monitor/MonitorAlerts";
-import { MonitorHeader } from "@/components/monitor/MonitorHeader";
+import { MonitorHeader, RetainedSessionBanner } from "@/components/monitor/MonitorHeader";
 import { MonitorKpis } from "@/components/monitor/MonitorKpis";
 import { MonitorRestNotifications } from "@/components/monitor/MonitorRestNotifications";
 import { SessionHistory } from "@/components/monitor/SessionHistory";
@@ -16,6 +16,7 @@ import { UnderlyingHealth } from "@/components/monitor/UnderlyingHealth";
 import { useOperatorEvents } from "@/components/operator-events/OperatorEventsProvider";
 import { PageFrame } from "@/components/ui/PageFrame";
 import { useMonitorTelemetry } from "@/hooks/useMonitorTelemetry";
+import { retainedSessionNotice } from "@/lib/monitor/retainedSession";
 import { liveSessionSummary } from "@/lib/monitor/viewModel";
 
 export default function MonitorPage() {
@@ -43,6 +44,25 @@ export default function MonitorPage() {
     ],
   );
 
+  // Non-null while the panels show a retained snapshot (e.g. Friday's session on a
+  // Sunday) instead of live telemetry; every live-only figure is labelled from it.
+  const retainedDate = telemetry.source.retainedDate ?? null;
+  const notice = useMemo(
+    () =>
+      retainedSessionNotice({
+        retainedDate,
+        tradingDate: telemetry.context.tradingDate,
+        marketPhase: telemetry.context.marketPhase ?? null,
+        calendar: telemetry.context.calendarDay ?? null,
+      }),
+    [
+      retainedDate,
+      telemetry.context.tradingDate,
+      telemetry.context.marketPhase,
+      telemetry.context.calendarDay,
+    ],
+  );
+
   return (
     <PageFrame>
       <MonitorRestNotifications
@@ -53,19 +73,21 @@ export default function MonitorPage() {
       <MonitorHeader
         globals={telemetry.live.globals}
         tradingDate={telemetry.context.tradingDate}
-        shownDate={telemetry.context.shownDate}
+        marketPhase={telemetry.context.marketPhase ?? null}
         captureRunning={telemetry.context.captureRunning}
-        isPastSession={telemetry.source.isPastSession}
-        source={telemetry.source.type}
+        notice={notice}
         refreshWindow={telemetry.context.refreshWindow}
         lastSuccessAt={telemetry.freshness.lastSuccessAt}
       />
+
+      <RetainedSessionBanner notice={notice} />
 
       <MonitorKpis
         globals={telemetry.live.globals}
         expectedFrames={telemetry.context.expectedFrames}
         fpsHistory={telemetry.live.fpsHistory}
         series={telemetry.live.kpiSeries}
+        isRetained={retainedDate !== null}
       />
 
       <MonitorAlerts
@@ -73,6 +95,7 @@ export default function MonitorPage() {
         restError={telemetry.freshness.restError}
         payloadError={telemetry.freshness.payloadError}
         isRestStale={telemetry.freshness.isRestStale}
+        lastSuccessAt={telemetry.freshness.lastSuccessAt}
       />
 
       {/* Dashboard grid — panel order restored from v0.1.26.
@@ -94,13 +117,14 @@ export default function MonitorPage() {
           as it did in v0.1.26 — it is a ticker, not a data surface, so pairing it into a
           row forced every other row taller to match. */}
       <div className="monitor-panel-grid grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,45fr)_minmax(0,50fr)]">
-        <DataLossDiagnostics globals={telemetry.live.globals} />
-        <UnderlyingHealth rows={telemetry.live.rows} />
+        <DataLossDiagnostics globals={telemetry.live.globals} retainedDate={retainedDate} />
+        <UnderlyingHealth rows={telemetry.live.rows} retainedDate={retainedDate} />
 
         <FrameIntegrity
           rows={telemetry.live.rows}
           globals={telemetry.live.globals}
           expectedFrames={telemetry.context.expectedFrames}
+          retainedDate={retainedDate}
         />
         <SessionHistory sessions={telemetry.history.sessions} liveSession={liveSession} />
 

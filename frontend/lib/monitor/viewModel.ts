@@ -6,8 +6,16 @@ import type {
   DashboardStats,
   MonitorPayload,
   SessionSummary,
-  SessionStreamSummary,
 } from "@/lib/api";
+import {
+  asRecord,
+  bool,
+  finite,
+  optionalFinite,
+  optionalText,
+  text,
+} from "@/lib/monitor/parse";
+import { normalizeSessionSummary } from "@/lib/monitor/sessionSummary";
 import type {
   CaptureStatusPayload,
   CompressionProgressPayload,
@@ -18,7 +26,7 @@ import type {
   TransportStatus,
 } from "@/lib/wsTypes";
 
-type UnknownRecord = Record<string, unknown>;
+export { liveSessionSummary } from "@/lib/monitor/sessionSummary";
 
 const EMPTY_COMPRESSION_HISTORY: CompressionHistory = {
   samples: 0,
@@ -28,32 +36,6 @@ const EMPTY_COMPRESSION_HISTORY: CompressionHistory = {
   avg_throughput_mbps: 0,
   last: null,
 };
-
-function asRecord(value: unknown): UnknownRecord | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as UnknownRecord)
-    : null;
-}
-
-function finite(value: unknown, fallback = 0): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function optionalFinite(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function text(value: unknown, fallback = ""): string {
-  return typeof value === "string" ? value : fallback;
-}
-
-function optionalText(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-function bool(value: unknown, fallback = false): boolean {
-  return typeof value === "boolean" ? value : fallback;
-}
 
 function normalizeUnderlying(value: unknown): PerUnderlyingStatus | null {
   const row = asRecord(value);
@@ -90,7 +72,17 @@ function normalizeUnderlying(value: unknown): PerUnderlyingStatus | null {
   };
 }
 
-const MARKET_PHASES = new Set(["INACTIVE", "BOOTSTRAP", "PRE_OPEN", "OPEN", "CLOSED"]);
+// AUCTION is the cash segment's 15:15-15:35 window; HOLIDAY is the calendar's verdict for
+// a non-trading day. Both were previously dropped to null and rendered as "--".
+const MARKET_PHASES = new Set([
+  "INACTIVE",
+  "BOOTSTRAP",
+  "PRE_OPEN",
+  "OPEN",
+  "AUCTION",
+  "CLOSED",
+  "HOLIDAY",
+]);
 const FEED_HEALTHS = new Set([
   "INACTIVE",
   "HEALTHY",
@@ -293,61 +285,6 @@ function normalizeCompressionHistory(value: unknown): CompressionHistory {
   };
 }
 
-function normalizeSessionStream(value: unknown): SessionStreamSummary | null {
-  const stream = asRecord(value);
-  if (!stream || typeof stream.underlying !== "string" || stream.underlying.length === 0) {
-    return null;
-  }
-  return {
-    underlying: stream.underlying,
-    frames_written: finite(stream.frames_written),
-    frame_loss_pct: finite(stream.frame_loss_pct),
-    file_bytes: finite(stream.file_bytes),
-  };
-}
-
-function normalizeSessionSummary(value: unknown): SessionSummary | null {
-  const session = asRecord(value);
-  if (!session || typeof session.trading_date !== "string" || session.trading_date.length === 0) {
-    return null;
-  }
-  const rawStreams = session.streams === undefined ? [] : session.streams;
-  if (!Array.isArray(rawStreams)) return null;
-  const streams = rawStreams.map(normalizeSessionStream);
-  if (streams.some((stream) => stream === null)) return null;
-  return {
-    trading_date: session.trading_date,
-    recorded_at: finite(session.recorded_at),
-    uptime_ms: finite(session.uptime_ms),
-    captures: finite(session.captures),
-    frames_written: finite(session.frames_written),
-    frames_expected: finite(session.frames_expected),
-    frame_loss_pct: finite(session.frame_loss_pct),
-    session_frames_expected: finite(session.session_frames_expected),
-    session_loss_pct: finite(session.session_loss_pct),
-    grid_seconds_elapsed: finite(session.grid_seconds_elapsed),
-    data_loss_pct: finite(session.data_loss_pct),
-    grid_gaps: finite(session.grid_gaps),
-    grid_seconds_lost: finite(session.grid_seconds_lost),
-    // Sessions recorded before stale-write suppression stored this as ``frozen_seconds``
-    // (frames that WERE written while frozen); keep rendering them rather than showing 0.
-    stale_seconds: finite(session.stale_seconds ?? session.frozen_seconds),
-    stale_events: finite(session.stale_events),
-    dropped_batches: finite(session.dropped_batches),
-    drop_rate_pct: finite(session.drop_rate_pct),
-    unmatched_ticks: finite(session.unmatched_ticks),
-    ticks_received: finite(session.ticks_received),
-    reconnects: finite(session.reconnects),
-    token_refreshes: finite(session.token_refreshes),
-    longest_stale_spell_seconds: finite(session.longest_stale_spell_seconds),
-    escalations: finite(session.escalations),
-    recovery_abandoned: bool(session.recovery_abandoned),
-    exhausted: bool(session.exhausted),
-    disk_bytes: finite(session.disk_bytes),
-    streams: streams as SessionStreamSummary[],
-  };
-}
-
 function normalizeCaptureHistorySession(value: unknown): CaptureHistorySession | null {
   const session = asRecord(value);
   if (
@@ -401,53 +338,6 @@ export function normalizeCaptureHistory(value: unknown): CaptureHistory | null {
       data_files: finite(totals.data_files),
     },
     sessions: sessions as CaptureHistorySession[],
-  };
-}
-
-/**
- * Build a session-history row for the IN-PROGRESS capture from the live telemetry
- * stream. The recorded history (session-history.jsonl) only gains a session after
- * finalization, so without this the panel's Frames column never reflects the frames
- * currently being written to the .bin files.
- */
-export function liveSessionSummary(
-  tradingDate: string,
-  globals: GlobalStatus,
-  rows: PerUnderlyingStatus[],
-): SessionSummary {
-  return {
-    trading_date: tradingDate,
-    recorded_at: Date.now(),
-    uptime_ms: globals.uptime_ms,
-    captures: globals.captures,
-    frames_written: globals.frames_written,
-    frames_expected: globals.frames_expected,
-    frame_loss_pct: globals.frame_loss_pct,
-    session_frames_expected: globals.session_frames_expected ?? 0,
-    session_loss_pct: globals.session_loss_pct ?? 0,
-    grid_seconds_elapsed: globals.grid_seconds_elapsed ?? 0,
-    data_loss_pct: globals.data_loss_pct ?? 0,
-    grid_gaps: globals.grid_gaps ?? 0,
-    grid_seconds_lost: globals.grid_seconds_lost ?? 0,
-    stale_seconds: globals.stale_seconds ?? 0,
-    stale_events: globals.stale_events ?? 0,
-    dropped_batches: globals.dropped_batches,
-    drop_rate_pct: globals.drop_rate_pct,
-    unmatched_ticks: globals.unmatched_ticks ?? 0,
-    ticks_received: globals.ticks_received ?? 0,
-    reconnects: globals.reconnects,
-    token_refreshes: globals.token_refreshes ?? 0,
-    longest_stale_spell_seconds: globals.longest_stale_spell_seconds ?? 0,
-    escalations: globals.escalations ?? 0,
-    recovery_abandoned: globals.recovery_abandoned ?? false,
-    exhausted: globals.exhausted ?? false,
-    disk_bytes: globals.disk_bytes,
-    streams: rows.map((row) => ({
-      underlying: row.underlying,
-      frames_written: row.frames_written,
-      frame_loss_pct: row.frame_loss_pct,
-      file_bytes: row.file_bytes,
-    })),
   };
 }
 

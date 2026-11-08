@@ -130,3 +130,38 @@ test("an artifact outside its session is muted rather than flagged as failing", 
   expect(cell!.className).toContain("text-muted");
   expect(cell!.className).not.toContain("text-danger");
 });
+
+test("a retained snapshot shows links and heartbeat as not live and dates the last tick", () => {
+  const lastTick = new Date(2026, 10, 6, 15, 40, 0).getTime();
+  render(
+    <UnderlyingHealth
+      rows={[{ ...ROW, last_tick_ms: lastTick, market_phase: "CLOSED" }]}
+      retainedDate="2026-11-06"
+    />,
+  );
+  const panel = screen.getByRole("heading", { name: "Per-underlying health" }).closest(".panel");
+  expect(panel).toHaveTextContent("1 artifact · last session 2026-11-06");
+  const table = screen.getByRole("table");
+  // Friday's "connected" must not read as a live green link on Sunday.
+  expect(within(table).getByRole("img", { name: "NIFTY connection: not live (last session)" }))
+    .not.toHaveClass("bg-success");
+  const cells = within(table).getAllByRole("cell");
+  expect(cells.some((cell) => cell.textContent === "11-06 15:40")).toBe(true);
+  expect(within(table).queryByText("1 Hz")).toBeNull();
+  expect(screen.getAllByText("not live").length).toBeGreaterThan(0);
+  expect(screen.queryByText("1 Hz heartbeat")).toBeNull();
+});
+
+test("shows the auction and holiday phases instead of dropping them", () => {
+  render(
+    <UnderlyingHealth
+      rows={[
+        { ...ROW, market_phase: "AUCTION" },
+        { ...ROW, underlying: "STOCKS", market_phase: "HOLIDAY" },
+      ]}
+    />,
+  );
+  const table = screen.getByRole("table");
+  expect(within(table).getByText("AUCT")).toBeInTheDocument();
+  expect(within(table).getByText("HOL")).toBeInTheDocument();
+});

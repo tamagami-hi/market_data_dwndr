@@ -1,59 +1,30 @@
-import { memo } from "react";
+"use client";
 
+import { memo, useState } from "react";
+
+import { LossCauseBar, LossCauseLegend } from "@/components/monitor/LossCauseBar";
+import { SessionDetails } from "@/components/monitor/SessionDetails";
 import { Panel } from "@/components/ui/Panel";
 import { ResponsiveDisclosure } from "@/components/ui/ResponsiveDisclosure";
 import { StateMessage } from "@/components/ui/StateMessage";
 import type { SessionSummary } from "@/lib/api";
-import { formatBytes, formatIndianNumber, formatPercent, formatUptime } from "@/lib/numberFormat";
+import {
+  LOSS_CAUSE_STYLE,
+  TONE_TEXT,
+  activeLossCauses,
+  lossCauses,
+  lossTone,
+  scheduleLoss,
+} from "@/lib/monitor/lossCauses";
+import {
+  formatBytes,
+  formatIndianNumber,
+  formatPercent,
+  formatSecondsCompact,
+  formatUptime,
+} from "@/lib/numberFormat";
 
-/** Schedule-relative loss: owed seconds with no frame, including time the process was not
- * running at all. ``data_loss_pct`` is bounded by what the process itself observed, so an
- * outage that delays the start shrinks its own denominator and vanishes — which is how a
- * session that was 14.69% missing reported 0.77%. */
-function scheduleLoss(session: { scheduled_loss_pct?: number; data_loss_pct: number }): number {
-  return session.scheduled_loss_pct ?? session.data_loss_pct;
-}
-
-function SessionDetails({ session }: { session: SessionSummary }) {
-  const uptimeSeconds = (session.uptime_ms ?? 0) / 1000;
-  const averageTicks = uptimeSeconds >= 1 ? session.ticks_received / uptimeSeconds : 0;
-  const fields = [
-    ["Frames written", formatIndianNumber(session.frames_written, 0)],
-    ["Frames expected", formatIndianNumber(session.frames_expected, 0)],
-    ["Loss vs schedule", formatPercent(scheduleLoss(session), 2)],
-    ["Loss vs observed window", formatPercent(session.data_loss_pct, 2)],
-    ["Full-session progress", formatPercent(session.frame_loss_pct, 2)],
-    ["Stale spells", formatIndianNumber(session.stale_events, 0)],
-    ["Elapsed seconds", formatIndianNumber(session.grid_seconds_elapsed, 0)],
-    ["Dropped batches", formatIndianNumber(session.dropped_batches, 0)],
-    ["Drop rate", formatPercent(session.drop_rate_pct, 3)],
-    ["Unmatched ticks", formatIndianNumber(session.unmatched_ticks, 0)],
-    ["Average ticks / sec", formatIndianNumber(averageTicks, 0)],
-    ["Reconnects", formatIndianNumber(session.reconnects, 0)],
-    ["Restart escalations", formatIndianNumber(session.escalations ?? 0, 0)],
-    ["Longest stale spell", `${formatIndianNumber(session.longest_stale_spell_seconds ?? 0, 0)}s`],
-    ["Token refreshes", formatIndianNumber(session.token_refreshes, 0)],
-    ["Disk", formatBytes(session.disk_bytes)],
-    [
-      "State",
-      session.recovery_abandoned
-        ? "recovery abandoned"
-        : session.exhausted
-          ? "recovery exhausted"
-          : "complete",
-    ],
-  ];
-  return (
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-      {fields.map(([label, value]) => (
-        <div key={label}>
-          <dt className="text-muted">{label}</dt>
-          <dd className="mt-0.5 font-mono text-primary">{value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
+const DESKTOP_COLUMNS = 11;
 
 /**
  * A right-aligned counter header whose visible text is abbreviated.
@@ -71,6 +42,136 @@ function TightColumnHeader({ label, shortLabel }: { label: string; shortLabel: s
   );
 }
 
+/**
+ * Missing seconds with the stacked cause bar beneath. The causes come from the record's
+ * own breakdown and reconcile to ``missing_seconds``; records written before that
+ * breakdown existed show "--" instead of a fabricated zero.
+ */
+function MissingCell({ session }: { session: SessionSummary }) {
+  if (session.missing_seconds === undefined) {
+    return <span title="Recorded before the scheduled loss breakdown existed">--</span>;
+  }
+  const causes = lossCauses(session) ?? [];
+  return (
+    <>
+      <span className={session.missing_seconds > 0 ? "text-danger" : "text-muted"}>
+        {formatSecondsCompact(session.missing_seconds)}
+      </span>
+      <LossCauseBar causes={causes} missingSeconds={session.missing_seconds} />
+    </>
+  );
+}
+
+function ScheduleLossValue({ session }: { session: SessionSummary }) {
+  const loss = scheduleLoss(session);
+  return <span className={TONE_TEXT[lossTone(loss)]}>{formatPercent(loss, 2)}</span>;
+}
+
+/** Colour key for the cause bars, limited to the causes that occur in the listed rows. */
+function CauseKey({ rows }: { rows: SessionSummary[] }) {
+  const present = new Set(rows.flatMap((row) => activeLossCauses(row).map((cause) => cause.key)));
+  const causes = LOSS_CAUSE_STYLE.filter((style) => present.has(style.key)).map((style) => ({
+    ...style,
+    seconds: 0,
+  }));
+  if (causes.length === 0) return null;
+  return (
+    <div className="border-b border-border px-3 py-1.5">
+      <LossCauseLegend causes={causes} showSeconds={false} label="Missing-time cause key" />
+    </div>
+  );
+}
+
+function MobileSummary({ session, isLive }: { session: SessionSummary; isLive: boolean }) {
+  return (
+    <div className="text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-semibold text-primary">
+          {session.trading_date}
+          {isLive && <span className="ml-2 status-success">live</span>}
+        </span>
+        <span className="text-secondary" title="Process span: wall-clock from the first capture start">
+          span {formatUptime(session.uptime_ms)}
+        </span>
+      </div>
+      <div className="mt-1 grid grid-cols-4 gap-2 text-muted">
+        <span><ScheduleLossValue session={session} /> loss</span>
+        <span>
+          {session.missing_seconds === undefined
+            ? "--"
+            : formatSecondsCompact(session.missing_seconds)}{" "}
+          missing
+        </span>
+        <span>{session.grid_gaps} gaps</span>
+        <span>{session.stale_seconds} stale s</span>
+      </div>
+      {session.missing_seconds !== undefined && (
+        <LossCauseBar causes={lossCauses(session) ?? []} missingSeconds={session.missing_seconds} />
+      )}
+    </div>
+  );
+}
+
+function counterClass(value: number, tone: "danger" | "warning"): string {
+  if (!value) return "text-right text-muted";
+  return tone === "danger" ? "text-right text-danger" : "text-right text-warning";
+}
+
+function DesktopRow({
+  session,
+  isLive,
+  isOpen,
+  onToggle,
+}: {
+  session: SessionSummary;
+  isLive: boolean;
+  isOpen: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <>
+      <tr>
+        <td className="font-semibold text-primary">
+          <button
+            type="button"
+            className="text-left hover:text-accent"
+            aria-expanded={isOpen}
+            aria-controls={`session-row-${session.trading_date}`}
+            onClick={onToggle}
+          >
+            {session.trading_date}
+          </button>
+          {isLive && <span className="ml-2 text-xs status-success">live</span>}
+          {session.exhausted && <span className="ml-2 text-xs text-danger">stalled</span>}
+        </td>
+        <td className="text-right font-mono text-secondary">
+          {formatIndianNumber(session.frames_written, 0)}
+        </td>
+        <td className="text-right font-mono">
+          <ScheduleLossValue session={session} />
+        </td>
+        <td className="min-w-20 text-right font-mono">
+          <MissingCell session={session} />
+        </td>
+        <td className={counterClass(session.grid_gaps, "danger")}>{session.grid_gaps}</td>
+        <td className={counterClass(session.stale_seconds, "danger")}>{session.stale_seconds}</td>
+        <td className={counterClass(session.dropped_batches, "danger")}>{session.dropped_batches}</td>
+        <td className={counterClass(session.unmatched_ticks, "warning")}>{session.unmatched_ticks}</td>
+        <td className={counterClass(session.reconnects, "warning")}>{session.reconnects}</td>
+        <td className="text-right font-mono text-secondary">{formatUptime(session.uptime_ms)}</td>
+        <td className="text-right font-mono text-secondary">{formatBytes(session.disk_bytes)}</td>
+      </tr>
+      {isOpen && (
+        <tr id={`session-row-${session.trading_date}`}>
+          <td colSpan={DESKTOP_COLUMNS} className="bg-surface-2">
+            <SessionDetails session={session} />
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
 export const SessionHistory = memo(function SessionHistory({
   sessions,
   liveSession = null,
@@ -79,6 +180,7 @@ export const SessionHistory = memo(function SessionHistory({
   /** In-progress session built from live telemetry; prepended while capture runs. */
   liveSession?: SessionSummary | null;
 }) {
+  const [openDates, setOpenDates] = useState<ReadonlySet<string>>(() => new Set());
   // The recorded log only gains a session after finalization, so while capture runs
   // merge a live row whose Frames value tracks the frames actually written to the
   // .bin files. A recorded row for the same date wins (it is the finalized truth),
@@ -88,6 +190,14 @@ export const SessionHistory = memo(function SessionHistory({
     : sessions;
   const isLive = (session: SessionSummary) =>
     liveSession !== null && session.trading_date === liveSession.trading_date;
+  const toggle = (date: string) =>
+    setOpenDates((current) => {
+      const next = new Set(current);
+      if (next.has(date)) next.delete(date);
+      else next.add(date);
+      return next;
+    });
+
   return (
     <Panel title="Session history" subtitle={`${sessions.length} recorded sessions`}>
       {rows.length === 0 ? (
@@ -96,31 +206,14 @@ export const SessionHistory = memo(function SessionHistory({
         </div>
       ) : (
         <>
+          <CauseKey rows={rows} />
           <div className="space-y-2 p-2 md:hidden">
             {rows.map((session) => (
               <ResponsiveDisclosure
                 key={session.trading_date}
                 id={`session-${session.trading_date}`}
                 label={`${session.trading_date} session details`}
-                summary={
-                  <div className="text-xs">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold text-primary">
-                        {session.trading_date}
-                        {isLive(session) && <span className="ml-2 status-success">live</span>}
-                      </span>
-                      <span className={session.exhausted ? "text-danger" : "text-secondary"}>
-                        {formatUptime(session.uptime_ms)}
-                      </span>
-                    </div>
-                    <div className="mt-1 grid grid-cols-4 gap-2 text-muted">
-                      <span>{formatPercent(session.data_loss_pct, 2)} loss</span>
-                      <span>{session.grid_seconds_lost} lost s</span>
-                      <span>{session.grid_gaps} gaps</span>
-                      <span>{session.stale_seconds} stale s</span>
-                    </div>
-                  </div>
-                }
+                summary={<MobileSummary session={session} isLive={isLive(session)} />}
               >
                 <SessionDetails session={session} />
               </ResponsiveDisclosure>
@@ -133,52 +226,27 @@ export const SessionHistory = memo(function SessionHistory({
                   <th className="text-left">Session</th>
                   <th className="text-right">Frames</th>
                   <th className="text-right">Loss vs schedule</th>
-                  <th className="text-right">Gap loss</th>
-                  <th className="text-right">Lost s</th>
+                  <th className="text-right" title="Scheduled seconds with no frame, split by cause">
+                    Missing
+                  </th>
                   <th className="text-right">Gaps</th>
                   <th className="text-right">Stale s</th>
                   <TightColumnHeader label="Dropped" shortLabel="Drop" />
                   <TightColumnHeader label="Unmatched" shortLabel="Unmatch" />
                   <TightColumnHeader label="Reconnects" shortLabel="Recon" />
-                  <th className="text-right">Ticks/s</th>
-                  <th className="text-right">Uptime</th>
+                  <TightColumnHeader label="Process span" shortLabel="Span" />
                   <th className="text-right">Disk</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((session) => (
-                  <tr key={session.trading_date}>
-                    <td className="font-semibold text-primary">
-                      {session.trading_date}
-                      {isLive(session) && <span className="ml-2 text-xs status-success">live</span>}
-                      {session.exhausted && <span className="ml-2 text-xs text-danger">stalled</span>}
-                    </td>
-                    <td className="text-right font-mono text-secondary">
-                      {formatIndianNumber(session.frames_written, 0)}
-                    </td>
-                    {/* Schedule-relative: the only figure that can see a session the
-                        process was absent for. Falls back to the process-relative number
-                        for rows recorded before it existed. */}
-                    <td className={`text-right font-mono ${scheduleLoss(session) >= 1 ? "text-danger" : scheduleLoss(session) > 0 ? "text-warning" : "text-muted"}`}>
-                      {formatPercent(scheduleLoss(session), 2)}
-                    </td>
-                    <td className={`text-right font-mono ${session.session_loss_pct >= 1 ? "text-danger" : session.session_loss_pct > 0 ? "text-warning" : "text-muted"}`}>
-                      {formatPercent(session.session_loss_pct, 2)}
-                    </td>
-                    <td className={session.grid_seconds_lost ? "text-right text-danger" : "text-right text-muted"}>{session.grid_seconds_lost}</td>
-                    <td className={session.grid_gaps ? "text-right text-danger" : "text-right text-muted"}>{session.grid_gaps}</td>
-                    <td className={session.stale_seconds ? "text-right text-danger" : "text-right text-muted"}>{session.stale_seconds}</td>
-                    <td className={session.dropped_batches ? "text-right text-danger" : "text-right text-muted"}>{session.dropped_batches}</td>
-                    <td className={session.unmatched_ticks ? "text-right text-warning" : "text-right text-muted"}>{session.unmatched_ticks}</td>
-                    <td className={session.reconnects ? "text-right text-warning" : "text-right text-muted"}>{session.reconnects}</td>
-                    <td className="text-right font-mono text-secondary">
-                      {session.uptime_ms > 0
-                        ? formatIndianNumber(session.ticks_received / (session.uptime_ms / 1000), 1)
-                        : "0.0"}
-                    </td>
-                    <td className="text-right font-mono text-secondary">{formatUptime(session.uptime_ms)}</td>
-                    <td className="text-right font-mono text-secondary">{formatBytes(session.disk_bytes)}</td>
-                  </tr>
+                  <DesktopRow
+                    key={session.trading_date}
+                    session={session}
+                    isLive={isLive(session)}
+                    isOpen={openDates.has(session.trading_date)}
+                    onToggle={() => toggle(session.trading_date)}
+                  />
                 ))}
               </tbody>
             </table>

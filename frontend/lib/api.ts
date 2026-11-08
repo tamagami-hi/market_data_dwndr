@@ -277,6 +277,53 @@ export interface SessionSummary {
   exhausted: boolean;
   disk_bytes: number;
   streams: SessionStreamSummary[];
+  // --- Schedule-relative accounting (uptime-independent) ---------------------------
+  // Optional: records written before the scheduled breakdown existed do not carry them,
+  // and those rows must fall back rather than render a fabricated 0.
+  /** Seconds the exchange session was scheduled to run for that day. */
+  scheduled_seconds?: number;
+  /** Scheduled seconds that had elapsed when the record was written. */
+  scheduled_seconds_elapsed?: number;
+  /** Seconds with a frame on disk. */
+  captured_seconds?: number;
+  /** Missing share of the scheduled session, the only loss figure that sees downtime. */
+  scheduled_loss_pct?: number;
+  /** Scheduled seconds with no frame. The causes below reconcile to this. */
+  missing_seconds?: number;
+  stale_feed_seconds?: number;
+  restart_downtime_seconds?: number;
+  not_running_seconds?: number;
+  awaiting_first_tick_seconds?: number;
+  write_path_seconds?: number;
+  unclassified_seconds?: number;
+  /** restart_downtime + not_running, as one figure (older records split it no further). */
+  downtime_seconds?: number;
+  /** Process generations the backend recorded for the date. */
+  generations?: number;
+  ws_connect_attempts?: number;
+  in_process_reconnects?: number;
+  // --- EXTENSION POINTS (backend in progress; shapes are provisional) ---------------
+  // Rendered only when present. Adjust the normalizer in lib/monitor/sessionSummary.ts
+  // once the backend's field shapes are final.
+  /** Per-session verdict, e.g. "complete" / "degraded" / "failed", with its cause. */
+  outcome?: SessionOutcome;
+  /** What went wrong and when, in time order. */
+  incidents?: SessionIncident[];
+}
+
+/** EXTENSION POINT: provisional per-session outcome. */
+export interface SessionOutcome {
+  label: string;
+  detail?: string;
+}
+
+/** EXTENSION POINT: provisional incident-timeline entry. */
+export interface SessionIncident {
+  start_ms: number;
+  end_ms?: number;
+  cause: string;
+  seconds?: number;
+  detail?: string;
 }
 
 /** When the dashboard should actively refresh (capture running or pre-open auth window). */

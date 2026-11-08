@@ -1,19 +1,48 @@
 import { StateMessage } from "@/components/ui/StateMessage";
 import type { GlobalStatus } from "@/lib/wsTypes";
-import { formatDuration } from "@/lib/numberFormat";
+import { formatClockTime, formatDuration } from "@/lib/numberFormat";
+
+/**
+ * The backend cannot be reached: polls are failing and the data on screen is no longer
+ * being refreshed.
+ *
+ * A single failed poll is only logged (it usually recovers on the next one). The banner
+ * appears once the failure has outlived the stale threshold, or immediately when nothing
+ * has ever loaded. It used to be suppressed in exactly this case — the stale banner was
+ * hidden whenever a REST error was set, so an unreachable backend showed no alert at all.
+ */
+function unreachableAlert(
+  restError: string | null,
+  isRestStale: boolean,
+  lastSuccessAt: number | null,
+) {
+  if (!restError || (!isRestStale && lastSuccessAt !== null)) return null;
+  return {
+    title:
+      lastSuccessAt === null
+        ? "Backend unreachable — no update received yet"
+        : `Backend unreachable — last update ${formatClockTime(lastSuccessAt)}`,
+    detail: `${restError} Everything below is from the last successful refresh and is not current.`,
+    severity: "danger" as const,
+  };
+}
 
 export function MonitorAlerts({
   globals,
   restError,
   payloadError,
   isRestStale,
+  lastSuccessAt,
 }: {
   globals: GlobalStatus | null;
   restError: string | null;
   payloadError: string | null;
   isRestStale: boolean;
+  /** When the last REST refresh succeeded; null when none has. */
+  lastSuccessAt: number | null;
 }) {
   const alerts = [
+    unreachableAlert(restError, isRestStale, lastSuccessAt),
     globals?.exhausted
       ? {
           title: "Recovery exhausted",
