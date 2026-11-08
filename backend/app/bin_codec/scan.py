@@ -122,6 +122,32 @@ AXIS_STOCK = "stock"  # StockHeader: ... f64 rate, u64 n_stocks
 AXIS_INDEX_FNO = "index_fno"  # IndexFnoHeader: ... f64 rate, u64 n_indices
 
 
+def complete_records_end(path: str | os.PathLike[str]) -> int:
+    """Byte offset just past the last complete ``[u32 len][payload]`` record.
+
+    Equal to the file size for a well-formed file; smaller when the tail is a record torn
+    by a crash (a length prefix with less payload behind it, or a partial prefix). Walks
+    only the length prefixes, like :func:`scan_frames`.
+    """
+    file_path = Path(path)
+    if not file_path.exists():
+        return 0
+    size = file_path.stat().st_size
+    end = 0
+    with open(file_path, "rb") as handle:
+        while True:
+            raw_len = handle.read(_LEN.size)
+            if len(raw_len) < _LEN.size:
+                break
+            (length,) = _LEN.unpack(raw_len)
+            record_end = end + _LEN.size + length
+            if record_end > size:
+                break
+            handle.seek(record_end)
+            end = record_end
+    return end
+
+
 def read_header_schema_version(path: str | os.PathLike[str]) -> int | None:
     """Schema version declared by the file's header record, or ``None`` if empty/unread.
 

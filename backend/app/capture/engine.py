@@ -215,6 +215,10 @@ class CaptureEngine:
         self.awaiting_first_tick_seconds = 0
         self._reported_awaiting_first_tick = False
         self._ticks_ever_applied = False
+        # Set once a tick arrives while frames are owed. Kite's subscribe snapshot lands
+        # during the capture lead before the open; counting it as evidence armed recovery
+        # at the open and skipped the arm grace for a market that had not printed yet.
+        self._in_session_evidence = False
         # Restart downtime, kept separate from ``grid_seconds_lost`` so the two are never
         # summed into a figure larger than the hole that actually exists.
         self.restart_downtime_seconds = 0
@@ -324,6 +328,8 @@ class CaptureEngine:
             # freshness monitor so the "never ticked" gate holds for any caller, not only
             # the live consumer that happens to update both.
             self._ticks_ever_applied = True
+            if not self._in_session_evidence and self.is_capture_expected(stamp):
+                self._in_session_evidence = True
         accepted: list[dict] = []
         for tick in ticks:
             token = tick.get("instrument_token")
@@ -930,7 +936,20 @@ class CaptureEngine:
         except Exception:  # noqa: BLE001 - a gate failure must not disable capture
             logger.warning("recovery arming check failed; treating as disarmed", exc_info=True)
             return False
-        return bool(self.has_received_data() and self.is_capture_expected(now))
+        return bool(self._has_in_session_evidence() and self.is_capture_expected(now))
+
+    def _has_in_session_evidence(self) -> bool:
+        """True once a tick has arrived while frames were owed, by either entry point.
+
+        ``apply_ticks`` records it directly; a tick seen only by the freshness monitor
+        counts when its arrival time was inside the session. A pre-open subscribe
+        snapshot never does, so the arm grace still covers a slow first print.
+        """
+        if not self._in_session_evidence:
+            last_tick = self.freshness.last_tick_ms
+            if last_tick is not None and self.is_capture_expected(last_tick):
+                self._in_session_evidence = True
+        return self._in_session_evidence
 
     def set_reconnect_fn(self, reconnect_fn) -> None:
         """Wire the in-process socket replacement used before escalating to a restart."""

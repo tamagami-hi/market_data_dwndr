@@ -403,6 +403,10 @@ def bootstrap_capture(
                 # that escalated twice reports the last process's zero (the reason the
                 # 08-06 history showed 3 reconnects against 27 real attempts).
                 "longest_stale_spell_seconds": globals_.get("longest_stale_spell_seconds"),
+                # Restored by the engine too; dropping them here made every restart wipe
+                # the earlier restarts' downtime and report it as not-running instead.
+                "restart_downtime_seconds": globals_.get("restart_downtime_seconds"),
+                "awaiting_first_tick_seconds": globals_.get("awaiting_first_tick_seconds"),
             }
             logger.info(
                 "found today's persisted telemetry (%d streams) to carry over: "

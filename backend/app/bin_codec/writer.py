@@ -10,7 +10,9 @@ Writers flush after every frame so at most the in-flight frame is ever at risk.
 
 from __future__ import annotations
 
+import logging
 import os
+import shutil
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -35,9 +37,12 @@ from app.bin_codec.scan import (
     AXIS_INDEX,
     AXIS_INDEX_FNO,
     AXIS_STOCK,
+    complete_records_end,
     read_header_axis,
     read_header_schema_version,
 )
+
+logger = logging.getLogger(__name__)
 
 # Hard cap on ``<date>.pN.bin`` segments per artifact per day. The axis only changes on a
 # restart, so a day needing more than this has a far worse problem than segmentation.
@@ -275,12 +280,43 @@ class _BaseWriter:
     def open(self) -> _BaseWriter:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # 'ab' = append; the header is only emitted when the file is empty.
+        if self.path.exists() and self.path.stat().st_size > 0:
+            self._trim_torn_tail()
         self._header_written = self.path.exists() and self.path.stat().st_size > 0
         self._axis_on_disk = None
         if self._header_written:
             self._inspect_existing()
         self._fh = open(self.path, "ab")
         return self
+
+    def _trim_torn_tail(self) -> None:
+        """Cut a record torn by a crash before appending behind it.
+
+        Appending after a partial record mis-frames every later frame, so the whole rest
+        of the session would be unreadable. The cut bytes are kept in a ``.torn-<offset>``
+        sidecar rather than destroyed, in case the damage is ever worth inspecting. A torn
+        *header* leaves an empty file, which then gets a fresh header.
+        """
+        size = self.path.stat().st_size
+        end = complete_records_end(self.path)
+        if end >= size:
+            return
+        sidecar = self.path.with_name(f"{self.path.name}.torn-{end}")
+        with open(self.path, "rb") as src, open(sidecar, "wb") as dst:
+            src.seek(end)
+            shutil.copyfileobj(src, dst)
+            dst.flush()
+            os.fsync(dst.fileno())
+        with open(self.path, "r+b") as handle:
+            handle.truncate(end)
+            handle.flush()
+            os.fsync(handle.fileno())
+        logger.warning(
+            "trimmed a torn %d-byte tail from %s before appending (kept as %s)",
+            size - end,
+            self.path,
+            sidecar.name,
+        )
 
     def _inspect_existing(self) -> None:
         """Read what the existing (non-empty) file already commits to.

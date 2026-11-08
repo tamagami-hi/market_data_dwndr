@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import os
+import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +36,8 @@ CSV_COLUMNS = (
     "exchange",
 )
 
+
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Instrument:
@@ -120,10 +124,22 @@ class InstrumentStore:
 
     def fetch_and_archive(self, exchange: str, trading_date: str) -> list[Instrument]:
         text = self._fetch(exchange)
+        instruments = parse_instruments_csv(text)  # never archive a dump we cannot read
         path = self.archive_path(exchange, trading_date)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-        return parse_instruments_csv(text)
+        # Atomic: a dump cut short by a kill or a full disk would otherwise be trusted by
+        # every later bootstrap that day and never refetched.
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{exchange}.", suffix=".csv")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+        return instruments
 
     def load_archived(self, exchange: str, trading_date: str) -> list[Instrument] | None:
         path = self.archive_path(exchange, trading_date)
@@ -136,7 +152,16 @@ class InstrumentStore:
     ) -> list[Instrument]:
         """Return instruments for ``exchange``, using the archive unless ``refresh``."""
         if not refresh:
-            cached = self.load_archived(exchange, trading_date)
+            try:
+                cached = self.load_archived(exchange, trading_date)
+            except Exception:  # noqa: BLE001 - a damaged archive is refetched, not fatal
+                logger.warning(
+                    "archived %s instruments for %s are unreadable; refetching",
+                    exchange,
+                    trading_date,
+                    exc_info=True,
+                )
+                cached = None
             if cached is not None:
                 return cached
         return self.fetch_and_archive(exchange, trading_date)
