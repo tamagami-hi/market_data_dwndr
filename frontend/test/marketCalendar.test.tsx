@@ -126,3 +126,36 @@ test("the special-day form starts from the configured regular hours, not a fixed
   expect(screen.getByPlaceholderText("e.g. Special trading session")).toBeInTheDocument();
   expect(screen.queryByPlaceholderText(/diwali/i)).not.toBeInTheDocument();
 });
+
+test("the operator key is cleared after each use and never stored", async () => {
+  window.sessionStorage.setItem("tickvault.operatorToken", "left-by-an-older-release");
+  const user = userEvent.setup();
+  render(<MarketCalendarPage />);
+  await screen.findByText("14:20–15:30");
+  expect(window.sessionStorage.getItem("tickvault.operatorToken")).toBeNull();
+
+  const keyInput = screen.getByPlaceholderText(/Required to save changes/) as HTMLInputElement;
+  expect(keyInput.value).toBe("");
+
+  // A successful change uses the key once, then clears it.
+  await user.type(keyInput, "the-key");
+  await user.click(screen.getByRole("button", { name: "Save special open day" }));
+  await screen.findByText(/Special session saved/);
+  expect(keyInput.value).toBe("");
+  expect(window.sessionStorage.length).toBe(0);
+  const saved = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "PUT");
+  expect((saved![1] as RequestInit).headers).toMatchObject({ "X-Release-Maintenance-Token": "the-key" });
+
+  // The next change needs the key entered again.
+  await user.click(screen.getByRole("button", { name: "Fetch token now" }));
+  expect(await screen.findByText("Enter the operator key first.")).toBeInTheDocument();
+
+  // A rejected key is cleared too.
+  fetchMock.mockImplementation(async (_url: string, init?: RequestInit) =>
+    init?.method ? jsonResponse({ detail: "invalid operator credential" }, 401) : jsonResponse(CALENDAR),
+  );
+  await user.type(keyInput, "wrong");
+  await user.click(screen.getByRole("button", { name: "Fetch token now" }));
+  await screen.findByText("Operator key was rejected.");
+  expect(keyInput.value).toBe("");
+});

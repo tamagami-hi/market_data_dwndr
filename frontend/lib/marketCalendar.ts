@@ -71,20 +71,15 @@ function isMarketCalendar(value: unknown): value is MarketCalendar {
   );
 }
 
-export function readOperatorToken(): string {
+/**
+ * The operator key is never stored: it is typed for one change and then cleared.
+ * Removes a key that an earlier release kept in this tab's session storage.
+ */
+export function forgetStoredOperatorToken(): void {
   try {
-    return window.sessionStorage.getItem(OPERATOR_TOKEN_STORAGE_KEY) ?? "";
+    window.sessionStorage.removeItem(OPERATOR_TOKEN_STORAGE_KEY);
   } catch {
-    return "";
-  }
-}
-
-export function storeOperatorToken(token: string): void {
-  try {
-    if (token) window.sessionStorage.setItem(OPERATOR_TOKEN_STORAGE_KEY, token);
-    else window.sessionStorage.removeItem(OPERATOR_TOKEN_STORAGE_KEY);
-  } catch {
-    /* storage unavailable: the token simply is not remembered */
+    /* storage unavailable: nothing was stored */
   }
 }
 

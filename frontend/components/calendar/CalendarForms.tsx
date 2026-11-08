@@ -137,7 +137,7 @@ export function OperatorKeyField({
 }) {
   return (
     <div className="grid gap-2 p-3 sm:grid-cols-[minmax(0,24rem)_1fr] sm:items-end">
-      <Field label="Operator key" hint="RELEASE_MAINTENANCE_TOKEN from the backend .env. Kept only in this browser tab.">
+      <Field label="Operator key" hint="RELEASE_MAINTENANCE_TOKEN from the backend .env. Used for one change, then cleared — enter it again before the next.">
         <input
           type="password"
           autoComplete="off"

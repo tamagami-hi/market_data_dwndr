@@ -19,13 +19,12 @@ import { createPollController } from "@/hooks/polling";
 import {
   addHoliday,
   fetchTokenNow,
+  forgetStoredOperatorToken,
   formatDay,
   getMarketCalendar,
-  readOperatorToken,
   removeHoliday,
   removeSpecialSession,
   saveSpecialSession,
-  storeOperatorToken,
   type CalendarHoliday,
   type MarketCalendar,
   type SpecialSessionInput,
@@ -46,6 +45,10 @@ export default function MarketCalendarPage() {
   const [notice, setNotice] = useState<Notice>(null);
 
   useEffect(() => {
+    forgetStoredOperatorToken();
+  }, []);
+
+  useEffect(() => {
     let isMounted = true;
     const controller = createPollController({
       intervalMs: () => POLL_INTERVAL_MS,
@@ -55,8 +58,6 @@ export default function MarketCalendarPage() {
           const next = await getMarketCalendar(signal);
           if (!isMounted) return;
           setCalendar(next);
-          // Restore a key typed earlier in this tab (sessionStorage is client-only).
-          setOperatorToken((current) => current || readOperatorToken());
         } catch (error) {
           if (isMounted && !(error instanceof DOMException && error.name === "AbortError")) {
             setCalendar(null);
@@ -78,7 +79,6 @@ export default function MarketCalendarPage() {
 
   const handleTokenChange = (value: string) => {
     setOperatorToken(value);
-    storeOperatorToken(value);
   };
 
   const run = useCallback(
@@ -98,6 +98,8 @@ export default function MarketCalendarPage() {
         return false;
       } finally {
         setIsBusy(false);
+        // One key entry per change: cleared after every use, accepted or not.
+        setOperatorToken("");
       }
     },
     [operatorToken],
