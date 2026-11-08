@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 
+from app.bin_codec.scan import last_index_spot_paise
 from app.capture.engine import (
     CaptureEngine,
     build_index_fno_writer,
@@ -48,6 +50,11 @@ from app.stocks.matrix import StockMatrix
 
 logger = logging.getLogger(__name__)
 
+# One quick retry for the LTP quote before falling back to today's last written spot. It
+# runs on the event loop during bootstrap, so the delay is kept short.
+QUOTE_RETRIES = 1
+QUOTE_RETRY_DELAY_S = 1.0
+
 
 @dataclass
 class CaptureContext:
@@ -70,6 +77,56 @@ class CaptureContext:
     skip_reasons: dict[str, str] = field(default_factory=dict)
     quote_error: str | None = None
     resume: dict = field(default_factory=dict)
+
+
+def _quote_spots(quote_fn, symbols: list[str]) -> tuple[dict, str | None]:
+    """LTPs for ``symbols``, retried once; ``({}, error)`` when the quote is unavailable.
+
+    An authentication failure is raised at once — retrying cannot fix a rejected token.
+    """
+    error: str | None = None
+    for attempt in range(1 + QUOTE_RETRIES):
+        try:
+            return quote_fn(symbols), None
+        except Exception as exc:  # noqa: BLE001 - a quote failure shouldn't abort stocks
+            if is_authentication_error(exc):
+                raise KiteAuthenticationError("Kite access token was rejected") from exc
+            error = f"{type(exc).__name__}: {exc}"
+            if attempt < QUOTE_RETRIES:
+                logger.warning("LTP quote failed (%s); retrying once", type(exc).__name__)
+                time.sleep(QUOTE_RETRY_DELAY_S)
+    logger.warning(
+        "LTP quote failed; index chains fall back to today's last written spot: %s", error
+    )
+    return {}, error
+
+
+def _spot_written_today(settings, name: str, trading_date: str) -> float:
+    """The spot in the newest frame already written today for ``name``, in rupees.
+
+    A mid-session restart whose quote fails (2026-11-05: DNS down) used to skip every
+    index chain. The day's own file knows where the market was moments ago, which is all
+    the ATM window needs; live ticks take over the spot as soon as they arrive. Returns
+    0.0 when there is nothing usable, so the chain is skipped with a clear reason.
+    """
+    base = settings.indices_dir / name / f"{trading_date}.bin"
+    candidates = [base, *base.parent.glob(f"{trading_date}.p*.bin")]
+    newest: tuple[float, int] | None = None
+    for path in candidates:
+        try:
+            spot_paise = last_index_spot_paise(path)
+            mtime = path.stat().st_mtime if spot_paise is not None else 0.0
+        except OSError:
+            continue
+        if spot_paise is not None and (newest is None or mtime > newest[0]):
+            newest = (mtime, spot_paise)
+    if newest is None or newest[1] <= 0:
+        raise ValueError(
+            "no spot: the LTP quote failed and no frame was written today to start from"
+        )
+    spot = newest[1] / 100.0
+    logger.info("%s: using the last spot written today (%.2f); the quote failed", name, spot)
+    return spot
 
 
 def _default_instrument_store(settings, access_token: str) -> InstrumentStore:
@@ -112,15 +169,7 @@ def bootstrap_capture(
     # --- seed spot prices (LTP) for the configured indices + VIX ---
     configs = {name: get_index_config(name) for name in settings.indices}
     spot_symbols = [cfg.spot_symbol for cfg in configs.values()]
-    quote_error: str | None = None
-    try:
-        ltps = quote_fn([*spot_symbols, VIX_SYMBOL])
-    except Exception as exc:  # noqa: BLE001 - a quote failure shouldn't abort stocks
-        if is_authentication_error(exc):
-            raise KiteAuthenticationError("Kite access token was rejected") from exc
-        logger.warning("LTP quote failed; index chains may be skipped: %s", exc)
-        quote_error = f"{type(exc).__name__}: {exc}"
-        ltps = {}
+    ltps, quote_error = _quote_spots(quote_fn, [*spot_symbols, VIX_SYMBOL])
 
     # --- index option chains (L1) ---
     index_tables: dict[str, IndexTable] = {}
@@ -131,6 +180,8 @@ def bootstrap_capture(
         try:
             instruments = instrument_store.get(cfg.options_exchange, trading_date)
             spot = ltps.get(cfg.spot_symbol, 0.0)
+            if spot <= 0:
+                spot = _spot_written_today(settings, name, trading_date)
             chain = build_option_chain(instruments, cfg, spot=spot, today=trading_date)
             table = IndexTable(chain, risk_free_rate, trading_date)
             index_tables[name] = table

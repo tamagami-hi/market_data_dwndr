@@ -148,6 +148,44 @@ def complete_records_end(path: str | os.PathLike[str]) -> int:
     return end
 
 
+# Index data-frame prefix: u32 tag, u64 timestamp, u64 sequence, i64 spot (paise).
+_INDEX_SPOT = struct.Struct("<IQQq")
+
+
+def last_index_spot_paise(path: str | os.PathLike[str]) -> int | None:
+    """The spot price (paise) in the newest complete index data frame, or ``None``.
+
+    Lets a restart rebuild an option chain around where the market was a moment ago when
+    the LTP quote is unavailable. Walks only the length prefixes, like :func:`scan_frames`.
+    """
+    file_path = Path(path)
+    if not file_path.exists():
+        return None
+    size = file_path.stat().st_size
+    offset = 0
+    last_payload_at: int | None = None
+    with open(file_path, "rb") as handle:
+        while True:
+            raw_len = handle.read(_LEN.size)
+            if len(raw_len) < _LEN.size:
+                break
+            (length,) = _LEN.unpack(raw_len)
+            record_end = offset + _LEN.size + length
+            if record_end > size:
+                break
+            if length >= _INDEX_SPOT.size:
+                tag = _LEN.unpack(handle.read(_LEN.size))[0]
+                if tag == layout.TAG_DATA:
+                    last_payload_at = offset + _LEN.size
+            handle.seek(record_end)
+            offset = record_end
+        if last_payload_at is None:
+            return None
+        handle.seek(last_payload_at)
+        _tag, _ts, _seq, spot = _INDEX_SPOT.unpack(handle.read(_INDEX_SPOT.size))
+    return int(spot)
+
+
 def read_header_schema_version(path: str | os.PathLike[str]) -> int | None:
     """Schema version declared by the file's header record, or ``None`` if empty/unread.
 
