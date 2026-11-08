@@ -65,6 +65,15 @@ function stringArray(value: unknown): string[] | undefined {
     : undefined;
 }
 
+function timeWindow(value: unknown): [string, string] | undefined {
+  return Array.isArray(value) &&
+    value.length === 2 &&
+    typeof value[0] === "string" &&
+    typeof value[1] === "string"
+    ? [value[0], value[1]]
+    : undefined;
+}
+
 function normalizeCaptureStatus(value: unknown): CaptureStatus | undefined {
   const capture = asRecord(value);
   if (
@@ -96,6 +105,9 @@ function normalizeAutomation(value: unknown): AutomationStateView | undefined {
     last_broker_poll_at: nullableNumber(automation.last_broker_poll_at),
     eod_completed_date: nullableString(automation.eod_completed_date),
     eod_in_progress_date: nullableString(automation.eod_in_progress_date),
+    special_session: optionalBoolean(automation.special_session),
+    auth_window: timeWindow(automation.auth_window),
+    capture_window: timeWindow(automation.capture_window),
   };
 }
 

@@ -11,6 +11,7 @@ const LINKS = [
   { href: "/monitor", label: "Capture Monitor", mobileLabel: "Monitor" },
   { href: "/option-chain", label: "Option Chain", mobileLabel: "Options" },
   { href: "/stocks", label: "Stocks", mobileLabel: "Stocks" },
+  { href: "/calendar", label: "Calendar", mobileLabel: "Calendar" },
   { href: "/login", label: "Downloader", mobileLabel: "Setup" },
 ];
 
@@ -60,7 +61,7 @@ export default function NavBar() {
           </span>
         </div>
       </div>
-      <div className="grid h-12 grid-cols-4 border-t border-border sm:hidden">
+      <div className="grid h-12 grid-cols-5 border-t border-border sm:hidden">
         {LINKS.map((link) => {
           const active = pathname === link.href;
           return (

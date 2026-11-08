@@ -23,3 +23,22 @@ test("describes every automation phase and fallback", () => {
   expect(automationMessage({ phase: "eod" }, false)).toMatch(/Waiting for end-of-day/);
   expect(automationMessage(undefined, false)).toMatch(/08:30 IST/);
 });
+
+test("uses the reported windows, including a special session", () => {
+  expect(
+    automationMessage(
+      { phase: "auth_window", last_error: "x", auth_window: ["13:00", "14:15"] },
+      false,
+    ),
+  ).toMatch(/13:00-14:15 IST window/);
+  expect(
+    automationMessage(
+      { phase: "capture_window", capture_window: ["14:15", "15:30"], special_session: true },
+      true,
+    ),
+  ).toBe("Daily authentication is ready. Capture runs automatically from 14:15 to 15:30 IST (special session).");
+  expect(automationMessage({ phase: "holiday" }, false)).toMatch(/Market closed today/);
+  expect(
+    automationMessage({ phase: "waiting", auth_window: ["13:00", "14:15"], special_session: true }, false),
+  ).toBe("Token polling starts automatically at 13:00 IST for today's special session.");
+});

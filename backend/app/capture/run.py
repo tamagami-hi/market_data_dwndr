@@ -97,6 +97,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - orchestrat
 
     try:
         settings = get_settings()
+        from app.ops.market_overrides import install_from_settings
+
+        install_from_settings(settings)
     except Exception as exc:  # noqa: BLE001
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2

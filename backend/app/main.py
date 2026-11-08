@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse
 
 from app import __version__
 from app.api.auth import create_auth_router
+from app.api.calendar import create_calendar_router
 from app.api.capture import create_capture_router
 from app.api.health import create_health_router
 from app.api.stats import create_stats_router
@@ -51,6 +52,10 @@ def _init_session_service(app: FastAPI) -> None:
         settings = get_settings()
         configure_logging(settings.log_level)
         app.state.settings = settings
+
+        from app.ops import market_overrides
+
+        market_overrides.install_from_settings(settings)
         service = SessionService(settings)
         app.state.session_service = service
 
@@ -135,6 +140,7 @@ app.add_middleware(
 
 app.include_router(create_ws_router(ws_hub))
 app.include_router(create_auth_router())
+app.include_router(create_calendar_router())
 app.include_router(create_capture_router())
 app.include_router(create_status_router())
 app.include_router(create_stats_router())

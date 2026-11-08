@@ -82,7 +82,15 @@ def _refresh_window(settings, session_service, capture_running: bool) -> dict:
         return info
     try:
         calendar = session_service.calendar
-        local_time = calendar.local_dt(now_ms()).time().replace(tzinfo=None)
+        current = now_ms()
+        local_time = calendar.local_dt(current).time().replace(tzinfo=None)
+        special_lookup = getattr(calendar, "special_session", None)
+        special = special_lookup(current) if callable(special_lookup) else None
+        if special is not None:
+            # A special session has its own token window (token_fetch_at..capture start).
+            auth_start = special.token_fetch_at
+            auth_end = special.capture_start_time.strftime("%H:%M")
+            info["auth_poll_start"], info["auth_poll_end"] = auth_start, auth_end
         start_h, start_m = _parse_hhmm(auth_start)
         end_h, end_m = _parse_hhmm(auth_end)
         minutes = local_time.hour * 60 + local_time.minute

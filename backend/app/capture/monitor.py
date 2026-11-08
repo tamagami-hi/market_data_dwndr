@@ -266,7 +266,7 @@ class CaptureMonitor:
         artifact = next(iter(self.index_tables), "STOCKS")
         try:
             return (
-                int(registry.scheduled_seconds(artifact)),
+                int(registry.scheduled_seconds(artifact, now)),
                 int(registry.scheduled_seconds_elapsed(artifact, now)),
             )
         except Exception:  # noqa: BLE001 - telemetry must never break capture
@@ -633,6 +633,7 @@ class CaptureMonitor:
             for name, session in sorted(self.session_registry.sessions.items()):
                 try:
                     local = self.session_registry.calendar.local_dt(now)
+                    session = session.on_day(self.session_registry.calendar, local.date())
                     session_phases[name] = {
                         "phase": self.session_registry.calendar.is_trading_day(now)
                         and session.phase_at(local)

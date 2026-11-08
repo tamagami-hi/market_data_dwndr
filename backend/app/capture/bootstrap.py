@@ -254,8 +254,20 @@ def bootstrap_capture(
     session_registry = build_session_registry(
         settings, artifact_sessions, contributor_sessions
     )
-    deriv = session_registry.session_for(next(iter(artifact_sessions), "STOCKS"))
-    cash = session_registry.sessions[SESSION_EQUITY_CASH]
+    started_ms = clock()
+    deriv = session_registry.session_at(next(iter(artifact_sessions), "STOCKS"), started_ms)
+    cash = session_registry.sessions[SESSION_EQUITY_CASH].on_day(
+        calendar, calendar.local_dt(started_ms).date()
+    )
+    special = calendar.special_session(started_ms)
+    if special is not None:
+        logger.info(
+            "SPECIAL SESSION %s: %s-%s for every segment%s",
+            special.date,
+            special.open,
+            special.close,
+            f" ({special.note})" if special.note else "",
+        )
     logger.info(
         "session schedule: %s %s-%s (pre-open %s, %d scheduled seconds/day)",
         deriv.name,
@@ -297,7 +309,7 @@ def bootstrap_capture(
     # back to a full-day baseline against zero captures — that reported 100% loss for an
     # artifact deliberately switched off.
     session_frames = session_registry.scheduled_seconds(
-        next(iter(artifact_sessions), "STOCKS")
+        next(iter(artifact_sessions), "STOCKS"), started_ms
     )
     override = getattr(settings, "expected_frames_override", None)
     if override:

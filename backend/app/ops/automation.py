@@ -49,6 +49,46 @@ def _plus_seconds(moment: time, seconds: int) -> time:
     return time(total // 3600, (total % 3600) // 60, total % 60)
 
 
+@dataclass(frozen=True)
+class DayWindows:
+    """The broker-token and capture-process windows that apply on one trading date."""
+
+    auth_start: time
+    auth_end: time
+    capture_start: time
+    capture_end: time
+    special_note: str | None = None
+    is_special: bool = False
+
+
+def day_windows(
+    calendar, now_ms: int, auth_poll_start: str, auth_poll_end: str
+) -> DayWindows:
+    """Windows for ``now_ms``'s date: an operator special session's, else configured.
+
+    On a special day the token is fetched from the session's ``token_fetch_at`` up to the
+    capture start, and the capture process runs from ``capture_lead_minutes`` before the
+    special open to the special close.
+    """
+    special_lookup = getattr(calendar, "special_session", None)
+    special = special_lookup(now_ms) if callable(special_lookup) else None
+    if special is not None:
+        return DayWindows(
+            auth_start=special.token_fetch_time,
+            auth_end=special.capture_start_time,
+            capture_start=special.capture_start_time,
+            capture_end=special.close_time,
+            special_note=special.note or None,
+            is_special=True,
+        )
+    return DayWindows(
+        auth_start=_parse_hhmm(auth_poll_start),
+        auth_end=_parse_hhmm(auth_poll_end),
+        capture_start=calendar.market_open,
+        capture_end=calendar.market_close,
+    )
+
+
 def decide_automation(
     now_ms: int,
     state: AutomationState,
@@ -81,10 +121,9 @@ def decide_automation(
             actions = (ACTION_STOP_CAPTURE,)
         return next_state, actions
 
-    poll_start = _parse_hhmm(auth_poll_start)
-    poll_end = _parse_hhmm(auth_poll_end)
-    is_auth_window = poll_start <= local_time < poll_end
-    is_capture_window = calendar.market_open <= local_time < calendar.market_close
+    windows = day_windows(calendar, now_ms, auth_poll_start, auth_poll_end)
+    is_auth_window = windows.auth_start <= local_time < windows.auth_end
+    is_capture_window = windows.capture_start <= local_time < windows.capture_end
     if (is_auth_window or is_capture_window) and not has_valid_session:
         interval_ms = broker_retry_interval_s * 1_000
         is_due = (
@@ -100,12 +139,12 @@ def decide_automation(
             actions = (*actions, ACTION_START_CAPTURE)
         return next_state, actions
 
-    if local_time >= calendar.market_close:
+    if local_time >= windows.capture_end:
         needs_eod = (
             state.eod_completed_date != trading_date
             and state.eod_in_progress_date != trading_date
         )
-        eod_at = _plus_seconds(calendar.market_close, eod_tail_seconds)
+        eod_at = _plus_seconds(windows.capture_end, eod_tail_seconds)
         # Compression REMOVES the raw .bin and moves it to the archive. Doing that while the
         # last derivative frames are still in a writer queue would destroy them, so the
         # sweep waits for the drain tail AND for capture to have actually stopped.
@@ -412,24 +451,42 @@ class DailyAutomationService:
 
     def status(self) -> dict:
         phase = "waiting"
+        reference_ms = (
+            self._last_tick_at_ms if self._last_tick_at_ms is not None else self._clock()
+        )
+        windows = day_windows(
+            self.calendar,
+            reference_ms,
+            self.settings.auth_poll_start,
+            self.settings.auth_poll_end,
+        )
         eod_at = _plus_seconds(
-            self.calendar.market_close, getattr(self.settings, "eod_tail_seconds", 0)
+            windows.capture_end, getattr(self.settings, "eod_tail_seconds", 0)
         )
         if self._last_tick_at_ms is not None:
             local_time = self.calendar.local_dt(self._last_tick_at_ms).time().replace(tzinfo=None)
-            if _parse_hhmm(self.settings.auth_poll_start) <= local_time < _parse_hhmm(
-                self.settings.auth_poll_end
-            ):
+            if not self.calendar.is_trading_day(self._last_tick_at_ms):
+                phase = "holiday"
+            elif windows.auth_start <= local_time < windows.auth_end:
                 phase = "auth_window"
-            elif self.calendar.market_open <= local_time < self.calendar.market_close:
+            elif windows.capture_start <= local_time < windows.capture_end:
                 phase = "capture_window"
-            elif local_time >= self.calendar.market_close:
+            elif local_time >= windows.capture_end:
                 # Between the capture end and the EOD sweep the writers are draining the
                 # final derivative frames. Reported as its own phase so an operator can
                 # tell "waiting to finalize safely" from "compression running".
                 phase = "eod" if local_time >= eod_at else "draining"
         return {
             "phase": phase,
+            "special_session": windows.is_special,
+            "auth_window": [
+                windows.auth_start.strftime("%H:%M"),
+                windows.auth_end.strftime("%H:%M"),
+            ],
+            "capture_window": [
+                windows.capture_start.strftime("%H:%M"),
+                windows.capture_end.strftime("%H:%M"),
+            ],
             "eod_at": eod_at.strftime("%H:%M:%S"),
             "eod_tail_seconds": int(getattr(self.settings, "eod_tail_seconds", 0)),
             "last_action": self._last_action,

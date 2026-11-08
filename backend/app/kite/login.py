@@ -474,7 +474,10 @@ def run_credentials_login(
 
 def _resolve_trading_date(settings) -> str:
     from app.ops.calendar import TradingCalendar
+    from app.ops.market_overrides import install_from_settings, installed_store
 
+    if installed_store() is None:
+        install_from_settings(settings)
     cal = TradingCalendar(
         holidays=set(getattr(settings, "market_holidays", [])),
         timezone_name=settings.timezone,

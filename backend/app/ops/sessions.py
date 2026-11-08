@@ -40,7 +40,7 @@ still expected frames (see :meth:`MarketSession.scheduled_seconds_between`).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 
 from app.ops.calendar import TradingCalendar
@@ -136,6 +136,27 @@ class MarketSession:
                     f"session {self.name}: the closing auction cannot start "
                     f"({self.cas_start}) before continuous close ({self.close_at})"
                 )
+
+    def on_day(self, calendar: TradingCalendar, trading_date: date) -> MarketSession:
+        """This session as it applies on ``trading_date``.
+
+        An operator special session (muhurat trading and the like) replaces the whole
+        schedule for that one day: every segment trades the special window, with no
+        pre-open capture and no closing auction. Any other day returns ``self``.
+        """
+        special = calendar.special_session(_at(trading_date, time(12, 0), calendar))
+        if special is None:
+            return self
+        return replace(
+            self,
+            open_at=special.open_time,
+            close_at=special.close_time,
+            pre_open_start=None,
+            pre_open_end=None,
+            capture_pre_open=False,
+            cas_start=None,
+            cas_end=None,
+        )
 
     @property
     def has_pre_open(self) -> bool:
@@ -239,9 +260,10 @@ class MarketSession:
         """Absolute ``[start_ms, end_ms)`` auction windows on ``trading_date``."""
         if not calendar.is_trading_day(_at(trading_date, time(12, 0), calendar)):
             return ()
+        session = self.on_day(calendar, trading_date)
         return tuple(
             (_at(trading_date, start, calendar), _at(trading_date, end, calendar))
-            for start, end in self.auction_intervals()
+            for start, end in session.auction_intervals()
         )
 
     def scheduled_seconds(self) -> int:
@@ -268,9 +290,10 @@ class MarketSession:
             return ()
         if not calendar.is_trading_day(_at(trading_date, time(12, 0), calendar)):
             return ()
+        session = self.on_day(calendar, trading_date)
         return tuple(
             (_at(trading_date, start, calendar), _at(trading_date, end, calendar))
-            for start, end in self.scheduled_intervals()
+            for start, end in session.scheduled_intervals()
         )
 
     def scheduled_seconds_between(
@@ -294,7 +317,9 @@ class MarketSession:
                 datetime.combine(day, time(12, 0), tzinfo=calendar.tz).timestamp() * 1000
             )
             if calendar.is_trading_day(day_ms):
-                for window_start, window_end in self.scheduled_intervals():
+                for window_start, window_end in self.on_day(
+                    calendar, day
+                ).scheduled_intervals():
                     total += _overlap_seconds(
                         _at(day, window_start, calendar),
                         _at(day, window_end, calendar),
@@ -368,6 +393,11 @@ class SessionRegistry:
         )
         return self.sessions.get(name, self.sessions[self.default_session])
 
+    def session_at(self, artifact: str, now_ms: int) -> MarketSession:
+        """``artifact``'s session as it applies on ``now_ms``'s trading date."""
+        local = self.calendar.local_dt(now_ms)
+        return self.session_for(artifact).on_day(self.calendar, local.date())
+
     def assign(self, artifact: str, session_name: str) -> None:
         if session_name not in self.sessions:
             raise ValueError(f"unknown session {session_name!r}")
@@ -384,19 +414,19 @@ class SessionRegistry:
     def phase(self, artifact: str, now_ms: int) -> str:
         if not self.calendar.is_trading_day(now_ms):
             return PHASE_INACTIVE
-        return self.session_for(artifact).phase_at(self.calendar.local_dt(now_ms))
+        return self.session_at(artifact, now_ms).phase_at(self.calendar.local_dt(now_ms))
 
     def is_capture_expected(self, artifact: str, now_ms: int) -> bool:
         if not self.calendar.is_trading_day(now_ms):
             return False
-        return self.session_for(artifact).is_capture_expected_at(
+        return self.session_at(artifact, now_ms).is_capture_expected_at(
             self.calendar.local_dt(now_ms)
         )
 
     def is_stale_armed(self, artifact: str, now_ms: int) -> bool:
         if not self.calendar.is_trading_day(now_ms):
             return False
-        return self.session_for(artifact).is_stale_armed_at(
+        return self.session_at(artifact, now_ms).is_stale_armed_at(
             self.calendar.local_dt(now_ms)
         )
 
@@ -428,8 +458,15 @@ class SessionRegistry:
         """Named legs inside artifacts, which are judged for freshness on their own."""
         return tuple(self._contributor_sessions)
 
-    def scheduled_seconds(self, artifact: str) -> int:
-        return self.session_for(artifact).scheduled_seconds()
+    def scheduled_seconds(self, artifact: str, now_ms: int | None = None) -> int:
+        """Continuous seconds owed for ``artifact`` on a day.
+
+        With ``now_ms`` the answer is for that trading date, so a special session's
+        shorter window is the baseline; without it, the configured regular day.
+        """
+        if now_ms is None:
+            return self.session_for(artifact).scheduled_seconds()
+        return self.session_at(artifact, now_ms).scheduled_seconds()
 
     def scheduled_seconds_elapsed(self, artifact: str, now_ms: int) -> int:
         return self.session_for(artifact).scheduled_seconds_elapsed(

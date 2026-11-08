@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, time, timedelta, timezone
 
+from app.ops.market_overrides import SpecialSession, active_overrides
+
 IST_FALLBACK = timezone(timedelta(hours=5, minutes=30))
 
 # Phases
@@ -69,17 +71,37 @@ class TradingCalendar:
         return self.local_dt(now_ms).strftime("%Y-%m-%d")
 
     def is_trading_day(self, now_ms: int) -> bool:
-        dt = self.local_dt(now_ms)
-        if dt.weekday() >= 5:  # 5=Sat, 6=Sun
+        """Weekday and not a holiday — unless an operator special session opens it.
+
+        Special sessions (e.g. Diwali muhurat trading on a weekend) win over both the
+        weekend rule and holidays; operator-added holidays close an otherwise normal day.
+        """
+        day = self.trading_date(now_ms)
+        overrides = active_overrides()
+        if overrides.special_for(day) is not None:
+            return True
+        if self.local_dt(now_ms).weekday() >= 5:  # 5=Sat, 6=Sun
             return False
-        return dt.strftime("%Y-%m-%d") not in self.holidays
+        return day not in self.holidays and day not in overrides.holiday_dates()
+
+    def special_session(self, now_ms: int) -> SpecialSession | None:
+        """The operator special session on ``now_ms``'s trading date, if any."""
+        return active_overrides().special_for(self.trading_date(now_ms))
+
+    def window(self, now_ms: int) -> tuple[time, time]:
+        """``(open, close)`` for ``now_ms``'s date: a special session's, else configured."""
+        special = self.special_session(now_ms)
+        if special is not None:
+            return special.open_time, special.close_time
+        return self.market_open, self.market_close
 
     def phase(self, now_ms: int) -> str:
         if not self.is_trading_day(now_ms):
             return PHASE_HOLIDAY
         t = self.local_dt(now_ms).time()
-        if t < self.market_open:
+        market_open, market_close = self.window(now_ms)
+        if t < market_open:
             return PHASE_PRE_OPEN
-        if t < self.market_close:
+        if t < market_close:
             return PHASE_OPEN
         return PHASE_CLOSED
