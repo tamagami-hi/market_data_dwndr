@@ -116,8 +116,11 @@ export default function MonitorPage() {
           order the single-column mobile layout reads in:
 
               Data loss        | Per-underlying health
-              Frame integrity  | Session history
-              Download history | Compression
+              Download history | Session history
+              Frame integrity  | Compression
+
+          The two scrolling history tables share one tall row; Frame integrity and
+          Compression are fixed-size summaries, so their row sizes to its content.
 
           Columns use a 45:50 ratio: the right carries the wide data tables, the left the
           denser stat surfaces. Session logs sits BELOW the grid as a full-width strip,
@@ -131,15 +134,15 @@ export default function MonitorPage() {
         />
         <UnderlyingHealth rows={telemetry.live.rows} retainedDate={retainedDate} />
 
+        <StorageHistory history={telemetry.history.capture} />
+        <SessionHistory sessions={telemetry.history.sessions} liveSession={liveSession} />
+
         <FrameIntegrity
           rows={telemetry.live.rows}
           globals={telemetry.live.globals}
           expectedFrames={telemetry.context.expectedFrames}
           retainedDate={retainedDate}
         />
-        <SessionHistory sessions={telemetry.history.sessions} liveSession={liveSession} />
-
-        <StorageHistory history={telemetry.history.capture} />
         <CompressionActivity
           current={telemetry.live.compression}
           history={telemetry.history.compression}

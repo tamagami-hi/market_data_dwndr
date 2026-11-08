@@ -94,7 +94,7 @@ export function FrameIntegrity({
       subtitle={`baseline ${formatIndianNumber(expectedFrames, 0)} frames / session${
         retainedDate ? ` · last session ${retainedDate}` : ""
       }`}
-      className="monitor-history-panel"
+      className="monitor-integrity-panel"
     >
       {/* Compact gauge row so the per-stream list below keeps real height rather than
           being squeezed to a few pixels. */}

@@ -420,7 +420,7 @@ a {
 
 /* Session history uses the same six-row cap as the download-history table above, so a
    long recorded history scrolls vertically instead of stretching the panel (and its
-   paired Frame-integrity panel) taller. Row math: the 10px header row is
+   paired Download-history panel) taller. Row math: the 10px header row is
    14px padding + 10px × 1.35 line + 1px border, and each 12px body row is
    14px + 12px × 1.35 + 1px = 31.2px. */
 .monitor-session-scroll {
@@ -428,8 +428,8 @@ a {
 }
 
 /* Frame integrity carries one row per stream, and the universe is now eight artifacts
-   (six indices + STOCKS + INDICES_FnO), so an uncapped list stretched the panel past its
-   paired Session-history table. Five rows stay visible and the rest scroll. Row math:
+   (six indices + STOCKS + INDICES_FnO). On the single-column (narrow) layout five rows
+   stay visible and the rest scroll; the desktop rule below lists every stream. Row math:
    each row is a 12px/16px label line + 2px margin + a 6px bar = 24px, rows are separated
    by a 6px flex gap, and the region's own 12px top and bottom padding sits inside the box
    (border-box). */
@@ -437,17 +437,21 @@ a {
   max-height: calc(24px + 5 * 24px + 4 * 6px);
 }
 
-/* On the two-column dashboard, the history rows (Frame integrity + Session history,
-   Download history + Compression) get one taller fixed height and their lists fill it,
-   instead of stopping at the row caps above while the paired panel left empty space. */
+/* On the two-column dashboard the two scrolling history tables (Download history +
+   Session history) share one row with a taller fixed height, and their lists fill it
+   instead of stopping at the row caps above.
+
+   Frame integrity is paired with Compression instead: both are fixed-size summaries, so
+   that row is content-sized. Every stream is listed without a scrollbar, and the row ends
+   where the longer of the two ends rather than leaving empty space below both. */
 @media (min-width: 1024px) {
   .monitor-history-panel {
     height: 34rem;
   }
 
-  .monitor-history-panel .monitor-integrity-scroll,
   .monitor-history-panel .monitor-session-scroll,
-  .monitor-history-panel .monitor-storage-scroll {
+  .monitor-history-panel .monitor-storage-scroll,
+  .monitor-integrity-panel .monitor-integrity-scroll {
     max-height: none;
   }
 }

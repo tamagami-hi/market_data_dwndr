@@ -60,7 +60,7 @@ export const CompressionActivity = memo(function CompressionActivity({
             ? `last sweep · ${retained.trading_date}`
             : "idle"
       }
-      className="panel-compact h-full monitor-history-panel"
+      className="panel-compact h-full"
     >
       {current ? (
         <div className="space-y-2 p-2">

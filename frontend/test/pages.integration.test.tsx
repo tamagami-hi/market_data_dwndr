@@ -486,6 +486,26 @@ test("uses the requested 45:50 desktop monitor grid with the existing narrow gut
   );
 });
 
+test("pairs the history tables in one row and the frame and compression summaries in the next", () => {
+  const view = render(<MonitorPage />);
+  const grid = view.container.querySelector(".monitor-panel-grid") as HTMLElement;
+  const panelFor = (name: string) =>
+    within(grid).getByRole("heading", { name }).closest(".panel") as HTMLElement;
+  const order = Array.from(grid.children);
+  const position = (name: string) => order.indexOf(panelFor(name));
+
+  // Row order: Download history | Session history, then Frame integrity | Compression.
+  expect(position("Session history")).toBe(position("Download history") + 1);
+  expect(position("Frame integrity")).toBe(position("Session history") + 1);
+  expect(position("Compression")).toBe(position("Frame integrity") + 1);
+
+  // The two scrolling tables share the tall fixed row; the summary row sizes to content.
+  expect(panelFor("Download history")).toHaveClass("monitor-history-panel");
+  expect(panelFor("Session history")).toHaveClass("monitor-history-panel");
+  expect(panelFor("Frame integrity")).not.toHaveClass("monitor-history-panel");
+  expect(panelFor("Compression")).not.toHaveClass("monitor-history-panel");
+});
+
 test("keeps every download-history field in a vertically compact desktop surface", () => {
   render(<MonitorPage />);
   const panel = screen
