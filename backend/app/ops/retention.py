@@ -9,6 +9,7 @@ monotonic timestamps.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -38,6 +39,8 @@ class CaptureSessionHistory:
     index_files: int
     stock_files: int
     indices: tuple[str, ...]
+    # Index futures board (``INDICES_FnO/<date>.bin``), counted on its own.
+    index_fno_files: int = 0
 
 
 @dataclass(frozen=True)
@@ -72,13 +75,18 @@ def scan_storage(
     )
 
 
+CAPTURE_AREAS = ("INDICES", "STOCKS", "INDICES_FnO")
+_SEGMENT = re.compile(r"\.p\d+$")
+
+
 def scan_capture_history(
     market_data_path: str | os.PathLike[str],
     archive_data_path: str | os.PathLike[str],
 ) -> CaptureHistoryReport:
     """Aggregate live-capture storage by trading date across SSD and HDD roots.
 
-    Only the production ``INDICES`` and ``STOCKS`` trees are included. Historical
+    Only the production ``INDICES``, ``STOCKS`` and ``INDICES_FnO`` trees are included
+    (``<date>.pN.bin`` segments count toward their date). Historical
     backfill trees and internal metadata are intentionally excluded. A logical data
     file is counted once if both its transient raw file and verified archive briefly
     coexist during end-of-day compression; physical byte totals still report both.
@@ -86,7 +94,7 @@ def scan_capture_history(
     records: dict[str, dict[str, object]] = {}
 
     def collect(root: Path, pattern: str, *, archived: bool) -> None:
-        for area in ("INDICES", "STOCKS"):
+        for area in CAPTURE_AREAS:
             area_root = root / area
             if not area_root.exists():
                 continue
@@ -94,7 +102,8 @@ def scan_capture_history(
                 suffix = ".bin.zst" if archived else ".bin"
                 if not path.name.endswith(suffix):
                     continue
-                trading_date = path.name.removesuffix(suffix)
+                # ``<date>.pN`` is a later segment of the same day's file.
+                trading_date = _SEGMENT.sub("", path.name.removesuffix(suffix))
                 try:
                     date.fromisoformat(trading_date)
                 except ValueError:
@@ -115,6 +124,7 @@ def scan_capture_history(
                         "logical_files": set(),
                         "index_files": set(),
                         "stock_files": set(),
+                        "index_fno_files": set(),
                         "indices": set(),
                     },
                 )
@@ -137,9 +147,10 @@ def scan_capture_history(
                     if len(relative_parts) >= 2:
                         indices.add(relative_parts[0])
                 else:
-                    stock_files = record["stock_files"]
-                    assert isinstance(stock_files, set)
-                    stock_files.add(logical_key)
+                    key = "index_fno_files" if area == "INDICES_FnO" else "stock_files"
+                    area_files = record[key]
+                    assert isinstance(area_files, set)
+                    area_files.add(logical_key)
 
     collect(Path(market_data_path), "*.bin", archived=False)
     collect(Path(archive_data_path), "*.bin.zst", archived=True)
@@ -169,6 +180,7 @@ def scan_capture_history(
                 index_files=len(index_files),
                 stock_files=len(stock_files),
                 indices=tuple(sorted(str(index) for index in indices)),
+                index_fno_files=len(record["index_fno_files"]),  # type: ignore[arg-type]
             )
         )
 
