@@ -159,3 +159,10 @@ test("the operator key is cleared after each use and never stored", async () => 
   await screen.findByText("Operator key was rejected.");
   expect(keyInput.value).toBe("");
 });
+
+test("the token-time hint defaults to 29 minutes before capture start", async () => {
+  render(<MarketCalendarPage />);
+  await screen.findByText("14:20–15:30");
+  // Defaults: open 09:15, capture 5 minutes early -> 09:10, token 29 minutes before -> 08:41.
+  expect(screen.getByText(/Leave blank for 08:41\./)).toBeInTheDocument();
+});

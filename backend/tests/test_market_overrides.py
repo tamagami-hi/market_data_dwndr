@@ -67,10 +67,15 @@ def _diwali() -> SpecialSession:
 # --- model + store ---------------------------------------------------------- #
 
 
-def test_special_session_defaults_token_fetch_an_hour_before_capture_start():
+def test_special_session_defaults_token_fetch_29_minutes_before_capture_start():
     session = SpecialSession.create(SUNDAY, "14:20", "15:30")
     assert session.capture_start_time == parse_hhmm("14:15")
-    assert session.token_fetch_at == "13:15"
+    assert session.token_fetch_at == "13:46"
+
+
+def test_an_explicit_token_fetch_time_overrides_the_default():
+    session = SpecialSession.create(SUNDAY, "14:20", "15:30", "11:45")
+    assert session.token_fetch_at == "11:45"
 
 
 @pytest.mark.parametrize(

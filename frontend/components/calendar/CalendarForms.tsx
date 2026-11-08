@@ -4,6 +4,9 @@ import { useState, type FormEvent, type ReactNode } from "react";
 
 import { minusMinutes, type CalendarHoliday, type SpecialSessionInput } from "@/lib/marketCalendar";
 
+/** Mirrors the backend default: token fetched this many minutes before capture start. */
+const DEFAULT_TOKEN_LEAD_MINUTES = 29;
+
 const INPUT_CLASS =
   "control min-h-11 w-full border-border bg-surface-2 px-3 text-sm text-primary placeholder:text-muted";
 export const BUTTON_CLASS =
@@ -43,7 +46,7 @@ export function SpecialSessionForm({
   const [note, setNote] = useState("");
 
   const captureStart = minusMinutes(open, lead);
-  const suggestedToken = minusMinutes(captureStart, 60);
+  const suggestedToken = minusMinutes(captureStart, DEFAULT_TOKEN_LEAD_MINUTES);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -80,7 +83,7 @@ export function SpecialSessionForm({
           className={INPUT_CLASS}
         />
       </Field>
-      <Field label="Fetch token from (IST)" hint={`Leave blank for ${suggestedToken || "an hour before capture"}. Retries every minute until it succeeds.`}>
+      <Field label="Fetch token from (IST)" hint={`Leave blank for ${suggestedToken || `${DEFAULT_TOKEN_LEAD_MINUTES} minutes before capture`}. Retries every minute until it succeeds.`}>
         <input type="time" value={tokenAt} onChange={(e) => setTokenAt(e.target.value)} className={INPUT_CLASS} />
       </Field>
       <Field label="Note">

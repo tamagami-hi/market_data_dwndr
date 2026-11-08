@@ -36,7 +36,9 @@ logger = logging.getLogger(__name__)
 OVERRIDES_FILENAME = "market_calendar.json"
 RECHECK_INTERVAL_S = 1.0
 DEFAULT_CAPTURE_LEAD_MINUTES = 5
-DEFAULT_TOKEN_LEAD_MINUTES = 60
+# When a special session is saved without a token fetch time, the token is fetched this
+# many minutes before its capture start. An explicit time always wins.
+DEFAULT_TOKEN_LEAD_MINUTES = 29
 MAX_CAPTURE_LEAD_MINUTES = 120
 MAX_NOTE_LENGTH = 120
 MAX_ENTRIES = 400
