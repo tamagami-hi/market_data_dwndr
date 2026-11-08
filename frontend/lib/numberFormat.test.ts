@@ -4,6 +4,7 @@ import {
   formatBytes,
   formatDateClock,
   formatDuration,
+  formatIstClock,
   formatPercent,
   formatSecondsCompact,
   formatThroughput,
@@ -59,4 +60,11 @@ test("formatDateClock includes the date, in full or short form", () => {
   expect(formatDateClock(ms)).toBe("2026-11-06 15:40:00");
   expect(formatDateClock(ms, true)).toBe("11-06 15:40");
   expect(formatDateClock(null)).toBe("--");
+});
+
+test("formatIstClock renders exchange time whatever the viewer's timezone", () => {
+  // 2026-11-05 10:23:00 IST = 04:53:00 UTC.
+  expect(formatIstClock(Date.UTC(2026, 10, 5, 4, 53, 0))).toBe("10:23:00");
+  expect(formatIstClock(null)).toBe("--");
+  expect(formatIstClock(0)).toBe("--");
 });

@@ -1,4 +1,5 @@
 import type { Severity } from "@/lib/monitor/severity";
+import type { SessionLossCauses } from "@/lib/sessionReport";
 
 /**
  * Why scheduled seconds have no frame, split into causes that reconcile with the total.
@@ -16,11 +17,17 @@ export interface LossCauseFields {
   awaiting_first_tick_seconds?: number;
   write_path_seconds?: number;
   unclassified_seconds?: number;
+  /** The backend's ledger-attributed split; preferred over the engine buckets above. */
+  loss_causes?: SessionLossCauses;
 }
 
 export type LossCauseKey =
   | "stale_feed"
+  | "restart_loop"
   | "process_restart"
+  | "awaiting_token"
+  | "maintenance"
+  | "process_down"
   | "not_running"
   | "downtime"
   | "awaiting_first_tick"
@@ -36,35 +43,55 @@ export interface LossCause {
   color: string;
 }
 
+const PROCESS_DOWN_COLOR = "color-mix(in srgb, var(--danger) 55%, var(--surface-3))";
+
 /** Fixed order and colour per cause, so the bar reads the same on every row. */
 export const LOSS_CAUSE_STYLE: ReadonlyArray<Omit<LossCause, "seconds">> = [
   { key: "stale_feed", label: "stale feed", color: "var(--warning)" },
+  { key: "restart_loop", label: "restart loop", color: "var(--danger)" },
   { key: "process_restart", label: "process restart", color: "var(--marker-pain)" },
-  { key: "not_running", label: "not running", color: "var(--danger)" },
-  { key: "downtime", label: "downtime (unsplit)", color: "var(--danger)" },
+  {
+    key: "awaiting_token",
+    label: "awaiting token",
+    color: "color-mix(in srgb, var(--warning) 50%, var(--danger))",
+  },
+  { key: "maintenance", label: "maintenance", color: "var(--text-secondary)" },
+  { key: "process_down", label: "process down", color: PROCESS_DOWN_COLOR },
+  { key: "not_running", label: "not running", color: PROCESS_DOWN_COLOR },
+  { key: "downtime", label: "downtime (unsplit)", color: PROCESS_DOWN_COLOR },
   { key: "awaiting_first_tick", label: "awaiting first tick", color: "var(--accent)" },
   { key: "write_path", label: "write path", color: "var(--marker-atm)" },
   { key: "unclassified", label: "unclassified", color: "var(--text-muted)" },
   { key: "unaccounted", label: "unaccounted", color: "var(--border-strong)" },
 ];
 
+/** Causes that only appear when non-zero: residuals, not categories worth a "0s" line. */
+const RESIDUAL_CAUSES = new Set<LossCauseKey>(["downtime", "unaccounted"]);
+
 function seconds(value: number | undefined): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
-/**
- * Every cause with its seconds, in display order, zero-valued causes included.
- *
- * ``downtime`` only appears for the part of ``downtime_seconds`` the record did not split
- * into restart vs not-running (older records, or a live payload without the split).
- * ``unaccounted`` only appears when the stated causes fall short of ``missing_seconds``.
- * Returns null when the record has no scheduled breakdown at all.
- */
-export function lossCauses(fields: LossCauseFields): LossCause[] | null {
-  if (typeof fields.missing_seconds !== "number") return null;
+/** The backend's ledger split: restart loop, token wait and maintenance are their own causes. */
+function fromLedger(causes: SessionLossCauses): Partial<Record<LossCauseKey, number>> {
+  return {
+    stale_feed: seconds(causes.stale_feed_seconds),
+    restart_loop: seconds(causes.restart_loop_seconds),
+    process_restart: seconds(causes.restart_seconds),
+    awaiting_token: seconds(causes.awaiting_token_seconds),
+    maintenance: seconds(causes.maintenance_seconds),
+    process_down: seconds(causes.process_down_seconds),
+    awaiting_first_tick: seconds(causes.awaiting_first_tick_seconds),
+    write_path: seconds(causes.write_path_seconds),
+    unclassified: seconds(causes.unclassified_seconds),
+  };
+}
+
+/** The engine's own buckets (records and live payloads without ``loss_causes``). */
+function fromEngine(fields: LossCauseFields): Partial<Record<LossCauseKey, number>> {
   const restart = seconds(fields.restart_downtime_seconds);
   const notRunning = seconds(fields.not_running_seconds);
-  const raw: Record<LossCauseKey, number> = {
+  return {
     stale_feed: seconds(fields.stale_feed_seconds),
     process_restart: restart,
     not_running: notRunning,
@@ -72,17 +99,36 @@ export function lossCauses(fields: LossCauseFields): LossCause[] | null {
     awaiting_first_tick: seconds(fields.awaiting_first_tick_seconds),
     write_path: seconds(fields.write_path_seconds),
     unclassified: seconds(fields.unclassified_seconds),
-    unaccounted: 0,
   };
-  const attributed = Object.values(raw).reduce((sum, value) => sum + value, 0);
-  const withRemainder = {
-    ...raw,
-    unaccounted: Math.max(0, seconds(fields.missing_seconds) - attributed),
-  };
-  return LOSS_CAUSE_STYLE.map((style) => ({ ...style, seconds: withRemainder[style.key] }));
 }
 
-/** Causes that actually cost time; zero-valued and "only when non-zero" parts dropped. */
+/**
+ * Every cause that applies to the record, in display order, zero-valued ones included.
+ *
+ * With the backend's ``loss_causes`` the not-running time is split by the incident ledger
+ * (restart loop / restart / awaiting token / maintenance / process down). Without it the
+ * engine buckets are used, and ``downtime`` only appears for the part of
+ * ``downtime_seconds`` the record did not split into restart vs not running.
+ * ``unaccounted`` only appears when the stated causes fall short of ``missing_seconds``.
+ * Returns null when the record has no scheduled breakdown at all.
+ */
+export function lossCauses(fields: LossCauseFields): LossCause[] | null {
+  if (typeof fields.missing_seconds !== "number") return null;
+  const parts = fields.loss_causes ? fromLedger(fields.loss_causes) : fromEngine(fields);
+  const attributed = Object.values(parts).reduce((sum, value) => sum + (value ?? 0), 0);
+  const withRemainder = {
+    ...parts,
+    unaccounted: Math.max(0, seconds(fields.missing_seconds) - attributed),
+  };
+  return LOSS_CAUSE_STYLE.flatMap((style) => {
+    const value = withRemainder[style.key];
+    if (value === undefined) return [];
+    if (RESIDUAL_CAUSES.has(style.key) && value <= 0) return [];
+    return [{ ...style, seconds: value }];
+  });
+}
+
+/** Causes that actually cost time. */
 export function activeLossCauses(fields: LossCauseFields): LossCause[] {
   return (lossCauses(fields) ?? []).filter((cause) => cause.seconds > 0);
 }

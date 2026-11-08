@@ -235,6 +235,8 @@ export function useMonitorTelemetry() {
       sessions: stats?.session_history ?? [],
       capture: captureHistory,
       compression: stats?.compression_history ?? null,
+      /** The backend's outcome + explanation for the monitor's (or today's) date. */
+      sessionOutcome: stats?.session_outcome ?? null,
     },
     context: {
       captureRunning: stats?.capture_running ?? false,

@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 
 import { SessionDetails } from "@/components/monitor/SessionDetails";
@@ -12,48 +12,60 @@ const BASE = {
   streams: [],
 };
 
-test("extension points: outcome and incidents render only when the backend sends them", () => {
-  const plain = render(<SessionDetails session={normalizeSessionSummary(BASE)!} />);
-  expect(screen.queryByText("Outcome")).toBeNull();
-  expect(screen.queryByLabelText("Incidents")).toBeNull();
-  plain.unmount();
+const field = (label: string) => screen.getByText(label, { selector: "dt" }).nextElementSibling;
 
-  const session = normalizeSessionSummary({
-    ...BASE,
-    outcome: { label: "degraded", detail: "network outage" },
-    incidents: [
-      { start_ms: 1_793_818_380_000, end_ms: 1_793_821_440_000, cause: "crash loop", seconds: 3_060 },
-      { start_ms: "bad", cause: "dropped" },
-      { start_at: 1_793_836_200_000, end_at: 1_793_836_260_000, cause: "restart", seconds: 60 },
-    ],
-  })!;
-  expect(session.incidents).toHaveLength(2);
-  render(<SessionDetails session={session} />);
-  expect(screen.getByText("Outcome", { selector: "dt" }).nextElementSibling).toHaveTextContent(
-    "degraded: network outage",
-  );
-  const incidents = screen.getByLabelText("Incidents");
-  expect(within(incidents).getAllByRole("listitem")).toHaveLength(2);
-  expect(incidents).toHaveTextContent("crash loop · 51m 00s");
-});
-
-test("outcome may be a bare string; malformed values are ignored", () => {
-  expect(normalizeSessionSummary({ ...BASE, outcome: "complete" })!.outcome).toEqual({ label: "complete" });
-  expect(normalizeSessionSummary({ ...BASE, outcome: { label: "" } })!.outcome).toBeUndefined();
-  expect(normalizeSessionSummary({ ...BASE, incidents: [] })!.incidents).toBeUndefined();
-  expect(normalizeSessionSummary({ ...BASE, incidents: "x" })!.incidents).toBeUndefined();
-});
-
-test("a legacy record shows dashes for the breakdown and lists recovery only when it failed", () => {
-  const view = render(<SessionDetails session={normalizeSessionSummary(BASE)!} />);
-  const field = (label: string) => screen.getByText(label, { selector: "dt" }).nextElementSibling;
-  expect(field("Completeness")).toHaveTextContent("--");
+test("a row the backend did not describe shows no outcome, explanation or ledger section", () => {
+  render(<SessionDetails session={normalizeSessionSummary(BASE)!} />);
+  expect(screen.queryByLabelText("What happened")).toBeNull();
+  expect(screen.queryByLabelText("Incident counts")).toBeNull();
+  expect(screen.queryByText(/No incident ledger/)).toBeNull();
+  expect(field("Telemetry completeness")).toHaveTextContent("--");
+  expect(field("Archive completeness")).toHaveTextContent("not reconciled");
   expect(field("Missing")).toHaveTextContent("--");
   expect(field("WS connect attempts")).toHaveTextContent("--");
   expect(screen.queryByText("Process restart")).toBeNull();
   expect(screen.queryByText("Recovery")).toBeNull();
-  view.unmount();
+});
 
-  render(<SessionDetails session={normalizeSessionSummary({ ...BASE, recovery_abandoned: true })!} />);
-  expect(screen.getByText("Recovery", { selector: "dt" }).nextElementSibling).toHaveTextContent("abandoned");
+test("a day recorded before the ledger says so instead of showing zero counts", () => {
+  render(
+    <SessionDetails
+      session={normalizeSessionSummary({
+        ...BASE,
+        trading_date: "2026-10-19",
+        incidents_recorded: false,
+        process_starts: null,
+        failed_starts: null,
+        escalations: 0,
+        explanation: ["partial: 97.8% of 23100 scheduled seconds captured"],
+      })!}
+    />,
+  );
+  expect(screen.getByText("No incident ledger for this date (recorded before 2026-11-08)."))
+    .toBeInTheDocument();
+  expect(screen.queryByLabelText("Incident counts")).toBeNull();
+  expect(screen.queryByText("Escalations")).toBeNull();
+  expect(screen.getByLabelText("What happened")).toHaveTextContent("partial: 97.8%");
+});
+
+test("lists recovery only when it failed, and names a special session", () => {
+  render(
+    <SessionDetails
+      session={normalizeSessionSummary({
+        ...BASE,
+        recovery_abandoned: true,
+        session_window: {
+          open: "18:00",
+          close: "19:15",
+          is_special: true,
+          note: "Muhurat",
+          trading_day: true,
+          scheduled_seconds: 4_500,
+          windows: [[1, 2]],
+        },
+      })!}
+    />,
+  );
+  expect(field("Recovery")).toHaveTextContent("abandoned");
+  expect(screen.getByText("special session 18:00–19:15 · Muhurat")).toBeInTheDocument();
 });

@@ -7,15 +7,22 @@ import { SessionDetails } from "@/components/monitor/SessionDetails";
 import { Panel } from "@/components/ui/Panel";
 import { ResponsiveDisclosure } from "@/components/ui/ResponsiveDisclosure";
 import { StateMessage } from "@/components/ui/StateMessage";
+import { StatusIndicator } from "@/components/ui/StatusIndicator";
+import { useSessionPages, type SessionPages } from "@/hooks/useSessionPages";
 import type { SessionSummary } from "@/lib/api";
 import {
   LOSS_CAUSE_STYLE,
   TONE_TEXT,
   activeLossCauses,
   lossCauses,
-  lossTone,
-  scheduleLoss,
 } from "@/lib/monitor/lossCauses";
+import {
+  OUTCOME_LABEL,
+  OUTCOME_SEVERITY,
+  completenessTone,
+  primaryCompleteness,
+  specialSessionLabel,
+} from "@/lib/monitor/sessionOutcome";
 import {
   formatBytes,
   formatIndianNumber,
@@ -62,9 +69,28 @@ function MissingCell({ session }: { session: SessionSummary }) {
   );
 }
 
-function ScheduleLossValue({ session }: { session: SessionSummary }) {
-  const loss = scheduleLoss(session);
-  return <span className={TONE_TEXT[lossTone(loss)]}>{formatPercent(loss, 2)}</span>;
+/** The day's primary figure: captured over scheduled seconds (see sessionOutcome.ts). */
+function CompletenessValue({ session }: { session: SessionSummary }) {
+  const pct = primaryCompleteness(session);
+  return <span className={TONE_TEXT[completenessTone(pct)]}>{formatPercent(pct, 2)}</span>;
+}
+
+/** Outcome chip and, for an operator special session, its hours. */
+function SessionTags({ session }: { session: SessionSummary }) {
+  const special = specialSessionLabel(session.session_window);
+  if (!session.outcome && !special) return null;
+  return (
+    <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs font-normal">
+      {session.outcome && (
+        <StatusIndicator
+          compact
+          label={OUTCOME_LABEL[session.outcome]}
+          severity={OUTCOME_SEVERITY[session.outcome]}
+        />
+      )}
+      {special && <span className="text-warning">{special}</span>}
+    </span>
+  );
 }
 
 /** Colour key for the cause bars, limited to the causes that occur in the listed rows. */
@@ -89,13 +115,14 @@ function MobileSummary({ session, isLive }: { session: SessionSummary; isLive: b
         <span className="font-semibold text-primary">
           {session.trading_date}
           {isLive && <span className="ml-2 status-success">live</span>}
+          <SessionTags session={session} />
         </span>
         <span className="text-secondary" title="Process span: wall-clock from the first capture start">
           span {formatUptime(session.uptime_ms)}
         </span>
       </div>
       <div className="mt-1 grid grid-cols-4 gap-2 text-muted">
-        <span><ScheduleLossValue session={session} /> loss</span>
+        <span><CompletenessValue session={session} /> captured</span>
         <span>
           {session.missing_seconds === undefined
             ? "--"
@@ -143,12 +170,13 @@ function DesktopRow({
           </button>
           {isLive && <span className="ml-2 text-xs status-success">live</span>}
           {session.exhausted && <span className="ml-2 text-xs text-danger">stalled</span>}
+          <SessionTags session={session} />
         </td>
         <td className="text-right font-mono text-secondary">
           {formatIndianNumber(session.frames_written, 0)}
         </td>
         <td className="text-right font-mono">
-          <ScheduleLossValue session={session} />
+          <CompletenessValue session={session} />
         </td>
         <td className="min-w-20 text-right font-mono">
           <MissingCell session={session} />
@@ -172,6 +200,34 @@ function DesktopRow({
   );
 }
 
+/** "N of TOTAL sessions" and the button that pages in the next older batch. */
+function OlderSessions({ pages, shown }: { pages: SessionPages; shown: number }) {
+  if (!pages.hasMore && !pages.error) return null;
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-3 py-1.5 text-xs">
+      <span className="text-muted" aria-live="polite">
+        {pages.error ? (
+          <span className="text-danger">{pages.error}</span>
+        ) : pages.total === null ? (
+          `${shown} most recent sessions`
+        ) : (
+          `${shown} of ${pages.total} sessions`
+        )}
+      </span>
+      {pages.hasMore && (
+        <button
+          type="button"
+          className="control min-h-11 px-3 text-xs text-accent hover:bg-surface-2"
+          onClick={pages.loadOlder}
+          disabled={pages.isLoading}
+        >
+          {pages.isLoading ? "Loading…" : "Load older sessions"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export const SessionHistory = memo(function SessionHistory({
   sessions,
   liveSession = null,
@@ -181,13 +237,15 @@ export const SessionHistory = memo(function SessionHistory({
   liveSession?: SessionSummary | null;
 }) {
   const [openDates, setOpenDates] = useState<ReadonlySet<string>>(() => new Set());
+  // /api/stats carries the recent sessions; older ones are paged in on request.
+  const pages = useSessionPages(sessions);
+  const recorded = pages.sessions;
   // The recorded log only gains a session after finalization, so while capture runs
   // merge a live row whose Frames value tracks the frames actually written to the
-  // .bin files. A recorded row for the same date wins (it is the finalized truth),
-  // so filter it out to avoid showing the date twice.
+  // .bin files, in place of any recorded row for the same date.
   const rows = liveSession
-    ? [liveSession, ...sessions.filter((s) => s.trading_date !== liveSession.trading_date)]
-    : sessions;
+    ? [liveSession, ...recorded.filter((s) => s.trading_date !== liveSession.trading_date)]
+    : recorded;
   const isLive = (session: SessionSummary) =>
     liveSession !== null && session.trading_date === liveSession.trading_date;
   const toggle = (date: string) =>
@@ -199,7 +257,14 @@ export const SessionHistory = memo(function SessionHistory({
     });
 
   return (
-    <Panel title="Session history" subtitle={`${sessions.length} recorded sessions`}>
+    <Panel
+      title="Session history"
+      subtitle={
+        pages.total === null
+          ? `${recorded.length} recorded sessions`
+          : `${recorded.length} of ${pages.total} sessions`
+      }
+    >
       {rows.length === 0 ? (
         <div className="p-3">
           <StateMessage title="No completed sessions">A session record appears after capture finalization.</StateMessage>
@@ -225,7 +290,9 @@ export const SessionHistory = memo(function SessionHistory({
                 <tr>
                   <th className="text-left">Session</th>
                   <th className="text-right">Frames</th>
-                  <th className="text-right">Loss vs schedule</th>
+                  <th className="text-right" title="Captured over scheduled seconds">
+                    Completeness
+                  </th>
                   <th className="text-right" title="Scheduled seconds with no frame, split by cause">
                     Missing
                   </th>
@@ -251,6 +318,7 @@ export const SessionHistory = memo(function SessionHistory({
               </tbody>
             </table>
           </div>
+          <OlderSessions pages={pages} shown={recorded.length} />
         </>
       )}
     </Panel>

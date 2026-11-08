@@ -83,6 +83,31 @@ describe("monitor adapters and view model", () => {
     expect(current?.session_history?.[0]?.stale_seconds).toBe(13_579);
   });
 
+  test("carries the day's session_outcome and drops a malformed one", () => {
+    const stats = normalizeDashboardStats({
+      capture_running: false,
+      monitor: null,
+      session_outcome: {
+        trading_date: "2026-11-06",
+        outcome: "complete",
+        completeness_pct: 100,
+        explanation: ["complete: 100.0% of 23100 scheduled seconds captured"],
+      },
+    });
+    expect(stats?.session_outcome?.outcome).toBe("complete");
+    expect(stats?.session_outcome?.explanation).toHaveLength(1);
+
+    const malformed = normalizeDashboardStats({
+      capture_running: false,
+      monitor: null,
+      session_outcome: { outcome: "complete" },
+    });
+    expect(malformed).not.toBeNull();
+    expect(malformed?.session_outcome).toBeNull();
+    expect(normalizeDashboardStats({ capture_running: false, monitor: null })?.session_outcome)
+      .toBeNull();
+  });
+
   test("normalizes an older stats payload with safe empty history defaults", () => {
     const stats = normalizeDashboardStats({
       generated_at: 100,

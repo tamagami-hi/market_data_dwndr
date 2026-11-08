@@ -1,13 +1,9 @@
-import type { SessionIncident, SessionSummary } from "@/lib/api";
-import {
-  lossCauses,
-  scheduleCompleteness,
-  scheduleLoss,
-  type LossCause,
-} from "@/lib/monitor/lossCauses";
+import { SessionIncidents } from "@/components/monitor/SessionIncidents";
+import type { SessionSummary } from "@/lib/api";
+import { lossCauses, scheduleCompleteness, scheduleLoss, type LossCause } from "@/lib/monitor/lossCauses";
+import { specialSessionLabel } from "@/lib/monitor/sessionOutcome";
 import {
   formatBytes,
-  formatClockTime,
   formatIndianNumber,
   formatPercent,
   formatSecondsCompact,
@@ -15,16 +11,6 @@ import {
 } from "@/lib/numberFormat";
 
 type Field = readonly [label: string, value: string];
-
-/** Causes always listed, even at 0s, so "no restart time" is stated rather than implied. */
-const CORE_CAUSES = new Set([
-  "stale_feed",
-  "process_restart",
-  "not_running",
-  "awaiting_first_tick",
-  "write_path",
-  "unclassified",
-]);
 
 function capitalized(label: string): string {
   return label.charAt(0).toUpperCase() + label.slice(1);
@@ -34,21 +20,8 @@ function optionalCount(value: number | undefined): string {
   return value === undefined ? "--" : formatIndianNumber(value, 0);
 }
 
-function completenessField(session: SessionSummary): Field {
-  const completeness = scheduleCompleteness(session);
-  if (completeness === null) return ["Completeness", "--"];
-  const denominator = session.scheduled_seconds_elapsed || session.scheduled_seconds || 0;
-  return [
-    "Completeness",
-    `${formatPercent(completeness, 2)} (${formatIndianNumber(session.captured_seconds ?? 0, 0)} / ${formatIndianNumber(denominator, 0)}s)`,
-  ];
-}
-
 function causeFields(causes: LossCause[] | null): Field[] {
-  if (!causes) return [];
-  return causes
-    .filter((cause) => CORE_CAUSES.has(cause.key) || cause.seconds > 0)
-    .map((cause) => [capitalized(cause.label), formatSecondsCompact(cause.seconds)] as const);
+  return (causes ?? []).map((cause) => [capitalized(cause.label), formatSecondsCompact(cause.seconds)] as const);
 }
 
 function recoveryField(session: SessionSummary): Field[] {
@@ -59,11 +32,6 @@ function recoveryField(session: SessionSummary): Field[] {
 
 function sessionFields(session: SessionSummary): Field[] {
   return [
-    // EXTENSION POINT: the backend's per-session verdict, rendered only when present.
-    ...(session.outcome
-      ? [["Outcome", [session.outcome.label, session.outcome.detail].filter(Boolean).join(": ")] as const]
-      : []),
-    completenessField(session),
     ["Loss vs schedule", formatPercent(scheduleLoss(session), 2)],
     [
       "Missing",
@@ -82,7 +50,6 @@ function sessionFields(session: SessionSummary): Field[] {
     ["WS connect attempts", optionalCount(session.ws_connect_attempts)],
     ["In-process reconnects", optionalCount(session.in_process_reconnects)],
     ["Reconnects", formatIndianNumber(session.reconnects, 0)],
-    ["Restart escalations", formatIndianNumber(session.escalations ?? 0, 0)],
     ...recoveryField(session),
     ["Dropped batches", formatIndianNumber(session.dropped_batches, 0)],
     ["Drop rate", formatPercent(session.drop_rate_pct, 3)],
@@ -95,31 +62,81 @@ function sessionFields(session: SessionSummary): Field[] {
   ];
 }
 
-/** EXTENSION POINT: incident timeline, rendered only when the backend supplies one. */
-function IncidentList({ incidents }: { incidents: SessionIncident[] }) {
+/** The backend's plain-language account of the day, biggest cause first. */
+function Explanation({ lines }: { lines: string[] | undefined }) {
+  if (!lines || lines.length === 0) return null;
   return (
-    <ol className="mt-3 space-y-1 border-t border-border pt-2 text-xs" aria-label="Incidents">
-      {incidents.map((incident) => (
-        <li key={`${incident.start_ms}-${incident.cause}`} className="grid grid-cols-[auto_1fr] gap-2">
-          <time className="font-mono text-accent">
-            {formatClockTime(incident.start_ms)}
-            {incident.end_ms ? `–${formatClockTime(incident.end_ms)}` : ""}
-          </time>
-          <span className="text-secondary">
-            {incident.cause}
-            {incident.seconds !== undefined && ` · ${formatSecondsCompact(incident.seconds)}`}
-            {incident.detail && <span className="ml-1 text-muted">{incident.detail}</span>}
-          </span>
+    <ul className="space-y-0.5 text-xs" aria-label="What happened">
+      {lines.map((line, index) => (
+        <li key={`${index}-${line}`} className={index === 0 ? "font-semibold text-primary" : "text-secondary"}>
+          {line}
         </li>
       ))}
-    </ol>
+    </ul>
+  );
+}
+
+function telemetryCompleteness(session: SessionSummary): string {
+  const pct = session.completeness_pct ?? scheduleCompleteness(session);
+  if (pct === null || pct === undefined) return "--";
+  const basis =
+    session.completeness_basis_seconds ||
+    session.scheduled_seconds_elapsed ||
+    session.scheduled_seconds ||
+    0;
+  const captured = session.captured_seconds;
+  return captured === undefined || basis <= 0
+    ? formatPercent(pct, 2)
+    : `${formatPercent(pct, 2)} (${formatIndianNumber(captured, 0)} / ${formatIndianNumber(basis, 0)}s)`;
+}
+
+function archiveCompleteness(session: SessionSummary): string {
+  const archive = session.archive_reconciliation;
+  if (!archive) return "not reconciled";
+  const worst = archive.worst_artifact ? `worst ${archive.worst_artifact}, ` : "";
+  return `${formatPercent(archive.completeness_pct, 2)} (${worst}${formatIndianNumber(
+    archive.gap_count,
+    0,
+  )} gaps, ${formatIndianNumber(archive.artifact_count, 0)} artifacts)`;
+}
+
+/** Telemetry (what the process counted) beside archive truth (what is on disk). */
+function CompletenessComparison({ session }: { session: SessionSummary }) {
+  const special = specialSessionLabel(session.session_window);
+  const fields: Field[] = [
+    ["Telemetry completeness", telemetryCompleteness(session)],
+    ["Archive completeness", archiveCompleteness(session)],
+  ];
+  return (
+    <div className="text-xs">
+      <dl className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2" aria-label="Completeness">
+        {fields.map(([label, value]) => (
+          <div key={label}>
+            <dt className="text-muted">{label}</dt>
+            <dd className="mt-0.5 font-mono text-primary">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      {session.outcome_basis === "archive" && (
+        <p className="mt-1 text-warning">The archive figure is worse and decides the outcome.</p>
+      )}
+      {special && (
+        <p className="mt-1 text-secondary">
+          {special}
+          {session.session_window?.note ? ` · ${session.session_window.note}` : ""}
+        </p>
+      )}
+    </div>
   );
 }
 
 export function SessionDetails({ session }: { session: SessionSummary }) {
   return (
-    <div>
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3 lg:grid-cols-4">
+    <div className="space-y-3 text-xs">
+      <Explanation lines={session.explanation} />
+      <CompletenessComparison session={session} />
+      <SessionIncidents session={session} />
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-2 border-t border-border pt-2 sm:grid-cols-3 lg:grid-cols-4">
         {sessionFields(session).map(([label, value]) => (
           <div key={label}>
             <dt className="text-muted">{label}</dt>
@@ -127,9 +144,6 @@ export function SessionDetails({ session }: { session: SessionSummary }) {
           </div>
         ))}
       </dl>
-      {session.incidents && session.incidents.length > 0 && (
-        <IncidentList incidents={session.incidents} />
-      )}
     </div>
   );
 }

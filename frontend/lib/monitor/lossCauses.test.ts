@@ -22,17 +22,64 @@ test("splits the 2026-11-05 outage into causes that reconcile with the missing t
     not_running_seconds: 3_032,
   })!;
   const bySeconds = Object.fromEntries(causes.map((cause) => [cause.key, cause.seconds]));
+  // Residual buckets (unsplit downtime, unaccounted) only appear when non-zero.
   expect(bySeconds).toEqual({
     stale_feed: 54,
     process_restart: 98,
     not_running: 3_032,
-    downtime: 0,
     awaiting_first_tick: 0,
     write_path: 0,
     unclassified: 0,
-    unaccounted: 0,
   });
   expect(causes.reduce((sum, cause) => sum + cause.seconds, 0)).toBe(3_184);
+});
+
+test("prefers the backend's ledger split: the 51 minutes are a restart loop", () => {
+  const causes = activeLossCauses({
+    missing_seconds: 3_184,
+    // Engine buckets say "not running"; the ledger knows better and wins.
+    restart_downtime_seconds: 98,
+    not_running_seconds: 3_032,
+    loss_causes: {
+      stale_feed_seconds: 54,
+      awaiting_first_tick_seconds: 0,
+      write_path_seconds: 0,
+      unclassified_seconds: 0,
+      restart_seconds: 45,
+      restart_loop_seconds: 3_070,
+      awaiting_token_seconds: 0,
+      maintenance_seconds: 0,
+      process_down_seconds: 15,
+    },
+  });
+  expect(causes.map((cause) => [cause.label, cause.seconds])).toEqual([
+    ["stale feed", 54],
+    ["restart loop", 3_070],
+    ["process restart", 45],
+    ["process down", 15],
+  ]);
+});
+
+test("ledger causes that fall short of the total leave an unaccounted remainder", () => {
+  const causes = activeLossCauses({
+    missing_seconds: 100,
+    loss_causes: {
+      stale_feed_seconds: 0,
+      awaiting_first_tick_seconds: 0,
+      write_path_seconds: 0,
+      unclassified_seconds: 0,
+      restart_seconds: 0,
+      restart_loop_seconds: 0,
+      awaiting_token_seconds: 60,
+      maintenance_seconds: 30,
+      process_down_seconds: 0,
+    },
+  });
+  expect(causes.map((cause) => [cause.key, cause.seconds])).toEqual([
+    ["awaiting_token", 60],
+    ["maintenance", 30],
+    ["unaccounted", 10],
+  ]);
 });
 
 test("keeps unsplit downtime and an unattributed remainder visible", () => {

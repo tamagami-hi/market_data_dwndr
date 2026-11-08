@@ -63,6 +63,13 @@ export default function MonitorPage() {
     ],
   );
 
+  // Only show the backend's verdict next to the figures it describes: the snapshot's date
+  // when retained, otherwise today's.
+  const shownDay = retainedDate ?? telemetry.context.tradingDate;
+  const candidateOutcome = telemetry.history.sessionOutcome ?? null;
+  const sessionOutcome =
+    candidateOutcome && candidateOutcome.trading_date === shownDay ? candidateOutcome : null;
+
   return (
     <PageFrame>
       <MonitorRestNotifications
@@ -117,7 +124,11 @@ export default function MonitorPage() {
           as it did in v0.1.26 — it is a ticker, not a data surface, so pairing it into a
           row forced every other row taller to match. */}
       <div className="monitor-panel-grid grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,45fr)_minmax(0,50fr)]">
-        <DataLossDiagnostics globals={telemetry.live.globals} retainedDate={retainedDate} />
+        <DataLossDiagnostics
+          globals={telemetry.live.globals}
+          retainedDate={retainedDate}
+          sessionOutcome={sessionOutcome}
+        />
         <UnderlyingHealth rows={telemetry.live.rows} retainedDate={retainedDate} />
 
         <FrameIntegrity

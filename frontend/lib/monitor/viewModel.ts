@@ -353,6 +353,11 @@ export function normalizeDashboardStats(value: unknown): DashboardStats | null {
   const sessionHistory = rawSessionHistory.map(normalizeSessionSummary);
   if (sessionHistory.some((session) => session === null)) return null;
   const refresh = asRecord(stats.refresh_window);
+  // The day's described outcome is advisory: a malformed one is dropped, not fatal.
+  const sessionOutcome =
+    stats.session_outcome === null || stats.session_outcome === undefined
+      ? null
+      : normalizeSessionSummary(stats.session_outcome);
   return {
     generated_at: finite(stats.generated_at),
     capture_running: stats.capture_running,
@@ -363,6 +368,7 @@ export function normalizeDashboardStats(value: unknown): DashboardStats | null {
     monitor_persisted: bool(stats.monitor_persisted),
     monitor_trading_date: optionalText(stats.monitor_trading_date),
     session_history: sessionHistory as SessionSummary[],
+    session_outcome: sessionOutcome,
     refresh_window: refresh
       ? {
           auth_poll_start: text(refresh.auth_poll_start),

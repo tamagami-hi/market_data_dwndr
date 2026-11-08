@@ -1,7 +1,9 @@
 import { LossCauseBar, LossCauseLegend } from "@/components/monitor/LossCauseBar";
+import { SessionOutcomeStrip } from "@/components/monitor/SessionOutcomeStrip";
 import { Metric } from "@/components/ui/Metric";
 import { Panel } from "@/components/ui/Panel";
 import { StateMessage } from "@/components/ui/StateMessage";
+import type { SessionSummary } from "@/lib/api";
 import { activeLossCauses } from "@/lib/monitor/lossCauses";
 import { formatIndianNumber, formatPercent } from "@/lib/numberFormat";
 import { lossSeverity } from "@/lib/monitor/severity";
@@ -173,10 +175,13 @@ function FeedHealthStrip({ globals }: { globals: GlobalStatus }) {
 export function DataLossDiagnostics({
   globals,
   retainedDate = null,
+  sessionOutcome = null,
 }: {
   globals: GlobalStatus | null;
   /** Set when the figures are a retained snapshot of that session, not live telemetry. */
   retainedDate?: string | null;
+  /** The backend's outcome for the day shown (``/api/stats.session_outcome``), if any. */
+  sessionOutcome?: SessionSummary | null;
 }) {
   const staleSeconds = globals?.stale_seconds ?? 0;
   const gridElapsed = globals?.grid_seconds_elapsed ?? 0;
@@ -258,6 +263,7 @@ export function DataLossDiagnostics({
     >
       {items.length > 0 && globals ? (
         <>
+          <SessionOutcomeStrip outcome={sessionOutcome} />
           <FeedHealthStrip globals={globals} />
           <RecoveryBanner globals={globals} />
           <LossBreakdown globals={globals} />

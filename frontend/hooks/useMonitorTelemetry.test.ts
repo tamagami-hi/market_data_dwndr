@@ -224,6 +224,7 @@ test("marks Friday's snapshot as retained on Sunday and carries today's phase an
     monitor_persisted: true,
     monitor_trading_date: "2026-11-06",
     monitor: capturePayload({ fps: 0.627 }),
+    session_outcome: { trading_date: "2026-11-06", outcome: "complete", completeness_pct: 100 },
     compression: null,
     compression_history: compressionHistory,
   });
@@ -233,6 +234,7 @@ test("marks Friday's snapshot as retained on Sunday and carries today's phase an
   const { result, unmount } = renderHook(() => useMonitorTelemetry());
   await waitFor(() => expect(result.current.source.retainedDate).toBe("2026-11-06"));
   expect(result.current.context.marketPhase).toBe("HOLIDAY");
+  expect(result.current.history.sessionOutcome?.outcome).toBe("complete");
   await waitFor(() => expect(result.current.context.calendarDay?.isTradingDay).toBe(false));
   expect(result.current.freshness.restError).toBeNull();
   unmount();

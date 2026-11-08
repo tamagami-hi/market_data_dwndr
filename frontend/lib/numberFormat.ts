@@ -127,3 +127,20 @@ export function formatDateClock(ms: number | null | undefined, short = false): s
   if (short) return `${day} ${clock}`;
   return `${date.getFullYear()}-${day} ${clock}:${pad(date.getSeconds())}`;
 }
+
+const istClockFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Kolkata",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
+
+/**
+ * Exchange-local (IST) clock time, "10:23:00", whatever the viewer's timezone: incident
+ * times are compared against the exchange schedule, not the operator's laptop clock.
+ */
+export function formatIstClock(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms) || ms <= 0) return "--";
+  return istClockFormatter.format(new Date(ms));
+}

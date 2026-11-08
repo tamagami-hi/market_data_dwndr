@@ -1,10 +1,6 @@
-import type {
-  SessionIncident,
-  SessionOutcome,
-  SessionStreamSummary,
-  SessionSummary,
-} from "@/lib/api";
+import type { SessionPage, SessionStreamSummary, SessionSummary } from "@/lib/api";
 import { asRecord, bool, finite, optionalFinite, pickFinite } from "@/lib/monitor/parse";
+import { normalizeSessionReport } from "@/lib/monitor/sessionReport";
 import type { GlobalStatus, PerUnderlyingStatus } from "@/lib/wsTypes";
 
 /**
@@ -42,40 +38,6 @@ function normalizeSessionStream(value: unknown): SessionStreamSummary | null {
   };
 }
 
-/** EXTENSION POINT: provisional — accepts a bare string or ``{label, detail}``. */
-function normalizeOutcome(value: unknown): SessionOutcome | undefined {
-  if (typeof value === "string" && value.length > 0) return { label: value };
-  const outcome = asRecord(value);
-  if (!outcome || typeof outcome.label !== "string" || outcome.label.length === 0) return undefined;
-  return typeof outcome.detail === "string"
-    ? { label: outcome.label, detail: outcome.detail }
-    : { label: outcome.label };
-}
-
-/**
- * EXTENSION POINT: provisional — entries without a start time or cause are dropped.
- * Accepts ``start_ms``/``end_ms`` or the ``start_at``/``end_at`` names the in-progress
- * backend incident timeline uses; settle on one when that shape is final.
- */
-function normalizeIncidents(value: unknown): SessionIncident[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const incidents = value.flatMap((item): SessionIncident[] => {
-    const incident = asRecord(item);
-    const start = optionalFinite(incident?.start_ms ?? incident?.start_at);
-    if (!incident || start === null || typeof incident.cause !== "string") return [];
-    const end = optionalFinite(incident.end_ms ?? incident.end_at);
-    const seconds = optionalFinite(incident.seconds);
-    return [{
-      start_ms: start,
-      cause: incident.cause,
-      ...(end === null ? {} : { end_ms: end }),
-      ...(seconds === null ? {} : { seconds }),
-      ...(typeof incident.detail === "string" ? { detail: incident.detail } : {}),
-    }];
-  });
-  return incidents.length > 0 ? incidents : undefined;
-}
-
 export function normalizeSessionSummary(value: unknown): SessionSummary | null {
   const session = asRecord(value);
   if (!session || typeof session.trading_date !== "string" || session.trading_date.length === 0) {
@@ -85,8 +47,6 @@ export function normalizeSessionSummary(value: unknown): SessionSummary | null {
   if (!Array.isArray(rawStreams)) return null;
   const streams = rawStreams.map(normalizeSessionStream);
   if (streams.some((stream) => stream === null)) return null;
-  const outcome = normalizeOutcome(session.outcome);
-  const incidents = normalizeIncidents(session.incidents);
   return {
     trading_date: session.trading_date,
     recorded_at: finite(session.recorded_at),
@@ -118,8 +78,22 @@ export function normalizeSessionSummary(value: unknown): SessionSummary | null {
     disk_bytes: finite(session.disk_bytes),
     streams: streams as SessionStreamSummary[],
     ...pickFinite(session, SCHEDULE_FIELDS),
-    ...(outcome ? { outcome } : {}),
-    ...(incidents ? { incidents } : {}),
+    // Outcome, completeness, loss causes and the incident timeline the backend adds.
+    ...normalizeSessionReport(session),
+  };
+}
+
+/** ``GET /api/stats/sessions``: malformed rows are dropped, never the whole page. */
+export function normalizeSessionPage(value: unknown): SessionPage | null {
+  const page = asRecord(value);
+  if (!page || !Array.isArray(page.sessions)) return null;
+  return {
+    sessions: page.sessions.flatMap((row) => {
+      const session = normalizeSessionSummary(row);
+      return session ? [session] : [];
+    }),
+    total: optionalFinite(page.total) ?? page.sessions.length,
+    next_before: typeof page.next_before === "string" ? page.next_before : null,
   };
 }
 

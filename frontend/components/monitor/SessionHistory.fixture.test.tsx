@@ -70,12 +70,12 @@ test("the normalizer keeps the scheduled breakdown the history needs", () => {
   expect(nov5.generations).toBe(2);
 });
 
-test("2026-11-05 shows schedule loss, missing time and its three causes", () => {
+test("2026-11-05 shows completeness, missing time and its three causes", () => {
   render(<SessionHistory sessions={sessions()} />);
   const cells = within(desktopRow("2026-11-05")).getAllByRole("cell");
 
-  // Session | Frames | Loss vs schedule | Missing | …
-  expect(cells[2]).toHaveTextContent("13.78%");
+  // Session | Frames | Completeness | Missing | …  (19,916 of 23,100 scheduled seconds)
+  expect(cells[2]).toHaveTextContent("86.22%");
   expect(cells[2].querySelector("span")).toHaveClass("text-danger");
   expect(cells[3]).toHaveTextContent("53m 04s");
 
@@ -95,12 +95,13 @@ test("2026-11-05 shows schedule loss, missing time and its three causes", () => 
   expect(widths[2]).toBeCloseTo((3032 / 3184) * 100, 6);
 });
 
-test("2026-10-19 reports its late start instead of 0.00%", () => {
+test("2026-10-19 reports its late start instead of a clean day", () => {
   render(<SessionHistory sessions={sessions()} />);
   const cells = within(desktopRow("2026-10-19")).getAllByRole("cell");
 
-  expect(cells[2]).toHaveTextContent("2.15%");
-  expect(cells[2]).not.toHaveTextContent("0.00%");
+  // 22,603 of 23,100 s; the process-relative figure would have read 99.996%.
+  expect(cells[2]).toHaveTextContent("97.85%");
+  expect(cells[2].querySelector("span")).toHaveClass("text-warning");
   expect(cells[3]).toHaveTextContent("8m 17s");
   expect(within(cells[3]).getByRole("img")).toHaveAccessibleName(
     "Missing 8m 17s: not running 8m 16s, awaiting first tick 1s",
@@ -111,6 +112,7 @@ test("the misleading columns are gone and the span is named for what it is", () 
   render(<SessionHistory sessions={sessions()} />);
   const table = screen.getByRole("table");
   expect(within(table).getByRole("columnheader", { name: "Missing" })).toBeInTheDocument();
+  expect(within(table).getByRole("columnheader", { name: "Completeness" })).toBeInTheDocument();
   expect(within(table).getByRole("columnheader", { name: "Process span" })).toBeInTheDocument();
   expect(within(table).queryByRole("columnheader", { name: "Gap loss" })).toBeNull();
   expect(within(table).queryByRole("columnheader", { name: "Ticks/s" })).toBeNull();
@@ -133,7 +135,8 @@ test("expanding a desktop row shows completeness and the per-cause seconds", asy
   const details = document.getElementById("session-row-2026-11-05") as HTMLElement;
   const field = (label: string) =>
     within(details).getByText(label, { selector: "dt" }).nextElementSibling;
-  expect(field("Completeness")).toHaveTextContent("86.22% (19,916 / 23,100s)");
+  expect(field("Telemetry completeness")).toHaveTextContent("86.22% (19,916 / 23,100s)");
+  expect(field("Archive completeness")).toHaveTextContent("not reconciled");
   expect(field("Missing")).toHaveTextContent("53m 04s");
   expect(field("Stale feed")).toHaveTextContent("54s");
   expect(field("Process restart")).toHaveTextContent("1m 38s");
@@ -157,15 +160,16 @@ test("a record written before the breakdown existed falls back instead of invent
 
   render(<SessionHistory sessions={[legacy]} />);
   const cells = within(desktopRow("2026-07-01")).getAllByRole("cell");
-  expect(cells[2]).toHaveTextContent("0.75%");
+  // No seconds recorded: 100 - the process-relative loss is all there is.
+  expect(cells[2]).toHaveTextContent("99.25%");
   expect(cells[3]).toHaveTextContent("--");
   expect(within(cells[3]).queryByRole("img")).toBeNull();
 });
 
-test("the mobile summary leads with schedule loss, missing time and the cause bar", () => {
+test("the mobile summary leads with completeness, missing time and the cause bar", () => {
   render(<SessionHistory sessions={sessions()} />);
   const card = screen.getByRole("button", { name: "2026-11-05 session details" });
-  expect(card).toHaveTextContent("13.78% loss");
+  expect(card).toHaveTextContent("86.22% captured");
   expect(card).toHaveTextContent("53m 04s missing");
   expect(card).toHaveTextContent("span 06:27:04");
   expect(card.querySelector("[data-loss-cause-bar]")).toHaveAttribute(

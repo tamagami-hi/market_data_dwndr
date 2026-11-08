@@ -3,6 +3,7 @@
 import { getBackendUrl } from "@/lib/config";
 import { normalizeStockDepth } from "@/lib/stockDepth";
 import type { AutomationStateView } from "@/lib/automationStatus";
+import type { SessionReportFields } from "@/lib/sessionReport";
 import type {
   CompressionProgressPayload,
   GlobalStatus,
@@ -241,8 +242,11 @@ export interface SessionStreamSummary {
   file_bytes: number;
 }
 
-/** One completed capture session's data-loss record (from session-history.jsonl). */
-export interface SessionSummary {
+/**
+ * One capture session's data-loss record (from session-history.jsonl), plus the
+ * backend's description of it (outcome, causes, incidents — see lib/sessionReport.ts).
+ */
+export interface SessionSummary extends SessionReportFields {
   trading_date: string;
   recorded_at: number;
   uptime_ms: number;
@@ -298,32 +302,17 @@ export interface SessionSummary {
   unclassified_seconds?: number;
   /** restart_downtime + not_running, as one figure (older records split it no further). */
   downtime_seconds?: number;
-  /** Process generations the backend recorded for the date. */
+  /** Process generations (capture starts) for the date; null/absent without a ledger. */
   generations?: number;
   ws_connect_attempts?: number;
   in_process_reconnects?: number;
-  // --- EXTENSION POINTS (backend in progress; shapes are provisional) ---------------
-  // Rendered only when present. Adjust the normalizer in lib/monitor/sessionSummary.ts
-  // once the backend's field shapes are final.
-  /** Per-session verdict, e.g. "complete" / "degraded" / "failed", with its cause. */
-  outcome?: SessionOutcome;
-  /** What went wrong and when, in time order. */
-  incidents?: SessionIncident[];
 }
 
-/** EXTENSION POINT: provisional per-session outcome. */
-export interface SessionOutcome {
-  label: string;
-  detail?: string;
-}
-
-/** EXTENSION POINT: provisional incident-timeline entry. */
-export interface SessionIncident {
-  start_ms: number;
-  end_ms?: number;
-  cause: string;
-  seconds?: number;
-  detail?: string;
+/** One page of ``GET /api/stats/sessions``: newest first, ``next_before`` null on the last. */
+export interface SessionPage {
+  sessions: SessionSummary[];
+  total: number;
+  next_before: string | null;
 }
 
 /** When the dashboard should actively refresh (capture running or pre-open auth window). */
@@ -346,6 +335,8 @@ export interface DashboardStats {
   /** Trading date the monitor payload belongs to (may be an earlier session). */
   monitor_trading_date?: string | null;
   session_history?: SessionSummary[];
+  /** The monitor's (or today's) date described like a history row; null when unknown. */
+  session_outcome?: SessionSummary | null;
   refresh_window?: RefreshWindow;
   compression: CompressionProgressPayload | null;
   compression_history: CompressionHistory;
@@ -354,6 +345,24 @@ export interface DashboardStats {
 export async function getStats(signal?: AbortSignal): Promise<DashboardStats> {
   const res = await apiFetch("/api/stats", { cache: "no-store", signal });
   return jsonOrThrow<DashboardStats>(res);
+}
+
+/**
+ * One page of the full session history, ``limit`` rows strictly older than ``before``.
+ * Returned unvalidated; normalize with ``normalizeSessionPage``.
+ */
+export async function getSessionPage(
+  limit: number,
+  before: string | null,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (before) query.set("before", before);
+  const res = await apiFetch(`/api/stats/sessions?${query.toString()}`, {
+    cache: "no-store",
+    signal,
+  });
+  return jsonOrThrow<unknown>(res);
 }
 
 export async function getStockDepth(symbol: string): Promise<StockDepthSnapshot> {
