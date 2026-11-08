@@ -44,3 +44,28 @@ test("caps the session table at six rows with a vertical scroll region", () => {
   // keeps six rows visible and scrolls the rest.
   expect(panel.querySelectorAll("tbody tr")).toHaveLength(9);
 });
+
+test("tints and labels only the sessions that lost more than 1%", () => {
+  const base = history(4);
+  const losses = [13.784, 0.463, 2.152, null];
+  const withLoss: CaptureHistory = {
+    ...base,
+    sessions: base.sessions.map((session, index) => ({
+      ...session,
+      loss_pct: losses[index],
+      outcome: index === 0 ? "partial" : null,
+    })),
+  };
+  const { container } = render(<StorageHistory history={withLoss} />);
+  const rows = Array.from(container.querySelectorAll("tbody tr")) as HTMLTableRowElement[];
+
+  expect(rows[0].textContent).toContain("13.78%");
+  expect(rows[0].getAttribute("title")).toBe("capture loss 13.78% (partial)");
+  expect(rows[0].style.boxShadow).toContain("inset 3px 0 0");
+  expect(rows[1].textContent).toContain("0.46%");
+  expect(rows[1].style.boxShadow).toBe("");
+  expect(rows[2].style.boxShadow).toContain("inset 3px 0 0");
+  expect(rows[3].textContent).toContain("--");
+  expect(rows[3].getAttribute("title")).toBe("no capture session recorded for this date");
+  expect(screen.getAllByText(/tinted by capture loss above 1%/).length).toBeGreaterThan(0);
+});

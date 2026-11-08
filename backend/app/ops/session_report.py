@@ -128,6 +128,42 @@ def describe_rows(
     return described
 
 
+def session_losses(
+    *,
+    settings,
+    stats_dir: str | os.PathLike[str] | None,
+    dates: Iterable[str],
+    now_ms: int,
+) -> dict[str, dict]:
+    """``{date: {loss_pct, completeness_pct, outcome}}`` for every recorded date asked for.
+
+    ``completeness_pct`` is the figure that decides the outcome — the worse of telemetry
+    and the archive reconciliation — and ``loss_pct`` is its complement. Dates with no
+    recorded session are simply absent.
+    """
+    wanted = {str(d) for d in dates}
+    if stats_dir is None or not wanted:
+        return {}
+    page = stats_store.session_history_page(stats_dir, limit=10**9)
+    rows = [r for r in page["sessions"] if str(r.get("trading_date")) in wanted]
+    found: dict[str, dict] = {}
+    for row in describe_rows(rows, settings=settings, stats_dir=stats_dir, now_ms=now_ms):
+        figures = [
+            value
+            for value in (row.get("completeness_pct"), row.get("archive_completeness_pct"))
+            if isinstance(value, (int, float))
+        ]
+        if not figures:
+            continue
+        deciding = min(figures)
+        found[str(row.get("trading_date"))] = {
+            "completeness_pct": round(deciding, 3),
+            "loss_pct": round(max(0.0, 100.0 - deciding), 3),
+            "outcome": row.get("outcome"),
+        }
+    return found
+
+
 def describe_monitor(
     monitor_payload: Mapping | None,
     trading_date: str | None,

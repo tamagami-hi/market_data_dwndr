@@ -187,6 +187,10 @@ export interface CaptureHistorySession {
   index_files: number;
   stock_files: number;
   indices: string[];
+  /** Capture loss for the day (worse of telemetry and archive); null when not recorded. */
+  loss_pct?: number | null;
+  completeness_pct?: number | null;
+  outcome?: string | null;
 }
 
 export interface CaptureHistory {

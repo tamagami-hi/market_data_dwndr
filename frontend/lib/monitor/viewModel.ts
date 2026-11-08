@@ -309,6 +309,9 @@ function normalizeCaptureHistorySession(value: unknown): CaptureHistorySession |
     index_files: finite(session.index_files),
     stock_files: finite(session.stock_files),
     indices: [...session.indices],
+    loss_pct: optionalFinite(session.loss_pct),
+    completeness_pct: optionalFinite(session.completeness_pct),
+    outcome: typeof session.outcome === "string" ? session.outcome : null,
   };
 }
 

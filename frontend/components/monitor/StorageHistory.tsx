@@ -4,7 +4,28 @@ import { Panel } from "@/components/ui/Panel";
 import { ResponsiveDisclosure } from "@/components/ui/ResponsiveDisclosure";
 import { StateMessage } from "@/components/ui/StateMessage";
 import type { CaptureHistory, CaptureHistorySession } from "@/lib/api";
+import {
+  LOSS_HIGHLIGHT_MIN_PCT,
+  formatLoss,
+  lossColor,
+  lossRowStyle,
+  lossSeverity,
+} from "@/lib/monitor/lossColor";
 import { formatBytes, formatIndianNumber } from "@/lib/numberFormat";
+
+const SUBTITLE = `live and archived captures · tinted by capture loss above ${LOSS_HIGHLIGHT_MIN_PCT}%`;
+
+function LossValue({ lossPct }: { lossPct: number | null | undefined }) {
+  const severity = lossSeverity(lossPct);
+  return (
+    <span
+      className={`font-mono ${severity === null ? "text-muted" : "font-semibold"}`}
+      style={severity === null ? undefined : { color: lossColor(severity) }}
+    >
+      {formatLoss(lossPct)}
+    </span>
+  );
+}
 
 function captureState(session: CaptureHistorySession): string {
   if (session.raw_files > 0 && session.archived_files > 0) return "Archiving";
@@ -19,7 +40,7 @@ export const StorageHistory = memo(function StorageHistory({
 }) {
   if (!history) {
     return (
-      <Panel title="Download history" subtitle="live and archived captures" className="panel-compact h-full">
+      <Panel title="Download history" subtitle={SUBTITLE} className="panel-compact h-full">
         <div className="p-3">
           <StateMessage title="Capture history unavailable">
             The backend has not returned a configured storage history.
@@ -33,7 +54,7 @@ export const StorageHistory = memo(function StorageHistory({
       ? (history.totals.archived_bytes / history.totals.total_bytes) * 100
       : 0;
   return (
-    <Panel title="Download history" subtitle="live and archived captures" className="panel-compact h-full">
+    <Panel title="Download history" subtitle={SUBTITLE} className="panel-compact h-full">
       <div className="grid grid-cols-2 gap-px border-b border-border bg-border sm:grid-cols-4">
         {[
           ["Sessions", formatIndianNumber(history.totals.sessions, 0)],
@@ -54,12 +75,18 @@ export const StorageHistory = memo(function StorageHistory({
             id={`storage-${session.trading_date}`}
             label={`${session.trading_date} storage details`}
             summary={
-              <div className="flex items-center justify-between gap-2 text-xs">
+              <div
+                className="flex items-center justify-between gap-2 rounded px-1 text-xs"
+                style={lossRowStyle(session.loss_pct)}
+              >
                 <div>
                   <div className="font-semibold text-primary">{session.trading_date}</div>
                   <div className="mt-1 text-muted">{captureState(session)} / {session.data_files} files</div>
                 </div>
-                <span className="font-mono text-secondary">{formatBytes(session.total_bytes)}</span>
+                <div className="text-right">
+                  <div className="font-mono text-secondary">{formatBytes(session.total_bytes)}</div>
+                  <div className="mt-1">loss <LossValue lossPct={session.loss_pct} /></div>
+                </div>
               </div>
             }
           >
@@ -77,6 +104,7 @@ export const StorageHistory = memo(function StorageHistory({
           <thead className="sticky top-0 z-10">
             <tr>
               <th className="text-left">Session</th>
+              <th className="text-right">Loss</th>
               <th className="text-left">State</th>
               <th className="text-right">Stored</th>
               <th className="text-right">Raw / archive</th>
@@ -86,8 +114,17 @@ export const StorageHistory = memo(function StorageHistory({
           </thead>
           <tbody>
             {history.sessions.map((session) => (
-              <tr key={session.trading_date}>
+              <tr
+                key={session.trading_date}
+                style={lossRowStyle(session.loss_pct)}
+                title={
+                  session.loss_pct == null
+                    ? "no capture session recorded for this date"
+                    : `capture loss ${formatLoss(session.loss_pct)}${session.outcome ? ` (${session.outcome.replace("_", " ")})` : ""}`
+                }
+              >
                 <td className="font-semibold text-primary">{session.trading_date}</td>
+                <td className="text-right"><LossValue lossPct={session.loss_pct} /></td>
                 <td className="text-secondary">{captureState(session)}</td>
                 <td className="text-right font-mono text-primary">{formatBytes(session.total_bytes)}</td>
                 <td className="text-right font-mono text-muted">{formatBytes(session.raw_bytes)} / {formatBytes(session.archived_bytes)}</td>

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.ops.retention import scan_capture_history
 
 
@@ -43,3 +45,45 @@ def test_raw_and_archived_copies_of_one_file_count_once(tmp_path):
     assert session.data_files == 1
     assert session.raw_files == 1 and session.archived_files == 1
     assert session.total_bytes == 70
+
+
+def test_history_api_attaches_each_days_capture_loss(tmp_path):
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.capture import create_capture_router
+    from app.ops import stats_store
+
+    live, archive, stats = tmp_path / "live", tmp_path / "archive", tmp_path / "stats"
+    _touch(archive / "STOCKS" / "2026-11-05.bin.zst", 10)
+    _touch(archive / "STOCKS" / "2026-11-06.bin.zst", 10)
+    _touch(archive / "STOCKS" / "2026-11-04.bin.zst", 10)  # no session recorded
+    stats_store.record_session_summary(
+        stats,
+        {"trading_date": "2026-11-05", "scheduled_seconds": 23_100, "captured_seconds": 19_916},
+    )
+    stats_store.record_session_summary(
+        stats,
+        {"trading_date": "2026-11-06", "scheduled_seconds": 23_100, "captured_seconds": 23_100},
+    )
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(
+        market_data_path=live,
+        archive_data_path=archive,
+        stats_dir=stats,
+        timezone="Asia/Kolkata",
+    )
+    app.state.session_service = None
+    app.include_router(create_capture_router())
+
+    rows = {
+        row["trading_date"]: row
+        for row in TestClient(app).get("/api/capture/history").json()["sessions"]
+    }
+
+    assert rows["2026-11-05"]["loss_pct"] == pytest.approx(13.784, abs=0.01)
+    assert rows["2026-11-05"]["outcome"] == "partial"
+    assert rows["2026-11-06"]["loss_pct"] == 0.0
+    assert rows["2026-11-04"]["loss_pct"] is None

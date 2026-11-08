@@ -493,8 +493,20 @@ def create_capture_router() -> APIRouter:
         )
         service = getattr(request.app.state, "session_service", None)
         current_date = service.trading_date() if service is not None else None
+        losses = await asyncio.to_thread(
+            _history_losses, settings, [s.trading_date for s in report.sessions]
+        )
         sessions = [
-            {**asdict(session), "is_current": session.trading_date == current_date}
+            {
+                **asdict(session),
+                "is_current": session.trading_date == current_date,
+                # The day's capture loss, so the download history can show which stored
+                # sessions are incomplete. Null when no session was recorded for the date.
+                **losses.get(
+                    session.trading_date,
+                    {"loss_pct": None, "completeness_pct": None, "outcome": None},
+                ),
+            }
             for session in report.sessions
         ]
         return {
@@ -564,6 +576,23 @@ def create_capture_router() -> APIRouter:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return router
+
+
+def _history_losses(settings, dates: list[str]) -> dict[str, dict]:
+    """Per-date capture loss for the download history; empty on any failure."""
+    try:
+        from app.ops.session_report import session_losses
+        from app.session import now_ms
+
+        return session_losses(
+            settings=settings,
+            stats_dir=getattr(settings, "stats_dir", None),
+            dates=dates,
+            now_ms=now_ms(),
+        )
+    except Exception:  # noqa: BLE001 - loss colouring must never break the history
+        logger.debug("could not attach session losses to the history", exc_info=True)
+        return {}
 
 
 def _secret_value(value: object) -> str | None:
