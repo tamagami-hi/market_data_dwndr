@@ -437,6 +437,21 @@ a {
   max-height: calc(24px + 5 * 24px + 4 * 6px);
 }
 
+/* On the two-column dashboard, the history rows (Frame integrity + Session history,
+   Download history + Compression) get one taller fixed height and their lists fill it,
+   instead of stopping at the row caps above while the paired panel left empty space. */
+@media (min-width: 1024px) {
+  .monitor-history-panel {
+    height: 34rem;
+  }
+
+  .monitor-history-panel .monitor-integrity-scroll,
+  .monitor-history-panel .monitor-session-scroll,
+  .monitor-history-panel .monitor-storage-scroll {
+    max-height: none;
+  }
+}
+
 /* Thirteen columns of session accounting, and most of them hold two or three characters
    ("0", "12", "0.04%"). At the shared 12px header size the HEADINGS — not the data — set
    those column widths, and the table overflowed its panel horizontally at every width

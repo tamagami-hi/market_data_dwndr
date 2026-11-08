@@ -158,6 +158,8 @@ export default function MarketCalendarPage() {
               <SpecialSessionForm
                 key={todayDate}
                 defaultDate={todayDate}
+                defaultOpen={calendar.regular_hours.market_open}
+                defaultClose={calendar.regular_hours.market_close}
                 isBusy={isBusy}
                 onSubmit={(session: SpecialSessionInput) =>
                   run(() => saveSpecialSession(operatorToken, session), `Special session saved for ${session.date}.`)

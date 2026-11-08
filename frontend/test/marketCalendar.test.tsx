@@ -117,3 +117,12 @@ test("a rejected operator key is reported", async () => {
   await user.click(screen.getByRole("button", { name: "Fetch token now" }));
   await waitFor(() => expect(screen.getByText("Operator key was rejected.")).toBeInTheDocument());
 });
+
+test("the special-day form starts from the configured regular hours, not a fixed occasion", async () => {
+  render(<MarketCalendarPage />);
+  await screen.findByText("14:20–15:30");
+  expect(screen.getByLabelText("Market open (IST)")).toHaveValue("09:15");
+  expect(screen.getByLabelText("Market close (IST)")).toHaveValue("15:40");
+  expect(screen.getByPlaceholderText("e.g. Special trading session")).toBeInTheDocument();
+  expect(screen.queryByPlaceholderText(/diwali/i)).not.toBeInTheDocument();
+});

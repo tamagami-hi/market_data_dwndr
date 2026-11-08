@@ -264,6 +264,7 @@ export const SessionHistory = memo(function SessionHistory({
           ? `${recorded.length} recorded sessions`
           : `${recorded.length} of ${pages.total} sessions`
       }
+      className="monitor-history-panel"
     >
       {rows.length === 0 ? (
         <div className="p-3">

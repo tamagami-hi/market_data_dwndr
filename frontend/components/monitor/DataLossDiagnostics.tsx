@@ -267,7 +267,7 @@ export function DataLossDiagnostics({
           <FeedHealthStrip globals={globals} />
           <RecoveryBanner globals={globals} />
           <LossBreakdown globals={globals} />
-          <div className="grid grid-cols-3 gap-2 p-2">
+          <div className="grid grid-cols-3 gap-2 p-2 2xl:grid-cols-5">
             {items.map((item) => <Metric key={item.label} compact {...item} />)}
           </div>
         </>

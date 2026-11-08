@@ -23,16 +23,21 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 
 export function SpecialSessionForm({
   defaultDate,
+  defaultOpen,
+  defaultClose,
   isBusy,
   onSubmit,
 }: {
   defaultDate: string;
+  /** Pre-filled with the configured regular market hours; the operator edits them. */
+  defaultOpen: string;
+  defaultClose: string;
   isBusy: boolean;
   onSubmit: (session: SpecialSessionInput) => Promise<boolean>;
 }) {
   const [date, setDate] = useState(defaultDate);
-  const [open, setOpen] = useState("14:20");
-  const [close, setClose] = useState("15:30");
+  const [open, setOpen] = useState(defaultOpen);
+  const [close, setClose] = useState(defaultClose);
   const [lead, setLead] = useState(5);
   const [tokenAt, setTokenAt] = useState("");
   const [note, setNote] = useState("");
@@ -79,7 +84,7 @@ export function SpecialSessionForm({
         <input type="time" value={tokenAt} onChange={(e) => setTokenAt(e.target.value)} className={INPUT_CLASS} />
       </Field>
       <Field label="Note">
-        <input value={note} maxLength={120} placeholder="e.g. Diwali muhurat trading" onChange={(e) => setNote(e.target.value)} className={INPUT_CLASS} />
+        <input value={note} maxLength={120} placeholder="e.g. Special trading session" onChange={(e) => setNote(e.target.value)} className={INPUT_CLASS} />
       </Field>
       <div className="sm:col-span-2 lg:col-span-3">
         <button type="submit" disabled={isBusy} className={PRIMARY_BUTTON_CLASS}>

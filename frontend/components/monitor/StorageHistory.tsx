@@ -91,7 +91,7 @@ export const StorageHistory = memo(function StorageHistory({
       ? (history.totals.archived_bytes / history.totals.total_bytes) * 100
       : 0;
   return (
-    <Panel title="Download history" subtitle={SUBTITLE} className="panel-compact h-full">
+    <Panel title="Download history" subtitle={SUBTITLE} className="panel-compact h-full monitor-history-panel">
       <div className="grid grid-cols-2 gap-px border-b border-border bg-border sm:grid-cols-4">
         {[
           ["Sessions", formatIndianNumber(history.totals.sessions, 0)],
