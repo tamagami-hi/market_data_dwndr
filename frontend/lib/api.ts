@@ -191,6 +191,9 @@ export interface CaptureHistorySession {
   loss_pct?: number | null;
   completeness_pct?: number | null;
   outcome?: string | null;
+  /** Legacy index frames on a wrong strike axis, read as missing. 0 when unaffected. */
+  mislabelled_frames?: number;
+  mislabelled_artifacts?: string[];
 }
 
 export interface CaptureHistory {

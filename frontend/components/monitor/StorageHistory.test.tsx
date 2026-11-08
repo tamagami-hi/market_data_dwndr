@@ -69,3 +69,30 @@ test("tints and labels only the sessions that lost more than 1%", () => {
   expect(rows[3].getAttribute("title")).toBe("no capture session recorded for this date");
   expect(screen.getAllByText(/tinted by capture loss above 1%/).length).toBeGreaterThan(0);
 });
+
+test("marks days with mislabelled strikes in violet, separately from the loss tint", () => {
+  const base = history(3);
+  const marked: CaptureHistory = {
+    ...base,
+    sessions: base.sessions.map((session, index) => ({
+      ...session,
+      loss_pct: index === 1 ? 13.784 : 0.2,
+      mislabelled_frames: index === 2 ? 0 : 22_799,
+      mislabelled_artifacts: index === 2 ? [] : ["NIFTY", "SENSEX"],
+    })),
+  };
+  const { container } = render(<StorageHistory history={marked} />);
+  const rows = Array.from(container.querySelectorAll("tbody tr")) as HTMLTableRowElement[];
+
+  // Mislabelled only: violet right-edge bar, no loss tint.
+  expect(rows[0].style.boxShadow).toBe("inset -3px 0 0 var(--mislabelled)");
+  expect(rows[0].textContent).toContain("strikes mislabelled: 22,799 index frames read as missing (NIFTY, SENSEX)");
+  // Both: the loss bar on the left and the violet bar on the right.
+  expect(rows[1].style.boxShadow).toContain("inset 3px 0 0");
+  expect(rows[1].style.boxShadow).toContain("inset -3px 0 0 var(--mislabelled)");
+  expect(rows[1].getAttribute("title")).toContain("capture loss 13.78%");
+  expect(rows[1].getAttribute("title")).toContain("strikes mislabelled");
+  // Neither.
+  expect(rows[2].style.boxShadow).toBe("");
+  expect(rows[2].textContent).not.toContain("mislabelled");
+});

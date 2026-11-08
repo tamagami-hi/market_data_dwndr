@@ -199,7 +199,8 @@ def verify_integrity(path: str | os.PathLike[str]) -> bool:
     index reader for both index and stock files.)
     """
     try:
-        with IndexBinReader(path) as reader:
+        # Structural check: every record, including frames readers treat as mislabelled.
+        with IndexBinReader(path, include_mislabelled=True) as reader:
             ts = reader.timestamps
             if not ts:
                 return False

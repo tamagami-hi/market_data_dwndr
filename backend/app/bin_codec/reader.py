@@ -229,9 +229,59 @@ class IndexBinReader(_BaseReader):
     describe its own columns and never need to branch on the version.
     """
 
-    def __init__(self, path: str | os.PathLike[str]) -> None:
+    def __init__(
+        self, path: str | os.PathLike[str], *, include_mislabelled: bool = False
+    ) -> None:
         super().__init__(path)
         self._legacy_strikes: np.ndarray | None = None
+        # Legacy v1 files can hold frames whose columns sit under the wrong strikes (see
+        # app.bin_codec.quarantine). They are dropped unless the caller explicitly wants
+        # the raw records (structural integrity checks do).
+        self._include_mislabelled = include_mislabelled
+        self.excluded_frames = 0
+        self.excluded_reasons: dict[str, int] = {}
+
+    def _scan(self) -> None:
+        super()._scan()
+        if self._include_mislabelled or self.schema_version >= SCHEMA_VERSION_INDEX:
+            return
+        if self._header_span is None or not self._frames:
+            return
+        self._drop_mislabelled_frames()
+
+    def _drop_mislabelled_frames(self) -> None:
+        """Treat v1 frames on a wrong strike axis as missing (never modifies the file)."""
+        from app.bin_codec.quarantine import excluded_ranges
+
+        width = int(self._legacy_axis().shape[0])
+        ranges = excluded_ranges(self.path)
+        kept: list[FrameRecord] = []
+        reasons: dict[str, int] = {}
+        for rec in self._frames:
+            reason = None
+            for start, end, why in ranges:
+                if start <= rec.timestamp_unix_ms <= end:
+                    reason = why
+                    break
+            if reason is None:
+                # Frame prefix: u32 tag, u64 ts, u64 seq, i64 spot, i64 vix, then the first
+                # call column's u64 length — the frame's own width.
+                frame_width = _U64.unpack_from(self._buf, rec.payload_offset + 36)[0]
+                if frame_width != width:
+                    reason = f"frame width {frame_width} differs from the header's {width} strikes"
+            if reason is None:
+                kept.append(rec)
+            else:
+                reasons[reason] = reasons.get(reason, 0) + 1
+        if len(kept) == len(self._frames):
+            return
+        self.excluded_frames = len(self._frames) - len(kept)
+        self.excluded_reasons = reasons
+        self._frames = kept
+        ts_array = np.array([f.timestamp_unix_ms for f in kept], dtype=np.uint64)
+        order = np.argsort(ts_array, kind="stable")
+        self._sorted_idx = order.astype(np.int64)
+        self._sorted_ts = ts_array[order]
 
     def header(self) -> IndexHeader:
         cur = self._header_cursor()

@@ -13,7 +13,44 @@ import {
 } from "@/lib/monitor/lossColor";
 import { formatBytes, formatIndianNumber } from "@/lib/numberFormat";
 
-const SUBTITLE = `live and archived captures · tinted by capture loss above ${LOSS_HIGHLIGHT_MIN_PCT}%`;
+const SUBTITLE = `live and archived captures · tinted by capture loss above ${LOSS_HIGHLIGHT_MIN_PCT}% · violet: strikes mislabelled`;
+
+/** Right-edge violet bar, so it never mixes with the loss tint's left bar. */
+const MISLABELLED_BAR = "inset -3px 0 0 var(--mislabelled)";
+
+function hasMislabelled(session: CaptureHistorySession): boolean {
+  return (session.mislabelled_frames ?? 0) > 0;
+}
+
+function rowStyle(session: CaptureHistorySession) {
+  const loss = lossRowStyle(session.loss_pct);
+  if (!hasMislabelled(session)) return loss;
+  return {
+    ...loss,
+    boxShadow: [loss?.boxShadow, MISLABELLED_BAR].filter(Boolean).join(", "),
+  };
+}
+
+function mislabelledText(session: CaptureHistorySession): string {
+  const frames = formatIndianNumber(session.mislabelled_frames ?? 0, 0);
+  const sets = (session.mislabelled_artifacts ?? []).join(", ");
+  return `strikes mislabelled: ${frames} index frames read as missing${sets ? ` (${sets})` : ""}`;
+}
+
+function MislabelledNote({ session }: { session: CaptureHistorySession }) {
+  if (!hasMislabelled(session)) return null;
+  return (
+    <div className="mt-1 text-[11px] leading-snug text-mislabelled">{mislabelledText(session)}</div>
+  );
+}
+
+function rowTitle(session: CaptureHistorySession): string {
+  const loss =
+    session.loss_pct == null
+      ? "no capture session recorded for this date"
+      : `capture loss ${formatLoss(session.loss_pct)}${session.outcome ? ` (${session.outcome.replace("_", " ")})` : ""}`;
+  return hasMislabelled(session) ? `${loss}; ${mislabelledText(session)}` : loss;
+}
 
 function LossValue({ lossPct }: { lossPct: number | null | undefined }) {
   const severity = lossSeverity(lossPct);
@@ -77,11 +114,12 @@ export const StorageHistory = memo(function StorageHistory({
             summary={
               <div
                 className="flex items-center justify-between gap-2 rounded px-1 text-xs"
-                style={lossRowStyle(session.loss_pct)}
+                style={rowStyle(session)}
               >
                 <div>
                   <div className="font-semibold text-primary">{session.trading_date}</div>
                   <div className="mt-1 text-muted">{captureState(session)} / {session.data_files} files</div>
+                  <MislabelledNote session={session} />
                 </div>
                 <div className="text-right">
                   <div className="font-mono text-secondary">{formatBytes(session.total_bytes)}</div>
@@ -116,12 +154,8 @@ export const StorageHistory = memo(function StorageHistory({
             {history.sessions.map((session) => (
               <tr
                 key={session.trading_date}
-                style={lossRowStyle(session.loss_pct)}
-                title={
-                  session.loss_pct == null
-                    ? "no capture session recorded for this date"
-                    : `capture loss ${formatLoss(session.loss_pct)}${session.outcome ? ` (${session.outcome.replace("_", " ")})` : ""}`
-                }
+                style={rowStyle(session)}
+                title={rowTitle(session)}
               >
                 <td className="font-semibold text-primary">{session.trading_date}</td>
                 <td className="text-right"><LossValue lossPct={session.loss_pct} /></td>
@@ -132,6 +166,7 @@ export const StorageHistory = memo(function StorageHistory({
                 <td className="text-secondary">
                   {session.indices.join(", ") || "No indices"}
                   {session.stock_files > 0 ? ` / stocks (${session.stock_files})` : ""}
+                  <MislabelledNote session={session} />
                 </td>
               </tr>
             ))}

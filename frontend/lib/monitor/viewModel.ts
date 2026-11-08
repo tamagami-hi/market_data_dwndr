@@ -312,6 +312,10 @@ function normalizeCaptureHistorySession(value: unknown): CaptureHistorySession |
     loss_pct: optionalFinite(session.loss_pct),
     completeness_pct: optionalFinite(session.completeness_pct),
     outcome: typeof session.outcome === "string" ? session.outcome : null,
+    mislabelled_frames: finite(session.mislabelled_frames),
+    mislabelled_artifacts: Array.isArray(session.mislabelled_artifacts)
+      ? session.mislabelled_artifacts.filter((item): item is string => typeof item === "string")
+      : [],
   };
 }
 

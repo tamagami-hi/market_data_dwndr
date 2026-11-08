@@ -496,6 +496,9 @@ def create_capture_router() -> APIRouter:
         losses = await asyncio.to_thread(
             _history_losses, settings, [s.trading_date for s in report.sessions]
         )
+        from app.bin_codec.quarantine import summary_by_date
+
+        mislabelled = summary_by_date()
         sessions = [
             {
                 **asdict(session),
@@ -505,6 +508,14 @@ def create_capture_router() -> APIRouter:
                 **losses.get(
                     session.trading_date,
                     {"loss_pct": None, "completeness_pct": None, "outcome": None},
+                ),
+                # Legacy index frames whose strikes are wrong and that readers treat as
+                # missing (app.bin_codec.quarantine). Zero for every unaffected day.
+                "mislabelled_frames": int(
+                    mislabelled.get(session.trading_date, {}).get("frames", 0)
+                ),
+                "mislabelled_artifacts": list(
+                    mislabelled.get(session.trading_date, {}).get("artifacts", [])
                 ),
             }
             for session in report.sessions

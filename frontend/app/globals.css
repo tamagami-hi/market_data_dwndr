@@ -16,6 +16,8 @@
   --success: #45c77a;
   --warning: #e3a83b;
   --danger: #ef6262;
+  /* Legacy index frames on a wrong strike axis (read as missing); distinct from loss. */
+  --mislabelled: #a78bfa;
   --marker-atm: #9b7cf6;
   --marker-pain: #e36ab2;
 }
@@ -35,6 +37,7 @@
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-danger: var(--danger);
+  --color-mislabelled: var(--mislabelled);
 }
 
 * {
